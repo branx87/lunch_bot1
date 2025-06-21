@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+full_code.py
+
+# Virtual environment
+venv/
+new_venv/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# IDE
+.idea/
+pycharm-*
+*.iml
+
+# Backup and temp files
+backup/
+old/
+Мусор и прочее/
+Последнее, но не рабочее/
+на всякий случай/
+reports/
+*.xlsx
+config.xlsx
+monthly_report_2025-04.xlsx
+orders_report.xlsx
+bot_persistence.pickle

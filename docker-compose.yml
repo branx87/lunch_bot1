@@ -1,0 +1,12 @@
+services:
+  bot:
+    build: .
+    container_name: lunch_bot
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data  # Для сохранения БД при перезапусках
+      - .:/app            # Монтируем весь проект в контейнер
+    environment:
+      - TZ=Europe/Moscow  # Ваша временная зона
+    command: >
+      watchmedo auto-restart --patterns="*.py" --recursive -- python main.py

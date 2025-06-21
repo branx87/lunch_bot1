@@ -1,0 +1,6 @@
+config.xlsx
+*.log
+__pycache__/
+*.pyc
+*.db
+old/*
