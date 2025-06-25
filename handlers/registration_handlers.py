@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 from config import LOCATIONS
 from constants import AWAIT_MESSAGE_TEXT, FULL_NAME, LOCATION, PHONE
-from db import db
+from db import Database
 from handlers.common import show_main_menu
 from handlers.message_handlers import handle_admin_message, start_user_to_admin_message
 

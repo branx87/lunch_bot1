@@ -4,7 +4,7 @@ from telegram import InlineKeyboardButton, Update, InlineKeyboardMarkup
 from datetime import datetime, timedelta
 
 from config import MENU
-from db import db
+from db import Database
 from handlers.common import show_main_menu
 from utils import can_modify_order
 

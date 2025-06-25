@@ -8,7 +8,7 @@ from datetime import datetime, date, time, timedelta
 import logging
 
 from config import MENU, TIMEZONE
-from db import db
+from db import Database
 from handlers.common import show_main_menu
 from middleware import check_user_access
 from utils import can_modify_order

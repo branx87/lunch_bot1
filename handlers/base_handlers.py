@@ -10,12 +10,12 @@ from datetime import datetime, timedelta
 from bot_keyboards import create_main_menu_keyboard
 from config import ADMIN_IDS, CONFIG, TIMEZONE
 from constants import FULL_NAME, PHONE, SELECT_MONTH_RANGE
-from db import db
+from db import Database
 from handlers.common import show_main_menu
 from handlers.common_handlers import view_orders
 from handlers.common_report_handlers import select_month_range
 from handlers.menu_handlers import monthly_stats, show_today_menu, show_week_menu
-from report_generators import export_accounting_report, export_daily_admin_report, export_daily_orders_for_provider
+from report_generators import ReportGenerator
 from utils import check_registration, handle_unregistered
 from bot_keyboards import get_user_role
 
@@ -298,13 +298,16 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             today = datetime.now(TIMEZONE).date()
             if user.id in getattr(CONFIG, 'admin_ids', []):
                 context.user_data['report_type'] = 'admin_daily'
-                await export_daily_admin_report(update, context, today)
+                report_generator = context.bot_data.get('report_generator')
+                await report_generator.export_daily_admin_report(update, context, today)
             elif user.id in getattr(CONFIG, 'provider_ids', []):
                 context.user_data['report_type'] = 'provider_daily'
-                await export_daily_orders_for_provider(update, context, today)
+                report_generator = context.bot_data.get('report_generator')
+                await report_generator.export_daily_orders_for_provider(update, context, today)
             elif user.id in getattr(CONFIG, 'accounting_ids', []):
                 context.user_data['report_type'] = 'accounting_daily'
-                await export_accounting_report(update, context, today, today)
+                report_generator = context.bot_data.get('report_generator')
+                await report_generator.export_accounting_report(update, context, today)
             else:
                 await update.message.reply_text("❌ Нет прав доступа")
             return await show_main_menu(update, user.id)

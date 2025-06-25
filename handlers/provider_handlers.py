@@ -3,7 +3,6 @@ from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import ConversationHandler, MessageHandler, filters
 from telegram.ext import ContextTypes
 from config import CONFIG
-from db import db
 from constants import (
     EDIT_MENU_DAY, 
     EDIT_MENU_FIRST, 
@@ -52,6 +51,7 @@ async def handle_menu_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['edit_menu_day'] = day
     
     # Загружаем текущее меню для этого дня (если есть)
+    db = context.bot_data['db']
     current_menu = db.get_menu_by_day(day)
     if current_menu:
         context.user_data['current_first'] = current_menu['first_course']
@@ -117,6 +117,9 @@ async def handle_menu_salad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     salad = update.message.text
     
     try:
+        # Получаем соединение с БД из bot_data
+        db = context.bot_data['db']
+        
         # Сохраняем в базу данных
         db.add_menu(day, first, main, salad)
         

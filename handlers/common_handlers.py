@@ -4,7 +4,7 @@ from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from config import TIMEZONE
-from db import db
+from db import Database
 from handlers.common import show_main_menu
 from utils import can_modify_order
 
@@ -25,6 +25,8 @@ async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, is_can
     """
     logger.info("=== Начало обработки view_orders ===")
     try:
+        # Получаем соединение с БД из контекста
+        db = context.bot_data['db']
         # Определяем источник вызова
         query = update.callback_query if hasattr(update, 'callback_query') else None
         message = query.message if query else update.message

@@ -24,7 +24,7 @@ from telegram.error import BadRequest
 from pathlib import Path
 
 from config import CONFIG
-from db import db
+from db import Database
 from constants import (
     ADD_ACCOUNTANT, ADD_ADMIN, ADD_HOLIDAY_DATE, ADD_HOLIDAY_NAME, 
     ADD_PROVIDER, ADD_STAFF, CONFIG_MENU, DELETE_ACCOUNTANT, DELETE_ADMIN, 

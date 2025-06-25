@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, date
 from bot_keyboards import create_main_menu_keyboard
 from config import CONFIG, MENU, TIMEZONE
 from constants import SELECT_MONTH_RANGE_STATS
-from db import db
+from db import Database
 from handlers.common import show_main_menu
 from handlers.common_handlers import view_orders
 from utils import can_modify_order, check_registration, format_menu, handle_unregistered
@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отображает меню на текущий день с учетом праздников"""
+    db = context.bot_data['db']
+    
     if not await check_registration(update, context):
         return await handle_unregistered(update, context)
     
@@ -94,6 +96,7 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Обрабатывает случаи отсутствия меню на определенные дни.
     """
     try:
+        db = context.bot_data['db']
         user = update.effective_user
         now = datetime.now(TIMEZONE)
         today = now.date()
@@ -185,6 +188,7 @@ async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_
     - Кнопками действий (заказ/изменение/отмена)
     """
     try:
+        db = context.bot_data['db']
         user = update.effective_user
         now = datetime.now(TIMEZONE)
         days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
@@ -269,6 +273,7 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Обновляет интерфейс после выполнения действий.
     """
     try:
+        db = context.bot_data['db']
         query = update.callback_query
         await query.answer()  # Подтверждаем нажатие кнопки
 
@@ -391,6 +396,7 @@ async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_T
     Автоматически определяет границы выбранного месяца.
     """
     try:
+        db = context.bot_data['db']  # Добавьте эту строку
         user = update.effective_user
         text = update.message.text.strip()
 
@@ -465,6 +471,7 @@ async def handle_order_confirmation(update: Update, context: ContextTypes.DEFAUL
     - Подтверждение только при ответе "Да"
     """
     try:
+        db = context.bot_data['db']
         text = update.message.text
         user = update.effective_user
         
@@ -500,6 +507,7 @@ async def handle_cancel_from_view(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     
     try:
+        db = context.bot_data['db']
         # Получаем дату из callback_data
         target_date_str = query.data.split('_')[-1]
         target_date = datetime.strptime(target_date_str, "%Y-%m-%d").date()

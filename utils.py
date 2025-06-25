@@ -8,7 +8,7 @@ import pytz
 from config import CONFIG, MENU, TIMEZONE
 from handlers.common import show_main_menu
 from settings import SETTINGS_CONFIG
-from db import db
+from db import Database
 
 logger = logging.getLogger(__name__)
 

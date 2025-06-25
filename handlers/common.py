@@ -6,7 +6,7 @@ import logging
 
 from config import CONFIG
 from constants import MAIN_MENU
-from db import db
+from db import Database
 from bot_keyboards import create_main_menu_keyboard, create_provider_menu_keyboard, create_unverified_user_keyboard
 
 

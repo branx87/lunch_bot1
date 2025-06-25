@@ -1,21 +1,30 @@
 # ##bot_keyboards.py
-from asyncio.log import logger
-from typing import Optional
-from telegram import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
+from typing import Optional, List
+from telegram import (
+    ReplyKeyboardMarkup, 
+    KeyboardButton, 
+    InlineKeyboardButton, 
+    InlineKeyboardMarkup
+)
 from config import CONFIG
-from db import db
-from settings import SETTINGS_CONFIG
+import logging
 
-LOCATIONS = SETTINGS_CONFIG["LOCATIONS"]
+logger = logging.getLogger(__name__)
 
-def create_unverified_user_keyboard():
+def create_unverified_user_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура для неподтвержденных пользователей"""
     return ReplyKeyboardMarkup([
         ["Попробовать снова"],
         ["Написать администратору"]
     ], resize_keyboard=True)
 
-def create_main_menu_keyboard(user_id=None):
-    """Главное меню с разными кнопками для разных ролей"""
+def create_main_menu_keyboard(user_id: Optional[int] = None, db_connection = None) -> ReplyKeyboardMarkup:
+    """
+    Главное меню с разными кнопками для разных ролей
+    Args:
+        user_id: Telegram ID пользователя
+        db_connection: Соединение с БД (опционально, только если нужно проверить роль)
+    """
     menu = []
 
     if not user_id:
@@ -26,7 +35,7 @@ def create_main_menu_keyboard(user_id=None):
             ["Написать администратору"]
         ], resize_keyboard=True)
 
-    role = get_user_role(user_id)
+    role = get_user_role(user_id, db_connection) if db_connection else None
 
     if role == 'employee':
         menu.extend([
@@ -80,14 +89,16 @@ def create_main_menu_keyboard(user_id=None):
 
     return ReplyKeyboardMarkup(menu, resize_keyboard=True)
 
-def create_month_selection_keyboard():
+def create_month_selection_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура выбора месяца для отчетов"""
     return ReplyKeyboardMarkup([
         ["Текущий месяц"],
         ["Прошлый месяц"],
         ["Вернуться в главное меню"]
     ], resize_keyboard=True)
 
-def create_order_keyboard(has_order):
+def create_order_keyboard(has_order: bool) -> List[List[InlineKeyboardButton]]:
+    """Клавиатура действий с заказом"""
     if has_order:
         return [
             [InlineKeyboardButton("✏️ Изменить количество", callback_data="change")],
@@ -95,7 +106,7 @@ def create_order_keyboard(has_order):
         ]
     return [[InlineKeyboardButton("✅ Заказать", callback_data="order")]]
 
-def create_admin_keyboard():
+def create_admin_keyboard() -> ReplyKeyboardMarkup:
     """Основная клавиатура админа"""
     return ReplyKeyboardMarkup([
         ["✉️ Написать пользователю", "📢 Сделать рассылку"],
@@ -103,7 +114,8 @@ def create_admin_keyboard():
         ["🏠 Главное меню"]
     ], resize_keyboard=True)
 
-def create_admin_config_keyboard():
+def create_admin_config_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура управления конфигурацией"""
     return ReplyKeyboardMarkup([
         ["➕ Добавить администратора", "➖ Удалить администратора"],
         ["➕ Добавить поставщика", "➖ Удалить поставщика"],
@@ -113,22 +125,27 @@ def create_admin_config_keyboard():
         ["🏠 Главное меню"]
     ], resize_keyboard=True)
 
-def create_provider_menu_keyboard():
+def create_provider_menu_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура поставщика"""
     return ReplyKeyboardMarkup([
         ["✏️ Изменить меню"],
         ["🏠 Главное меню"]
     ], resize_keyboard=True)
 
-# === Добавленная функция для универсальной кнопки "Отмена" ===
-def get_cancel_button():
+def get_cancel_button() -> InlineKeyboardMarkup:
+    """Универсальная кнопка 'Отмена'"""
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")
     ]])
-    
-def get_user_role(user_id: int) -> Optional[str]:
+
+def get_user_role(user_id: int, db_connection) -> Optional[str]:
     """
     Определяет роль пользователя по его Telegram ID.
-    Возвращает одно из: 'admin', 'provider', 'accountant', 'employee' или None.
+    Args:
+        user_id: Telegram ID пользователя
+        db_connection: Соединение с БД
+    Returns:
+        Одно из: 'admin', 'provider', 'accountant', 'employee' или None
     """
     try:
         # Проверяем кэшированные роли из конфига
@@ -143,15 +160,16 @@ def get_user_role(user_id: int) -> Optional[str]:
             return 'accountant'
 
         # Проверяем, является ли пользователь сотрудником
-        db.cursor.execute(
-            "SELECT id FROM users WHERE telegram_id = ? AND is_employee = TRUE AND is_deleted = FALSE",
-            (user_id,)  # Важно: передаем как кортеж
-        )
-        result = db.cursor.fetchone()
-        
-        if result:
-            logger.debug(f"User {user_id} identified as employee")
-            return 'employee'
+        if db_connection:
+            db_connection.cursor.execute(
+                "SELECT id FROM users WHERE telegram_id = ? AND is_employee = TRUE AND is_deleted = FALSE",
+                (user_id,)  # Важно: передаем как кортеж
+            )
+            result = db_connection.cursor.fetchone()
+            
+            if result:
+                logger.debug(f"User {user_id} identified as employee")
+                return 'employee'
         
         logger.debug(f"User {user_id} has no recognized role")
         return None
@@ -159,3 +177,20 @@ def get_user_role(user_id: int) -> Optional[str]:
     except Exception as e:
         logger.error(f"Error determining role for user {user_id}: {e}")
         return None
+    
+def create_history_keyboard(current_page: int = 0, has_next: bool = True) -> InlineKeyboardMarkup:
+    """
+    Создает клавиатуру для навигации по истории сообщений
+    Args:
+        current_page: Текущая страница
+        has_next: Есть ли следующая страница
+    Returns:
+        InlineKeyboardMarkup с кнопками навигации
+    """
+    buttons = []
+    if current_page > 0:
+        buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"history_prev_{current_page}"))
+    if has_next:
+        buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"history_next_{current_page}"))
+    
+    return InlineKeyboardMarkup([buttons])

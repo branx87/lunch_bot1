@@ -7,7 +7,7 @@ import asyncio
 
 from config import CONFIG
 from constants import AWAIT_MESSAGE_TEXT, AWAIT_USER_SELECTION
-from db import db
+from db import Database
 from bot_keyboards import create_admin_keyboard, create_main_menu_keyboard
 
 
