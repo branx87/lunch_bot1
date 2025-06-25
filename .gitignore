@@ -1,4 +1,4 @@
-# Python
+### Python ###
 __pycache__/
 *.py[cod]
 *.so
@@ -21,29 +21,56 @@ wheels/
 MANIFEST
 full_code.py
 
-# Virtual environment
+### Virtual environment ###
 venv/
 new_venv/
+env/
+.env/
+*.venv/
 
-# Database
+### Database ###
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite3
 
-# IDE
+### IDE ###
 .idea/
-pycharm-*
+.vscode/
+*.swp
+*.swo
 *.iml
+pycharm-*
 
-# Backup and temp files
+### Logs and reports ###
+logs/
+*.log
+reports/
+*.xlsx
+*.csv
+
+### Environment files ###
+.env
+.env.local
+.env.*
+secrets.ini
+config.ini
+
+### System files ###
+.DS_Store
+Thumbs.db
+
+### Backup and temp files ###
 backup/
 old/
+tmp/
+temp/
+*.bak
+*.tmp
+*.temp
+
+### Custom directories ###
 Мусор и прочее/
 Последнее, но не рабочее/
 на всякий случай/
-reports/
-*.xlsx
-config.xlsx
-monthly_report_2025-04.xlsx
-orders_report.xlsx
-bot_persistence.pickle
