@@ -6,7 +6,7 @@ from config import CONFIG, TIMEZONE
 from settings import SETTINGS_CONFIG
 
 from report_generators import ReportGenerator
-
+# from report_generators import report_generator
 logger = logging.getLogger(__name__)
 
 class FakeUpdate:
