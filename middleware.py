@@ -57,14 +57,29 @@ class AccessControlHandler(BaseHandler):
         except Exception as e:
             logger.error(f"Ошибка при отображении отказа: {e}")
 
-async def check_user_access(user_id: int, db_connection, admin_ids: list) -> bool:
+async def check_user_access(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Проверка доступа без уведомлений администраторам"""
     try:
+        # Получаем необходимые данные из контекста
+        db = context.bot_data['db']
+        admin_ids = context.bot_data.get('admin_ids', [])
+        
         if user_id in admin_ids:
             return True
             
-        user_data = db_connection.get_user(user_id)
-        return bool(user_data and user_data.get('is_verified') and not user_data.get('is_deleted'))
+        # Проверяем пользователя в БД
+        db.cursor.execute("""
+            SELECT is_verified, is_deleted 
+            FROM users 
+            WHERE telegram_id = ?
+        """, (user_id,))
+        user_data = db.cursor.fetchone()
+        
+        if user_data:
+            is_verified, is_deleted = user_data
+            return bool(is_verified and not is_deleted)
+        return False
+        
     except Exception as e:
-        logger.error(f"Ошибка проверки доступа: {e}")
+        logger.error(f"Ошибка проверки доступа: {e}", exc_info=True)
         return False

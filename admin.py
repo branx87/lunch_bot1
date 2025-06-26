@@ -8,7 +8,6 @@ matplotlib.use('Agg')
 
 from config import CONFIG
 from constants import ADMIN_MESSAGE, MAIN_MENU, SELECT_MONTH_RANGE
-from db import Database
 from bot_keyboards import create_admin_keyboard, create_history_keyboard
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -69,6 +68,7 @@ async def message_history(update: Update, context: ContextTypes.DEFAULT_TYPE, db
         return ADMIN_MESSAGE
 
     try:
+        db = context.bot_data['db']  # Добавляем эту строку
         page = context.user_data.get('history_page', 0)
         offset = page * 20
         

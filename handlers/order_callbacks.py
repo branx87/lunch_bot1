@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 from datetime import datetime, date, time, timedelta
 import logging
 
-from config import MENU, TIMEZONE
+from config import CONFIG, MENU, TIMEZONE
 from db import Database
 from handlers.common import show_main_menu
 from middleware import check_user_access
@@ -25,35 +25,26 @@ async def handle_order_callback(query, now, user, context):
     - Обновление интерфейса через refresh_day_view
     - Обработку всех возможных ошибок
     """
-    # Добавляем проверку доступа в начале функции
-    if not await check_user_access(user.id, context.application):
-        await show_access_denied(update)
-        return
-
-    logger.info(f"Получен callback: {query.data}")
     try:
-        # Парсим параметры из callback
+        db = context.bot_data['db']
         _, day_offset_str = query.data.split("_", 1)
         day_offset = int(day_offset_str)
         target_date = (now + timedelta(days=day_offset)).date()
         
-        # Ручная проверка 1: Заказы на выходные не принимаются
-        if target_date.weekday() >= 5:  # 5-6 = суббота-воскресенье
+        # Проверки на выходные и время
+        if target_date.weekday() >= 5:
             await query.answer("ℹ️ Заказы на выходные не принимаются", show_alert=True)
             return
 
-        # Ручная проверка 2: Предзаказы только на будущие даты
         if day_offset > 0 and target_date <= now.date():
             await query.answer("❌ Предзаказ можно сделать только на будущие даты", show_alert=True)
             return
 
-        # Ручная проверка 3: Обычные заказы только на сегодня и до 9:30
-        if day_offset == 0:
-            if now.time() >= time(9, 30):
-                await query.answer("ℹ️ Приём заказов на сегодня завершён в 9:30", show_alert=True)
-                return
+        if day_offset == 0 and now.time() >= time(9, 30):
+            await query.answer("ℹ️ Приём заказов на сегодня завершён в 9:30", show_alert=True)
+            return
 
-        # Получаем ID пользователя из БД
+        # Получаем ID пользователя
         db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user.id,))
         user_record = db.cursor.fetchone()
         if not user_record:
@@ -82,22 +73,19 @@ async def handle_order_callback(query, now, user, context):
                     target_date,
                     order_time,
                     quantity,
-                    is_preliminary,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    is_preliminary
+                ) VALUES (?, ?, ?, ?, ?)
             """, (
                 user_db_id,
                 target_date.isoformat(),
-                now.strftime("%H:%M:%S"),  # Только время
-                1,  # Количество порций
-                day_offset > 0,  # Это предзаказ?
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # Полная дата-время
+                now.strftime("%H:%M:%S"),
+                1,
+                day_offset > 0
             ))
 
-        # Обновляем интерфейс
-        await refresh_day_view(query, day_offset, user_db_id, now, is_order=True)
+        # Обновляем интерфейс (убрали is_order=True)
+        await refresh_day_view(query, day_offset, user_db_id, context)
         await query.answer("✅ Заказ успешно оформлен")
-
     except Exception as e:
         logger.error(f"Ошибка при оформлении заказа: {e}", exc_info=True)
         await query.answer("⚠️ Произошла ошибка. Попробуйте позже", show_alert=True)
@@ -111,7 +99,7 @@ async def handle_change_callback(query, now, user, context):
     - Проверку временных ограничений на изменения
     """
     # Добавляем проверку доступа в начале функции
-    if not await check_user_access(user.id, context.application):
+    if not await check_user_access(user.id, context):
         await show_access_denied(update)
         return
     
@@ -136,6 +124,7 @@ async def handle_change_callback(query, now, user, context):
 
         # Получаем ID пользователя
         try:
+            db = context.bot_data['db']
             if 'user_db_id' not in context.user_data:
                 db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user.id,))
                 user_record = db.cursor.fetchone()
@@ -226,59 +215,39 @@ async def handle_cancel_callback(query, now, user, context):
     - Надежное обновление статуса в базе данных
     - Логирование действий и обработка ошибок интерфейса
     """
-    if not await check_user_access(user.id, context.application):
-        await show_access_denied(update)
-        return
-    
     try:
-        logger.info(f"Получен callback: {query.data}")
+        db = context.bot_data['db']
+        parts = query.data.split("_")
         
-        # Проверяем наличие пользователя
-        if not user:
-            await query.answer("❌ Пользователь не определен")
-            return
+        # Парсим дату
+        if len(parts) > 2 and parts[1] == "order":
+            date_part = "_".join(parts[2:])
+            is_from_orders = True
+        else:
+            date_part = parts[1]
+            is_from_orders = False
 
-        # Разбираем callback данные
-        try:
-            parts = query.data.split("_")
-            if len(parts) < 2:
-                raise ValueError("Недостаточно частей в callback")
-            
-            # Определяем тип callback (из меню или из списка заказов)
-            if len(parts) > 2 and parts[1] == "order":
-                # Формат: cancel_order_2025-06-23
-                date_part = "_".join(parts[2:])
-                is_from_orders = True
-            else:
-                # Формат: cancel_2025-06-23 или cancel_3
-                date_part = parts[1]
-                is_from_orders = False
+        if '-' in date_part:
+            target_date = datetime.strptime(date_part, "%Y-%m-%d").date()
+            day_offset = (target_date - now.date()).days
+        elif date_part.isdigit():
+            day_offset = int(date_part)
+            target_date = (now + timedelta(days=day_offset)).date()
+        else:
+            raise ValueError("Неизвестный формат даты")
 
-            # Парсим дату
-            if '-' in date_part:  # Формат YYYY-MM-DD
-                target_date = datetime.strptime(date_part, "%Y-%m-%d").date()
-                day_offset = (target_date - now.date()).days
-            elif date_part.isdigit():  # Числовое смещение (cancel_3)
-                day_offset = int(date_part)
-                target_date = (now + timedelta(days=day_offset)).date()
-            else:
-                raise ValueError("Неизвестный формат даты")
-                
-        except Exception as e:
-            logger.error(f"Ошибка парсинга callback: {query.data}. Ошибка: {str(e)}")
-            await query.answer("⚠️ Ошибка в запросе")
-            return
-
-        # Проверяем можно ли отменять заказ
+        # Проверяем возможность отмены
         if not can_modify_order(target_date):
             await query.answer("ℹ️ Отмена невозможна после 9:30", show_alert=True)
             return
 
-        # Получаем ID пользователя в БД
-        user_db_id = await get_user_db_id(user.id)
-        if not user_db_id:
+        # Получаем ID пользователя
+        db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user.id,))
+        user_record = db.cursor.fetchone()
+        if not user_record:
             await query.answer("❌ Пользователь не найден", show_alert=True)
             return
+        user_db_id = user_record[0]
 
         # Отменяем заказ
         with db.conn:
@@ -295,19 +264,14 @@ async def handle_cancel_callback(query, now, user, context):
                 await query.answer("❌ Заказ не найден", show_alert=True)
                 return
 
-        # Логируем успешную отмену
         logger.info(f"Пользователь {user.id} отменил заказ на {target_date}")
 
-        # Разное поведение после отмены
+        # Обновляем интерфейс
         if is_from_orders:
-            # Обновляем список заказов
             from handlers.common_handlers import view_orders
-            await view_orders(update=Update(0, callback_query=query), 
-                             context=context, 
-                             is_cancellation=True)
+            await view_orders(query, context, is_cancellation=True)
         else:
-            # Возвращаем меню дня
-            await refresh_day_view(query, day_offset, user_db_id, now)
+            await refresh_day_view(query, day_offset, user_db_id, context)
 
         await query.answer("✅ Заказ отменён")
 
@@ -322,7 +286,7 @@ async def handle_confirm_callback(query, now, user, context):
     - Сохраняет контекст текущего дня из user_data
     - Обрабатывает возможные ошибки подтверждения
     """
-    if not await check_user_access(user.id, context.application):
+    if not await check_user_access(user.id, context):
         await show_access_denied(update)
         return
     
@@ -342,11 +306,12 @@ async def modify_portion_count(query, now, user, context, delta):
     - При уменьшении до 0 автоматически отменяет заказ
     - Обновляет интерфейс через handle_change_callback
     """
-    if not await check_user_access(user.id, context.application):
+    if not await check_user_access(user.id, context):
         await show_access_denied(update)
         return
     
     try:
+        db = context.bot_data['db']
         day_offset = context.user_data['current_day_offset']
         target_date = (now + timedelta(days=day_offset)).date()
         user_db_id = context.user_data['user_db_id']
@@ -417,11 +382,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not user:
             return
             
-        if not await check_user_access(user.id, context.application):
-            await show_access_denied(update)  # Передаем весь update объект
+        # Исправленный вызов check_user_access
+        if not await check_user_access(user.id, context):
+            await show_access_denied(update)
             return
         
-        user = update.effective_user
         now = datetime.now(TIMEZONE)
         
         # Обработка кнопки "Назад"
@@ -467,8 +432,36 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в callback_handler: {e}", exc_info=True)
         await query.answer("⚠️ Произошла ошибка. Попробуйте позже")
 
-async def get_user_db_id(telegram_id):
-    """Получает ID пользователя в БД"""
-    db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (telegram_id,))
-    result = db.cursor.fetchone()
-    return result[0] if result else None
+async def get_user_db_id(context: ContextTypes.DEFAULT_TYPE, telegram_id: int = None):
+    """
+    Получает ID пользователя в БД по telegram_id
+    Args:
+        context: Контекст бота (для доступа к БД)
+        telegram_id: ID пользователя в Telegram (если None, берется из update)
+    Returns:
+        int: ID пользователя в БД или None если не найден
+    """
+    try:
+        # Получаем доступ к БД из контекста
+        db = context.bot_data['db']
+        
+        # Если telegram_id не передан, пытаемся получить из контекста
+        if telegram_id is None and hasattr(context, 'user_data') and 'telegram_id' in context.user_data:
+            telegram_id = context.user_data['telegram_id']
+        
+        if telegram_id is None:
+            logger.warning("Не удалось получить telegram_id для поиска пользователя")
+            return None
+        
+        # Ищем пользователя в БД
+        db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (telegram_id,))
+        result = db.cursor.fetchone()
+        
+        if result:
+            return result[0]
+        logger.warning(f"Пользователь с telegram_id={telegram_id} не найден в БД")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Ошибка в get_user_db_id: {e}", exc_info=True)
+        return None

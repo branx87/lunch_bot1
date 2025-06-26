@@ -8,7 +8,6 @@ import pytz
 from config import CONFIG, MENU, TIMEZONE
 from handlers.common import show_main_menu
 from settings import SETTINGS_CONFIG
-from db import Database
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +125,7 @@ async def check_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """
     Универсальная проверка доступа — используется в некоторых других частях бота
     """
+    db = context.bot_data['db']  # Добавляем эту строку
     user = update.effective_user
     
     if user.id in CONFIG.admin_ids:
@@ -170,6 +170,7 @@ async def handle_unregistered(update: Update, context: ContextTypes.DEFAULT_TYPE
 def is_order_cancelled(user_id: int, target_date_str: str, context=None) -> bool:
     """Проверяет, отменён ли заказ (из БД или временного хранилища)"""
     try:
+        db = context.bot_data['db']  # Добавляем эту строку
         # Проверка из базы данных
         db.cursor.execute("""
             SELECT is_cancelled FROM orders 

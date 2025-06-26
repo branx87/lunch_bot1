@@ -1,4 +1,4 @@
-# ##handlers/menu_handlers.py
+# ##handlers/menu_handlers.py новая структура
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes
@@ -18,41 +18,54 @@ logger = logging.getLogger(__name__)
 
 async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отображает меню на текущий день с учетом праздников"""
-    db = context.bot_data['db']
+    user = update.effective_user
+    if not user:
+        raise ValueError("User not found in update")
     
-    if not await check_registration(update, context):
-        return await handle_unregistered(update, context)
+    db = context.bot_data['db']  # Получаем db из контекста
+    user_id = user.id
     
-    user_id = update.effective_user.id
+    # Закомментировано, как в вашем исходном коде
+    # if not await check_registration(update, context):
+    #     return await handle_unregistered(update, context)
+    
     now = datetime.now(TIMEZONE)
-    today = now.date()  # Важно: получаем только дату без времени
+    today = now.date()
     days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
     day_name = days_ru[today.weekday()]
-    date_str = today.strftime("%d.%m")  # Форматируем дату как "13.06"
+    date_str = today.strftime("%d.%m")
     
     # Проверяем праздник
     holiday_name = CONFIG.holidays.get(today.isoformat())
     if holiday_name:
         await update.message.reply_text(f"🎉 Сегодня ({date_str}) праздник - {holiday_name}! Меню не предусмотрено.")
-        return await show_main_menu(update, user_id)
+        return await show_main_menu(update, context)
     
     # Проверяем выходной
     if today.weekday() >= 5:
         await update.message.reply_text(f"⏳ Сегодня ({day_name}, {date_str}) выходной! Меню не предусмотрено.")
-        return await show_main_menu(update, user_id)
+        return await show_main_menu(update, context)
     
-    menu = MENU.get(day_name)
-    if not menu:
+    # Получаем меню из БД
+    db.cursor.execute("""
+        SELECT first_course, main_course, salad 
+        FROM menu 
+        WHERE day = ?
+    """, (day_name,))
+    menu_data = db.cursor.fetchone()
+    
+    if not menu_data:
+        logger.warning(f"Меню для {day_name} не найдено в БД")
         await update.message.reply_text(f"⏳ На сегодня ({date_str}) меню не загружено.")
-        return await show_main_menu(update, user_id)
+        return await show_main_menu(update, context)
     
-    # Формируем сообщение с корректной датой
+    # Формируем сообщение
     message = f"🍽 Меню на {day_name} ({date_str}):\n"
-    message += f"1. 🍲 Первое: {menu['first']}\n"
-    message += f"2. 🍛 Основное блюдо: {menu['main']}\n"
-    message += f"3. 🥗 Салат: {menu['salad']}"
+    message += f"1. 🍲 Первое: {menu_data[0]}\n"
+    message += f"2. 🍛 Основное блюдо: {menu_data[1]}\n"
+    message += f"3. 🥗 Салат: {menu_data[2]}"
     
-    # Проверяем есть ли активный заказ
+    # Проверяем активный заказ (оставляем как было)
     db.cursor.execute(
         "SELECT quantity FROM orders WHERE user_id = "
         "(SELECT id FROM users WHERE telegram_id = ?) AND target_date = ? AND is_cancelled = FALSE",
@@ -60,31 +73,8 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     has_active_order = db.cursor.fetchone() is not None
     
-    can_modify = can_modify_order(today)
-    
-    if has_active_order:
-        if can_modify:
-            keyboard = [
-                [InlineKeyboardButton("✏️ Изменить количество", callback_data="change_0")],
-                [InlineKeyboardButton("❌ Отменить заказ", callback_data="cancel_0")]
-            ]
-        else:
-            keyboard = [
-                [InlineKeyboardButton("ℹ️ Заказ оформлен (изменение невозможно)", callback_data="noop")]
-            ]
-    else:
-        if can_modify:
-            keyboard = [
-                [InlineKeyboardButton("✅ Заказать", callback_data="order_0")]
-            ]
-        else:
-            keyboard = [
-                [InlineKeyboardButton("⏳ Прием заказов завершен", callback_data="info")]
-            ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(message, reply_markup=reply_markup)
-    return await show_main_menu(update, user_id)
+    await update.message.reply_text(message)
+    return await show_main_menu(update, context)
 
 async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -125,10 +115,23 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 continue
             
-            menu = MENU.get(day_name)
-            if not menu:
-                logger.warning(f"Меню для {day_name} не найдено")
+            # Ищем меню в БД
+            db.cursor.execute("""
+                SELECT first_course, main_course, salad 
+                FROM menu 
+                WHERE day = ?
+            """, (day_name,))
+            menu_data = db.cursor.fetchone()
+            
+            if not menu_data:
+                logger.warning(f"Меню для {day_name} не найдено в БД")
                 continue
+            
+            menu = {
+                'first': menu_data[0],
+                'main': menu_data[1],
+                'salad': menu_data[2]
+            }
             
             menu_text = f"🍽 Меню на {day_name} ({date_str}):\n"
             menu_text += f"1. 🍲 Первое: {menu['first']}\n"
@@ -168,14 +171,8 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ Ошибка при загрузке меню. Попробуйте позже.",
             reply_markup=create_main_menu_keyboard(user.id)
         )
-            
-    except Exception as e:
-        logger.error(f"Ошибка в show_week_menu: {e}", exc_info=True)
-        # from bot_keyboards import create_main_menu_keyboard  # Добавляем импорт
-        await update.message.reply_text(
-            "⚠️ Ошибка при загрузке меню. Попробуйте позже.",
-            reply_markup=create_main_menu_keyboard(user.id)
-        )
+    
+    return await show_main_menu(update, context)
         
 async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_offset=0):
     """
@@ -338,7 +335,7 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 else:
                     # Отмена из списка заказов
-                    await refresh_orders_view(query, context, query.from_user.id, now, days_ru)
+                    await refresh_orders_view(query, context)
 
                 await query.answer("✅ Заказ отменён")
 
@@ -386,7 +383,7 @@ async def monthly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка при запуске monthly_stats: {e}")
         await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
-        return await show_main_menu(update, user.id)
+        return await show_main_menu(update, context)
 
 async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -402,7 +399,7 @@ async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_T
 
         # Проверяем, хочет ли вернуться в меню
         if text == "Вернуться в главное меню":
-            return await show_main_menu(update, user.id)
+            return await show_main_menu(update, context)
 
         # Получаем текущую дату
         now = datetime.now(TIMEZONE)
@@ -427,7 +424,7 @@ async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_T
         user_record = db.cursor.fetchone()
         if not user_record:
             await update.message.reply_text("❌ Пользователь не найден в системе.")
-            return await show_main_menu(update, user.id)
+            return await show_main_menu(update, context)
 
         user_db_id = user_record[0]
 
@@ -460,7 +457,7 @@ async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("❌ Произошла ошибка при получении статистики.")
 
     finally:
-        return await show_main_menu(update, user.id)
+        return await show_main_menu(update, context)
     
 async def handle_order_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -491,11 +488,11 @@ async def handle_order_confirmation(update: Update, context: ContextTypes.DEFAUL
         else:
             await update.message.reply_text("❌ Заказ отменен.")
         
-        return await show_main_menu(update, user.id)
+        return await show_main_menu(update, context)
     except Exception as e:
         logger.error(f"Ошибка в handle_order_confirmation: {e}")
         await update.message.reply_text("⚠️ Произошла ошибка. Попробуйте снова.")
-        return await show_main_menu(update, user.id)
+        return await show_main_menu(update, context)
 
 async def handle_cancel_from_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """

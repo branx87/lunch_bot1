@@ -35,6 +35,10 @@ class BotConfig:
         self._staff_names = set()
         self._holidays = {}
         self._menu = {}
+        # Добавляем недостающие атрибуты
+        self._configs_dir = CONFIGS_DIR
+        self._logs_dir = LOGS_DIR
+        self._reports_dir = REPORTS_DIR
 
     def _parse_ids(self, ids_str: str) -> List[int]:
         return [int(x) for x in ids_str.split(",") if x.strip()]
@@ -66,6 +70,9 @@ class BotConfig:
                     "salad": item['salad']
                 } for item in db_connection.get_full_menu()
             }
+            logger.info(f"Загружено меню: {self._menu}")  # Добавьте это для отладки
+        except Exception as e:
+            logger.error(f"Ошибка загрузки меню: {e}")
 
             logger.info("Конфигурация успешно загружена из БД")
         except Exception as e:
@@ -119,6 +126,18 @@ class BotConfig:
     @property
     def logs_dir(self) -> Path:
         return LOGS_DIR
+    
+    @property
+    def configs_dir(self) -> Path:
+        return self._configs_dir
+
+    @property
+    def logs_dir(self) -> Path:
+        return self._logs_dir
+
+    @property
+    def reports_dir(self) -> Path:
+        return self._reports_dir
 
 # Глобальный объект конфигурации
 CONFIG = BotConfig()

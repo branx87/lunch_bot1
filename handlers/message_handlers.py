@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 async def start_user_to_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начало диалога пользователя с админом"""
+    db = context.bot_data['db']
     user = update.effective_user
     
     # Проверяем, есть ли пользователь в базе (даже если не завершил регистрацию)
@@ -35,6 +36,7 @@ async def start_user_to_admin_message(update: Update, context: ContextTypes.DEFA
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает сообщение пользователя администраторам"""
     try:
+        db = context.bot_data['db']
         user = update.effective_user
         message_text = update.message.text.strip()
         
@@ -196,6 +198,7 @@ async def start_admin_to_user_message(update: Update, context: ContextTypes.DEFA
 
 async def handle_user_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает выбор пользователя администратором"""
+    db = context.bot_data['db']
     user_input = update.message.text.strip()
     
     if user_input.lower() in ["отмена", "❌ отмена"]:
@@ -292,6 +295,7 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
             return ConversationHandler.END
 
         try:
+            db = context.bot_data['db']
             # Пытаемся отправить сообщение
             await context.bot.send_message(
                 chat_id=recipient_id,
@@ -357,6 +361,7 @@ async def process_broadcast_message(update: Update, context: ContextTypes.DEFAUL
         return ConversationHandler.END
     
     try:
+        db = context.bot_data['db']
         db.cursor.execute("SELECT telegram_id, full_name FROM users WHERE is_verified = TRUE")
         users = db.cursor.fetchall()
         
