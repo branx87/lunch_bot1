@@ -8,7 +8,7 @@ import matplotlib
 
 matplotlib.use('Agg')
 
-from config import CONFIG, TIMEZONE
+from config import CONFIG
 from constants import SELECT_MONTH_RANGE
 from handlers.common import show_main_menu
 from report_generators import export_accounting_report, export_monthly_report, export_orders_for_provider
@@ -26,11 +26,11 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
     """
     from admin import export_orders_for_provider, export_accounting_report, export_monthly_report
     try:
-        if user_id in CONFIG.get('admin_ids', []):
+        if user_id in CONFIG.admin_ids:
             await export_monthly_report(update, context, start_date, end_date)
-        elif user_id in CONFIG.get('accounting_ids', []):
+        elif user_id in CONFIG.accounting_ids:
             await export_accounting_report(update, context, start_date, end_date)
-        elif user_id in CONFIG.get('provider_ids', []):
+        elif user_id in CONFIG.provider_ids:
             await export_orders_for_provider(update, context, start_date, end_date)
         else:
             await update.message.reply_text("❌ Нет прав")

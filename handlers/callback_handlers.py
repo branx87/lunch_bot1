@@ -3,7 +3,7 @@ import logging
 from telegram.ext import ContextTypes
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 from datetime import datetime, time, timedelta
-from config import TIMEZONE
+from config import CONFIG
 from db import db
 from telegram.ext import CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters
 import sqlite3
@@ -140,7 +140,7 @@ async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Получаем данные из callback
         _, day_offset_str = query.data.split("_", 1)
         day_offset = int(day_offset_str)
-        now = datetime.now(TIMEZONE)
+        now = datetime.now(CONFIG.timezone)
         target_date = (now + timedelta(days=day_offset)).date()
         
         if not can_modify_order(target_date):

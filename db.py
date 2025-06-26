@@ -4,16 +4,38 @@ import logging
 import pandas as pd
 from typing import Optional, List, Dict, Any
 import os
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Указываем путь к базе данных
+DB_FOLDER = Path(__file__).parent.parent / 'data'
+DB_FOLDER.mkdir(exist_ok=True)  # Создаем папку, если её нет
+DB_PATH = DB_FOLDER / 'lunch_bot.db'
+
 class Database:
     def __init__(self):
-        self.conn = sqlite3.connect('lunch_bot.db', check_same_thread=False, isolation_level=None)
-        self.cursor = self.conn.cursor()
-        self._init_db()
-        if not self._is_data_loaded():
-            self._load_initial_data()
+        try:
+            # Проверяем и создаем папку для базы данных
+            if not DB_FOLDER.exists():
+                DB_FOLDER.mkdir(parents=True)
+                logger.info(f"Создана папка для базы данных: {DB_FOLDER}")
+            
+            # Подключаемся к базе данных
+            self.conn = sqlite3.connect(str(DB_PATH), 
+                                      check_same_thread=False, 
+                                      isolation_level=None)
+            self.cursor = self.conn.cursor()
+            
+            logger.info(f"База данных подключена: {DB_PATH}")
+            self._init_db()
+            
+            if not self._is_data_loaded():
+                self._load_initial_data()
+                
+        except Exception as e:
+            logger.critical(f"Ошибка при подключении к базе данных: {e}")
+            raise
 
     def _is_data_loaded(self):
         """Проверяет, были ли уже загружены основные данные"""

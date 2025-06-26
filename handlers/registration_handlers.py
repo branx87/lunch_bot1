@@ -6,7 +6,7 @@ from telegram.ext import ConversationHandler
 from telegram.ext import ContextTypes
 from datetime import datetime, timedelta
 
-from config import LOCATIONS
+from config import CONFIG
 from constants import AWAIT_MESSAGE_TEXT, FULL_NAME, LOCATION, PHONE
 from db import db
 from handlers.common import show_main_menu
@@ -163,7 +163,7 @@ async def get_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Запись в БД после get_full_name: {record_after}")
 
         # Переход к выбору локации
-        keyboard = [[loc] for loc in LOCATIONS]
+        keyboard = [[loc] for loc in CONFIG.locations]
         reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
         await update.message.reply_text("Выберите ваш объект:", reply_markup=reply_markup)
         return LOCATION
@@ -177,7 +177,7 @@ async def get_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     location = update.message.text
 
-    if location not in LOCATIONS:
+    if location not in CONFIG.locations:
         await update.message.reply_text("❌ Пожалуйста, выберите объект из списка.")
         return LOCATION
 

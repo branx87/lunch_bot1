@@ -5,7 +5,7 @@ from telegram.ext import ContextTypes
 from datetime import datetime, timedelta, date
 
 from bot_keyboards import create_main_menu_keyboard
-from config import CONFIG, MENU, TIMEZONE
+from config import CONFIG
 from constants import SELECT_MONTH_RANGE_STATS
 from db import db
 from handlers.common import show_main_menu
@@ -22,7 +22,7 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     #     return await handle_unregistered(update, context)
     
     user_id = update.effective_user.id
-    now = datetime.now(TIMEZONE)
+    now = datetime.now(CONFIG.timezone)
     today = now.date()  # Важно: получаем только дату без времени
     days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
     day_name = days_ru[today.weekday()]
@@ -39,7 +39,7 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⏳ Сегодня ({day_name}, {date_str}) выходной! Меню не предусмотрено.")
         return await show_main_menu(update, user_id)
     
-    menu = MENU.get(day_name)
+    menu = CONFIG.menu.get(day_name)
     if not menu:
         await update.message.reply_text(f"⏳ На сегодня ({date_str}) меню не загружено.")
         return await show_main_menu(update, user_id)
@@ -98,7 +98,7 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     try:
         user = update.effective_user
-        now = datetime.now(TIMEZONE)
+        now = datetime.now(CONFIG.timezone)
         today = now.date()
         days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
         
@@ -125,7 +125,7 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 continue
             
-            menu = MENU.get(day_name)
+            menu = CONFIG.menu.get(day_name)
             if not menu:
                 logger.warning(f"Меню для {day_name} не найдено")
                 continue
@@ -189,7 +189,7 @@ async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_
     """
     try:
         user = update.effective_user
-        now = datetime.now(TIMEZONE)
+        now = datetime.now(CONFIG.timezone)
         days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
         target_date = now.date() + timedelta(days=day_offset)
         day_name = days_ru[target_date.weekday()]
@@ -208,7 +208,7 @@ async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_
             await update.message.reply_text(f"⏳ {day_name} ({target_date.strftime('%d.%m')}) — Выходной! Меню не предусмотрено.")
             return
 
-        menu = MENU.get(day_name)
+        menu = CONFIG.menu.get(day_name)
         if not menu:
             await update.message.reply_text(f"⏳ На {day_name} меню не загружено")
             return
@@ -283,7 +283,7 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _, date_part = query.data.split("_", 1)
 
                 # Определяем дату
-                now = datetime.now(TIMEZONE)
+                now = datetime.now(CONFIG.timezone)
                 if '-' in date_part:
                     target_date = datetime.strptime(date_part, "%Y-%m-%d").date()
                 elif date_part.isdigit():
@@ -326,7 +326,7 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if "Меню на" in query.message.text:
                     # Отмена из меню дня
                     day_name = days_ru[target_date.weekday()]
-                    menu = MENU.get(day_name)
+                    menu = CONFIG.menu.get(day_name)
                     await query.edit_message_text(
                         text=f"~~{format_menu(menu, day_name)}~~\n❌ Заказ отменён",
                         reply_markup=InlineKeyboardMarkup([
@@ -402,7 +402,7 @@ async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_T
             return await show_main_menu(update, user.id)
 
         # Получаем текущую дату
-        now = datetime.now(TIMEZONE)
+        now = datetime.now(CONFIG.timezone)
         current_year = now.year
         current_month = now.month
 
@@ -472,7 +472,7 @@ async def handle_order_confirmation(update: Update, context: ContextTypes.DEFAUL
         user = update.effective_user
         
         if text == "Да":
-            now = datetime.now(TIMEZONE)
+            now = datetime.now(CONFIG.timezone)
             target_date = now + timedelta(days=1)
             if now.weekday() == 4:  # Пятница -> понедельник
                 target_date += timedelta(days=2)
@@ -514,7 +514,7 @@ async def handle_cancel_from_view(update: Update, context: ContextTypes.DEFAULT_
 
         # Отменяем заказ
         user_id = query.from_user.id
-        now = datetime.now(TIMEZONE)
+        now = datetime.now(CONFIG.timezone)
         
         db.cursor.execute("""
             UPDATE orders

@@ -7,7 +7,7 @@ import matplotlib
 
 matplotlib.use('Agg')
 
-from config import CONFIG, TIMEZONE
+from config import CONFIG
 from constants import SELECT_MONTH_RANGE
 from handlers.common import show_main_menu
 from report_generators import export_accounting_report, export_daily_admin_report, export_monthly_report, export_orders_for_provider
@@ -44,11 +44,11 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
     """
     from admin import export_orders_for_provider, export_accounting_report, export_monthly_report
     try:
-        if user_id in CONFIG.get('admin_ids', []):
+        if user_id in CONFIG.admin_ids:
             await export_monthly_report(update, context, start_date, end_date)
-        elif user_id in CONFIG.get('accounting_ids', []):
+        elif user_id in CONFIG.accounting_ids:
             await export_accounting_report(update, context, start_date, end_date)
-        elif user_id in CONFIG.get('provider_ids', []):
+        elif user_id in CONFIG.provider_ids:
             await export_orders_for_provider(update, context, start_date, end_date)
         else:
             await update.message.reply_text("❌ Нет прав")
@@ -66,7 +66,7 @@ async def send_admin_daily_report(application):
     try:
         logger.info("Запуск отправки дневного админ отчета")
         
-        now = datetime.now(TIMEZONE)
+        now = datetime.now(CONFIG.timezone)
         today = now.date()
         
         # Создаем временный объект Update для передачи в функцию отчета
@@ -85,7 +85,7 @@ async def send_admin_daily_report(application):
         
         # Отправляем каждому админу
         success = 0
-        for admin_id in CONFIG.get('admin_ids', []):
+        for admin_id in CONFIG.admin_ids:
             try:
                 fake_update = FakeUpdate(application.bot, admin_id)
                 await export_daily_admin_report(fake_update, fake_context, today)

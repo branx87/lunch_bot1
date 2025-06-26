@@ -1,18 +1,24 @@
 # ##bot_core.py
+import sqlite3
 from telegram.ext import ApplicationBuilder
 from middleware import AccessControlHandler
 import logging
 import asyncio
 from config import CONFIG
-from cron_jobs import CronManager  # Добавляем импорт
+from cron_jobs import CronManager
 
 logger = logging.getLogger(__name__)
 
 class LunchBot:
     def __init__(self):
+        # Исправляем подключение к базе данных
+        self.conn = sqlite3.connect('data/lunch_bot.db', 
+                                   check_same_thread=False,
+                                   timeout=10,
+                                   isolation_level=None)
         self.application = None
         self._running = False
-        self.cron_manager = None  # Добавляем атрибут для хранения менеджера cron
+        self.cron_manager = None
 
     async def run(self):
         try:
@@ -21,7 +27,7 @@ class LunchBot:
             
             # Инициализируем CronManager
             self.cron_manager = CronManager(self.application)
-            await self.cron_manager.setup()  # Настраиваем cron-задачи
+            await self.cron_manager.setup()
             
             # Добавляем обработчик контроля доступа первым
             self.application.add_handler(AccessControlHandler(), group=-1)
@@ -55,7 +61,7 @@ class LunchBot:
 
     async def stop(self):
         """Финальная версия метода остановки"""
-        stop_timeout = 3  # Максимальное время на остановку в секундах
+        stop_timeout = 3
         try:
             self._running = False
             if not self.application:
@@ -64,7 +70,6 @@ class LunchBot:
 
             logger.info("Начинаем процесс остановки...")
             
-            # 1. Остановка updater
             if hasattr(self.application, 'updater') and self.application.updater:
                 try:
                     if self.application.updater.running:
@@ -75,7 +80,6 @@ class LunchBot:
                 except Exception as e:
                     logger.warning(f"Ошибка остановки updater: {str(e)}")
 
-            # 2. Остановка application
             if hasattr(self.application, 'running') and self.application.running:
                 try:
                     logger.debug("Останавливаем application...")
@@ -86,17 +90,13 @@ class LunchBot:
                 except Exception as e:
                     logger.warning(f"Ошибка остановки application: {str(e)}")
 
-            # 3. Остановка cron задач (если менеджер существует)
             if hasattr(self, 'cron_manager') and self.cron_manager:
                 try:
                     logger.debug("Останавливаем cron задачи...")
-                    # Проверяем наличие метода stop/shutdown
                     if hasattr(self.cron_manager, 'shutdown'):
                         await asyncio.wait_for(self.cron_manager.shutdown(), timeout=stop_timeout)
                     elif hasattr(self.cron_manager, 'stop'):
                         await asyncio.wait_for(self.cron_manager.stop(), timeout=stop_timeout)
-                    else:
-                        logger.debug("CronManager не требует явной остановки")
                 except Exception as e:
                     logger.warning(f"Ошибка остановки cron: {str(e)}")
 

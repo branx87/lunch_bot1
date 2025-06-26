@@ -1,6 +1,6 @@
 # ##handlers/cron_jobs.py
 import aiocron
-from config import CONFIG, HOLIDAYS, TIMEZONE
+from config import CONFIG
 from datetime import datetime, timedelta
 import logging
 from db import db
@@ -17,7 +17,7 @@ class CronManager:
         """Проверяет, является ли день рабочим"""
         if date.weekday() >= 5:  # Суббота или воскресенье
             return False
-        return date.strftime("%Y-%m-%d") not in HOLIDAYS
+        return date.strftime("%Y-%m-%d") not in CONFIG.holidays
 
     async def setup(self):
         """Инициализация cron-задач в боевом режиме"""
@@ -30,27 +30,27 @@ class CronManager:
         self.jobs.append(aiocron.crontab(
             '0 9 * * 1-5',
             func=self._morning_reminder,
-            tz=TIMEZONE
+            tz=CONFIG.timezone
         ))
         
         # Утренние отчеты в 9:30
         self.jobs.append(aiocron.crontab(
             '30 9 * * 1-5',
             func=self._morning_reports,
-            tz=TIMEZONE
+            tz=CONFIG.timezone
         ))
         
         # Бухгалтерский отчет в 11:00 последнего дня месяца
         self.jobs.append(aiocron.crontab(
             '0 11 28-31 * *',
             func=self._accounting_report,
-            tz=TIMEZONE
+            tz=CONFIG.timezone
         ))
 
     async def _morning_reminder(self):
         """Ваш код утренних напоминаний"""
-        if await self.is_workday(datetime.now(TIMEZONE)):
-            now = datetime.now(TIMEZONE)
+        if await self.is_workday(datetime.now(CONFIG.timezone)):
+            now = datetime.now(CONFIG.timezone)
             logger.info(f"Запуск напоминаний в {now}")
             
             db.cursor.execute("""
@@ -83,13 +83,13 @@ class CronManager:
     async def _morning_reports(self):
         """Утренние отчеты"""
         from scheduled_reports import send_scheduled_reports
-        if await self.is_workday(datetime.now(TIMEZONE)):
+        if await self.is_workday(datetime.now(CONFIG.timezone)):
             await send_scheduled_reports(self.application, ['admins', 'providers'])
 
     async def _accounting_report(self):
         """Бухгалтерский отчет"""
         from scheduled_reports import send_scheduled_reports
-        now = datetime.now(TIMEZONE)
+        now = datetime.now(CONFIG.timezone)
         if (now.month != (now + timedelta(days=1)).month and 
            await self.is_workday(now)):
             await send_scheduled_reports(self.application, ['accounting'])

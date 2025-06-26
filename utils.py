@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta, date, time
 import pytz
 
-from config import CONFIG, MENU, TIMEZONE
+from config import CONFIG
 from handlers.common import show_main_menu
 from settings import SETTINGS_CONFIG
 from db import db
@@ -17,12 +17,12 @@ PHONE = 0
 
 def is_weekday(date=None):
     if date is None:
-        date = datetime.now(TIMEZONE)
+        date = datetime.now(CONFIG.timezone)
     return date.weekday() < 5  # 0-4 = пн-пт
 
 def get_next_workday(date=None):
     if date is None:
-        date = datetime.now(TIMEZONE)
+        date = datetime.now(CONFIG.timezone)
     
     days_to_add = 1
     if date.weekday() == 4:  # Пятница
@@ -34,7 +34,7 @@ def get_next_workday(date=None):
 
 def can_modify_order(target_date):
     """Проверяет, можно ли изменять заказ на указанную дату"""
-    now = datetime.now(TIMEZONE)
+    now = datetime.now(CONFIG.timezone)
     
     # Если target_date - строка, преобразуем в дату
     if isinstance(target_date, str):
@@ -61,10 +61,10 @@ def can_modify_order(target_date):
 
 def is_order_time_expired():
     """Старая функция, оставляем для совместимости, но теперь она использует новую функцию"""
-    return not can_modify_order(datetime.now(TIMEZONE).date())
+    return not can_modify_order(datetime.now(CONFIG.timezone).date())
 
 def get_order_time_restriction():
-    now = datetime.now(TIMEZONE)
+    now = datetime.now(CONFIG.timezone)
     current_hour = now.hour
     
     if not is_weekday(now):
@@ -82,23 +82,23 @@ def is_employee(full_name):
     return normalized_input in CONFIG.staff_names
 
 def get_menu_for_day(day_offset=0):
-    now = datetime.now(TIMEZONE)
+    now = datetime.now(CONFIG.timezone)
     days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
     target_date = (now + timedelta(days=day_offset)).date()
     day_name = days[target_date.weekday()]
     
     # Проверяем, является ли день праздником
-    if target_date.strftime("%Y-%m-%d") in CONFIG.get('holidays', {}):
+    if target_date.strftime("%Y-%m-%d") in CONFIG.holidays:
         return None, day_name
     
-    return MENU.get(day_name), day_name
+    return CONFIG.menu.get(day_name), day_name
 
 def format_menu(menu, day_name, is_tomorrow=False):
     if not menu:
         return f"На {day_name} выходной! Меню не предусмотрено."
     
     # Получаем текущую дату и вычисляем дату для отображения
-    now = datetime.now(TIMEZONE)
+    now = datetime.now(CONFIG.timezone)
     days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
     
     # Находим индекс текущего дня и вычисляем дату

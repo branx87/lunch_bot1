@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 from datetime import datetime, date, time, timedelta
 import logging
 
-from config import MENU, TIMEZONE
+from config import CONFIG
 from db import db
 from handlers.common import show_main_menu
 from middleware import check_user_access
@@ -171,7 +171,7 @@ async def handle_change_callback(query, now, user, context):
         try:
             days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
             day_name = days_ru[target_date.weekday()]
-            menu = MENU.get(day_name)
+            menu = CONFIG.menu.get(day_name)
             if not menu:
                 logger.error(f"Меню не найдено для дня {day_name}")
                 await query.answer("⚠️ Меню не найдено", show_alert=True)
@@ -422,7 +422,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         user = update.effective_user
-        now = datetime.now(TIMEZONE)
+        now = datetime.now(CONFIG.timezone)
         
         # Обработка кнопки "Назад"
         if query.data == "back_to_main_menu":
@@ -436,7 +436,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         # Остальная обработка callback'ов
         user = update.effective_user
-        now = datetime.now(TIMEZONE)
+        now = datetime.now(CONFIG.timezone)
         
         if query.data.startswith("inc_"):
             await modify_portion_count(query, now, user, context, +1)

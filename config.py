@@ -1,95 +1,117 @@
 # ##config.py
 import os
 import logging
+from pathlib import Path
 from dotenv import load_dotenv
-from db import db
 import pytz
+import sqlite3
+
+# Настройка путей
+BASE_DIR = Path(__file__).parent
+DATA_DIR = BASE_DIR / 'data'
+CONFIGS_DIR = BASE_DIR / 'data' / 'configs'
+DB_PATH = DATA_DIR / 'lunch_bot.db'
+
+# Создаем папки если их нет
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+# Загрузка переменных окружения
+load_dotenv(CONFIGS_DIR / '.env')
 
 class BotConfig:
     def __init__(self):
-        self._load_env_vars()
-        self._load_db_data()
+        self._token = None
+        self._admin_ids = []
+        self._provider_ids = []
+        self._accounting_ids = []
+        self._staff_names = set()
+        self._holidays = {}
+        self._menu = {}
         self._timezone = pytz.timezone('Europe/Moscow')
         self._locations = ["Офис", "ПЦ 1", "ПЦ 2", "Склад"]
+        
+        self._load_config()
 
-    def _load_env_vars(self):
-        """Загрузка переменных окружения"""
-        self._token = os.getenv('BOT_TOKEN')
-        self._admin_ids = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
-        self._provider_ids = [int(x) for x in os.getenv("PROVIDER_IDS", "").split(",") if x.strip()]
-        self._accounting_ids = [int(x) for x in os.getenv("ACCOUNTING_IDS", "").split(",") if x.strip()]
-
-    def _load_db_data(self):
-        """Загрузка динамических данных из БД"""
-        try:
-            # Загрузка сотрудников
-            employees = db.get_employees(active_only=True)
-            self._staff_names = {emp['full_name'].lower() for emp in employees}
-            
-            # Добавляем варианты с обратным порядком имен
-            for name in list(self._staff_names):
-                parts = name.split()
-                if len(parts) >= 2:
-                    reversed_name = f"{parts[1]} {parts[0]}"
-                    if len(parts) > 2:
-                        reversed_name += " " + " ".join(parts[2:])
-                    self._staff_names.add(reversed_name)
-
-            # Загрузка праздников
-            holidays = db.get_holidays()
-            self._holidays = {h['date']: h['name'] for h in holidays}
-
-            # Загрузка меню
-            menu_items = db.get_full_menu()
-            self._menu = {}
-            for item in menu_items:
-                self._menu[item['day']] = {
-                    "first": item['first_course'],
-                    "main": item['main_course'],
-                    "salad": item['salad']
-                }
-
-            logger.info("Конфигурация успешно загружена из БД")
-        except Exception as e:
-            logger.error(f"Ошибка при загрузке конфигурации: {e}")
-            raise
-
-    def reload(self):
-        """Перезагружает конфигурацию из .env и БД"""
-        logger.info("🔄 Перезагрузка конфигурации...")
+    def _load_config(self):
+        """Загружает все настройки"""
         self._load_env_vars()
         self._load_db_data()
 
+    def _load_env_vars(self):
+        """Загружает переменные окружения"""
+        try:
+            self._token = os.getenv('BOT_TOKEN')
+            if not self._token:
+                raise ValueError("Токен бота не указан в .env файле!")
+                
+            self._admin_ids = self._parse_ids(os.getenv("ADMIN_IDS", ""))
+            self._provider_ids = self._parse_ids(os.getenv("PROVIDER_IDS", ""))
+            self._accounting_ids = self._parse_ids(os.getenv("ACCOUNTING_IDS", ""))
+            
+        except Exception as e:
+            logger.error(f"Ошибка загрузки переменных окружения: {e}")
+            raise
+
+    def _parse_ids(self, ids_str: str) -> list[int]:
+        """Преобразует строку с ID в список чисел"""
+        return [int(x) for x in ids_str.split(",") if x.strip()]
+
+    def _load_db_data(self):
+        """Загружает данные из базы данных"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            # Загрузка сотрудников
+            cursor.execute("SELECT full_name FROM users WHERE is_employee = 1")
+            self._staff_names = {row[0].lower() for row in cursor.fetchall()}
+            
+            # Загрузка праздников
+            cursor.execute("SELECT date, name FROM holidays")
+            self._holidays = {row[0]: row[1] for row in cursor.fetchall()}
+            
+            # Загрузка меню
+            cursor.execute("SELECT day, first_course, main_course, salad FROM menu")
+            self._menu = {
+                row[0]: {"first": row[1], "main": row[2], "salad": row[3]}
+                for row in cursor.fetchall()
+            }
+            
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Ошибка загрузки данных из БД: {e}")
+            raise
+
     @property
-    def token(self):
+    def token(self) -> str:
         return self._token
 
     @property
-    def admin_ids(self):
+    def admin_ids(self) -> list[int]:
         return self._admin_ids
 
     @property
-    def provider_ids(self):
+    def provider_ids(self) -> list[int]:
         return self._provider_ids
 
     @property
-    def accounting_ids(self):
+    def accounting_ids(self) -> list[int]:
         return self._accounting_ids
 
     @property
-    def staff_names(self):
+    def staff_names(self) -> set:
         return self._staff_names
 
     @property
-    def holidays(self):
+    def holidays(self) -> dict:
         return self._holidays
 
     @property
-    def menu(self):
+    def menu(self) -> dict:
         return self._menu
 
     @property
@@ -97,16 +119,8 @@ class BotConfig:
         return self._timezone
 
     @property
-    def locations(self):
+    def locations(self) -> list:
         return self._locations
 
-
-# Глобальный объект конфигурации
+# Создаем глобальный объект конфигурации
 CONFIG = BotConfig()
-
-# Для обратной совместимости
-MENU = CONFIG.menu
-HOLIDAYS = CONFIG.holidays
-ADMIN_IDS = CONFIG.admin_ids
-TIMEZONE = CONFIG.timezone
-LOCATIONS = CONFIG.locations

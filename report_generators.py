@@ -9,7 +9,7 @@ import os
 import logging
 import matplotlib
 
-from config import CONFIG, LOCATIONS, TIMEZONE
+from config import CONFIG
 matplotlib.use('Agg')  # Устанавливаем бэкенд, не требующий GUI
 import matplotlib.pyplot as plt
 try:
@@ -39,7 +39,7 @@ async def export_orders_for_provider(
     try:
         # Если даты не заданы — используем сегодняшнюю
         if not start_date or not end_date:
-            today = datetime.now(TIMEZONE).date()
+            today = datetime.now(CONFIG.timezone).date()
             start_date = end_date = today
         else:
             start_date = start_date if isinstance(start_date, date) else start_date.date()
@@ -112,7 +112,7 @@ async def export_accounting_report(
     """
     try:
         reports_dir = ensure_reports_dir('accounting')
-        now = datetime.now(TIMEZONE)
+        now = datetime.now(CONFIG.timezone)
         
         # Обработка дат
         if not start_date or not end_date:
@@ -287,7 +287,7 @@ async def export_monthly_report(
             await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
             return
 
-        now = datetime.now(TIMEZONE)
+        now = datetime.now(CONFIG.timezone)
         
         # Если даты не переданы - используем текущий месяц
         if not start_date or not end_date:
@@ -307,7 +307,7 @@ async def export_monthly_report(
             del wb['Sheet']
         
         # Создаем листы для каждой локации
-        for location in LOCATIONS:
+        for location in CONFIG.locations:
             ws = wb.create_sheet(location)
             headers = ["Дата обеда", "Сотрудник", "Территориальный признак", "Подпись", "Кол-во обедов", "Тип заказа"]
             ws.append(headers)
@@ -439,7 +439,7 @@ async def export_daily_admin_report(
     """Формирует дневной административный отчет"""
     logger.info(f"Создание дневного админ отчета, дата: {target_date}")
     if not target_date:
-        target_date = datetime.now(TIMEZONE).date()
+        target_date = datetime.now(CONFIG.timezone).date()
     return await export_monthly_report(
         update, 
         context, 
@@ -452,5 +452,5 @@ async def export_daily_orders_for_provider(update: Update, context: ContextTypes
     """Формирует дневной отчет для поставщиков"""
     logger.info(f"Создание дневного отчета для поставщика, дата: {target_date}")
     if not target_date:
-        target_date = datetime.now(TIMEZONE).date()
+        target_date = datetime.now(CONFIG.timezone).date()
     return await export_orders_for_provider(update, context, target_date, target_date)

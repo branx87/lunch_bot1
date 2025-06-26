@@ -24,10 +24,10 @@ async def handle_admin_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = update.message.text.strip().lower()  # Добавляем получение текста
     
     # Переносим лог после определения переменных
-    logger.info(f"User {user.id} with text '{text}'. Admin IDs: {CONFIG.get('admin_ids')}, Accounting IDs: {CONFIG.get('accounting_ids')}")
+    logger.info(f"User {user.id} with text '{text}'. Admin IDs: {CONFIG.admin_ids}, Accounting IDs: {CONFIG.accounting_ids}")
 
     # Проверка прав администратора
-    if user.id not in CONFIG.get('admin_ids', []) and user.id not in CONFIG.get('accounting_ids', []):
+    if user.id not in CONFIG.admin_ids and user.id not in CONFIG.accounting_ids:
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
         return ConversationHandler.END
 

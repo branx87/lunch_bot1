@@ -3,7 +3,7 @@ from asyncio.log import logger
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
-from config import TIMEZONE
+from config import CONFIG
 from db import db
 from handlers.common import show_main_menu
 from utils import can_modify_order
@@ -38,7 +38,7 @@ async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, is_can
             return
 
         user_id = user.id
-        today = datetime.now(TIMEZONE).date()
+        today = datetime.now(CONFIG.timezone).date()
         today_str = today.isoformat()
 
         # Получаем активные заказы

@@ -2,7 +2,7 @@
 import logging
 from datetime import datetime
 from telegram.ext import Application
-from config import CONFIG, TIMEZONE
+from config import CONFIG
 from settings import SETTINGS_CONFIG
 
 from report_generators import export_accounting_report, export_daily_admin_report, export_daily_orders_for_provider
@@ -31,7 +31,7 @@ async def send_scheduled_reports(application: Application, report_types: list):
     """Основная функция отправки отчетов"""
     logger.info("Начало отправки отчетов: %s", report_types)
     
-    today = datetime.now(TIMEZONE).date()
+    today = datetime.now(CONFIG.timezone).date()
     
     # Используем прямое обращение к атрибутам CONFIG вместо .get()
     reports = {

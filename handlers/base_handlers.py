@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 from datetime import datetime, timedelta
 
 from bot_keyboards import create_main_menu_keyboard
-from config import ADMIN_IDS, CONFIG, TIMEZONE
+from config import CONFIG
 from constants import FULL_NAME, PHONE, SELECT_MONTH_RANGE
 from db import db
 from handlers.common import show_main_menu
@@ -97,7 +97,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     error = str(context.error)
     logger.error(f"Ошибка: {error}", exc_info=context.error)
     
-    for admin_id in ADMIN_IDS:
+    for admin_id in CONFIG.admin_ids:
         try:
             await context.bot.send_message(
                 chat_id=admin_id,
@@ -201,7 +201,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"📝 Имя: {user.full_name}"
             )
 
-            for admin_id in ADMIN_IDS:
+            for admin_id in CONFIG.admin_ids:
                 try:
                     await context.bot.send_message(chat_id=admin_id, text=admin_message)
                 except Exception as e:
@@ -295,7 +295,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return SELECT_MONTH_RANGE
 
         elif text == "📊 Отчет за день":
-            today = datetime.now(TIMEZONE).date()
+            today = datetime.now(CONFIG.timezone).date()
             if user.id in getattr(CONFIG, 'admin_ids', []):
                 context.user_data['report_type'] = 'admin_daily'
                 await export_daily_admin_report(update, context, today)
@@ -401,7 +401,7 @@ async def handle_registered_user(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Для дневных отчетов сразу генерируем отчет
                 if text == "📊 Отчет за день":
-                    today = datetime.now(TIMEZONE).date()
+                    today = datetime.now(CONFIG.timezone).date()
                     if role == 'admin':
                         await export_daily_admin_report(update, context, today)
                     elif role == 'provider':

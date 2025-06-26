@@ -3,7 +3,7 @@
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler
 from datetime import datetime, date, timedelta
-from config import CONFIG, TIMEZONE
+from config import CONFIG
 from constants import SELECT_MONTH_RANGE
 from handlers.common import show_main_menu
 from utils import check_registration, logger
@@ -24,7 +24,7 @@ async def select_month_range(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("❌ Не выбран тип отчета")
             return await show_main_menu(update, user_id)
 
-        now = datetime.now(TIMEZONE)
+        now = datetime.now(CONFIG.timezone)
         start_date = end_date = None
 
         if text == "Текущий месяц":

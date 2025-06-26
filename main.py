@@ -1,14 +1,21 @@
 # ##main.py
 import asyncio
 import logging
+from pathlib import Path
 from bot_core import LunchBot
 from logging.handlers import RotatingFileHandler
 import matplotlib
+
+from config import CONFIG
 matplotlib.use('Agg')
 
 def setup_logging():
+    # Создаем папку для логов, если ее нет
+    logs_dir = Path('data/logs')
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    
     handler = RotatingFileHandler(
-        'bot.log',
+        logs_dir / 'bot.log',  # Теперь логи тоже в папке data
         maxBytes=5*1024*1024,
         backupCount=3,
         encoding='utf-8'
@@ -26,9 +33,16 @@ async def main():
     setup_logging()
     logger = logging.getLogger(__name__)
     
-    bot = LunchBot()
     try:
         logger.info("🚀 Запуск бота...")
+        
+        # Инициализируем бота БЕЗ передачи db_path (оставляем как было)
+        print("Токен бота:", CONFIG.token)
+        print("Проверка конфига:")
+        print("Токен существует:", hasattr(CONFIG, '_token'))
+        print("Путь к .env:", (Path(__file__).parent / 'configs' / '.env').exists())
+        bot = LunchBot()
+        
         await bot.run()
     except KeyboardInterrupt:
         logger.info("🛑 Получен сигнал KeyboardInterrupt")
@@ -39,14 +53,14 @@ async def main():
     finally:
         logger.info("Начало завершения работы...")
         try:
-            await asyncio.wait_for(bot.stop(), timeout=5)
+            if 'bot' in locals():
+                await asyncio.wait_for(bot.stop(), timeout=5)
         except asyncio.TimeoutError:
             logger.error("⚠️ Превышено время ожидания остановки!")
         except Exception as e:
             logger.error(f"⚠️ Ошибка при остановке: {str(e)}")
         finally:
-            # Финализируем ресурсы
-            await asyncio.sleep(0.1)  # Даем время на финализацию
+            await asyncio.sleep(0.1)
             logger.info("✅ Работа бота полностью завершена")
 
 if __name__ == "__main__":

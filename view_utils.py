@@ -3,7 +3,7 @@ import logging
 from telegram import InlineKeyboardButton, Update, InlineKeyboardMarkup
 from datetime import datetime, timedelta
 
-from config import MENU
+from config import CONFIG
 from db import db
 from handlers.common import show_main_menu
 from utils import can_modify_order
@@ -26,7 +26,7 @@ async def refresh_day_view(query, day_offset, user_db_id, now, is_order=False):
         target_date = (now + timedelta(days=day_offset)).date()
         day_name = days_ru[target_date.weekday()]
         date_str = target_date.strftime("%d.%m")
-        menu = MENU.get(day_name)
+        menu = CONFIG.menu.get(day_name)
 
         # Формируем текст сообщения
         if not menu:
