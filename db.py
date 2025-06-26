@@ -4,30 +4,34 @@ import sqlite3
 import logging
 import pandas as pd
 from typing import Optional, Dict, List, Any, Set, Tuple
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 class Database:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, configs_dir: str = None):
         """Инициализация соединения с базой данных"""
         self.db_path = db_path
+        self.configs_dir = Path(configs_dir) if configs_dir else None
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
         self._init_db_structure()
-        self._load_initial_data_if_needed()
+        
+        if self.configs_dir:
+            self._load_initial_data_if_needed()
 
     def _init_db_structure(self) -> None:
-        """Создание таблиц и индексов, если они не существуют"""
+        """Создание таблиц и индексов"""
         try:
-            # Настройки SQLite
+            # Оптимизация SQLite
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")
             self.conn.execute("PRAGMA busy_timeout=5000")
             self.conn.execute("PRAGMA foreign_keys=ON")
 
-            # Создание таблиц с исправленным синтаксисом
-            tables_sql = [
+            # Определение таблиц
+            tables = [
                 '''CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     telegram_id INTEGER UNIQUE,
@@ -97,13 +101,8 @@ class Database:
                 )'''
             ]
 
-            # Создаем все таблицы
-            with self.conn:
-                for sql in tables_sql:
-                    self.cursor.execute(sql)
-
-            # Создаем индексы
-            indexes_sql = [
+            # Определение индексов
+            indexes = [
                 # Для users
                 "CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id)",
                 "CREATE INDEX IF NOT EXISTS idx_users_verified ON users(is_verified)",
@@ -130,27 +129,32 @@ class Database:
             ]
 
             with self.conn:
-                for sql in indexes_sql:
+                # Создаем таблицы
+                for sql in tables:
                     self.cursor.execute(sql)
-
-            logger.info("✅ Структура базы данных успешно инициализирована")
-
+                
+                # Создаем индексы
+                for sql in indexes:
+                    self.cursor.execute(sql)
+            
+            logger.info("Структура БД успешно инициализирована")
+            
         except Exception as e:
-            logger.critical(f"Ошибка инициализации структуры БД: {e}")
+            logger.critical(f"Ошибка инициализации БД: {e}")
             raise
 
     def _load_initial_data_if_needed(self) -> bool:
-        """Проверяет и загружает начальные данные, если нужно"""
+        """Загрузка начальных данных при необходимости"""
         try:
             if not self._is_data_loaded():
                 return self._load_initial_data()
             return False
         except Exception as e:
-            logger.error(f"Ошибка проверки/загрузки данных: {e}")
+            logger.error(f"Ошибка загрузки данных: {e}")
             return False
 
     def _is_data_loaded(self) -> bool:
-        """Проверяет, загружены ли основные данные"""
+        """Проверка наличия данных"""
         try:
             has_employees = self.cursor.execute(
                 "SELECT 1 FROM users WHERE is_employee = TRUE LIMIT 1"
@@ -162,40 +166,37 @@ class Database:
             
             return has_employees is not None and has_menu is not None
         except sqlite3.Error as e:
-            logger.error(f"Ошибка проверки загруженных данных: {e}")
+            logger.error(f"Ошибка проверки данных: {e}")
             return False
 
     def _load_initial_data(self) -> bool:
-        """Загружает начальные данные из Excel файла"""
+        """Загрузка данных из Excel"""
         try:
-            if not os.path.exists('config.xlsx'):
-                logger.warning("Файл config.xlsx не найден, пропускаем загрузку данных")
+            config_path = self.configs_dir / 'config.xlsx'
+            if not config_path.exists():
+                logger.warning(f"Файл {config_path} не найден")
                 return False
 
-            logger.info("Начальная загрузка данных из Excel...")
+            logger.info(f"Загрузка данных из {config_path}")
             
-            # Загрузка сотрудников
-            employees_added = self._load_employees()
+            # Чтение Excel файла один раз
+            df = pd.read_excel(config_path, header=None)
             
-            # Загрузка меню
-            menu_days_added = self._load_menu()
+            # Загрузка данных
+            employees_added = self._load_employees(df)
+            menu_days_added = self._load_menu(df)
+            holidays_added = self._load_holidays(df)
             
-            # Загрузка праздников
-            holidays_added = self._load_holidays()
-            
-            logger.info(
-                f"✅ Данные загружены: сотрудников - {employees_added}, "
-                f"дней меню - {menu_days_added}, праздников - {holidays_added}"
-            )
+            logger.info(f"Загружено: {employees_added} сотрудников, "
+                       f"{menu_days_added} дней меню, {holidays_added} праздников")
             return True
             
         except Exception as e:
-            logger.error(f"Ошибка загрузки данных из Excel: {e}", exc_info=True)
+            logger.error(f"Ошибка загрузки Excel: {e}", exc_info=True)
             return False
 
-    def _load_employees(self) -> int:
-        """Загружает сотрудников из Excel"""
-        df = pd.read_excel('config.xlsx', header=0)
+    def _load_employees(self, df: pd.DataFrame) -> int:
+        """Загрузка сотрудников"""
         existing_employees = {
             e['full_name'].lower() 
             for e in self.get_employees(active_only=False)
@@ -210,12 +211,10 @@ class Database:
                 self.add_user(full_name=emp_name, is_employee=True)
                 new_employees += 1
                 
-        logger.info(f"Добавлено {new_employees} новых сотрудников")
         return new_employees
 
-    def _load_menu(self) -> int:
-        """Загружает меню из Excel"""
-        df = pd.read_excel('config.xlsx', header=None)
+    def _load_menu(self, df: pd.DataFrame) -> int:
+        """Загрузка меню"""
         menu_data = {}
         current_day = None
         idx = 2  # Начинаем с I2 (третья строка в Pandas — индекс 2)
@@ -263,12 +262,10 @@ class Database:
                 self.add_menu(day, dishes["first"], dishes["main"], dishes["salad"])
                 added_days += 1
 
-        logger.info(f"Добавлено меню для {added_days} дней")
         return added_days
 
-    def _load_holidays(self) -> int:
-        """Загружает праздники из Excel"""
-        df = pd.read_excel('config.xlsx', header=None)
+    def _load_holidays(self, df: pd.DataFrame) -> int:
+        """Загрузка праздников"""
         holidays_df = df.iloc[1:, 10:12].dropna()
         
         existing_holidays = {
@@ -286,33 +283,31 @@ class Database:
                 self.add_holiday(date, name)
                 new_holidays += 1
         
-        logger.info(f"Добавлено {new_holidays} новых праздников")
         return new_holidays
 
     # ===== МЕТОДЫ ДЛЯ РАБОТЫ С ПОЛЬЗОВАТЕЛЯМИ =====
-    def add_user(self, full_name: str, telegram_id: Optional[int] = None,
-                phone: Optional[str] = None, location: Optional[str] = None,
-                is_employee: bool = False, username: Optional[str] = None) -> int:
-        """Добавляет или обновляет пользователя"""
+    def add_user(self, full_name: str, **kwargs) -> int:
+        """Добавление пользователя"""
         try:
-            self.cursor.execute(
-                """
-                INSERT INTO users (telegram_id, full_name, phone, location, is_employee, username)
-                VALUES (?, ?, ?, ?, ?, ?)
+            fields = []
+            values = []
+            for k, v in kwargs.items():
+                if v is not None:
+                    fields.append(k)
+                    values.append(v.strip() if isinstance(v, str) else v)
+            
+            sql = f"""
+                INSERT INTO users (full_name, {', '.join(fields)})
+                VALUES (?, {', '.join(['?']*len(fields))})
                 ON CONFLICT(telegram_id) DO UPDATE SET
-                    full_name = excluded.full_name,
-                    phone = excluded.phone,
-                    location = excluded.location,
-                    is_employee = excluded.is_employee,
-                    username = excluded.username,
+                    {', '.join(f"{f}=excluded.{f}" for f in fields)},
                     updated_at = CURRENT_TIMESTAMP
-                """,
-                (telegram_id, full_name.strip(), phone, location, is_employee, username)
-            )
+            """
+            self.cursor.execute(sql, (full_name.strip(), *values))
             self.conn.commit()
             return self.cursor.lastrowid
         except sqlite3.Error as e:
-            logger.error(f"Ошибка при добавлении пользователя: {e}")
+            logger.error(f"Ошибка добавления пользователя: {e}")
             return -1
 
     def verify_user(self, telegram_id: int, full_name: str, phone: str, username: str) -> bool:
@@ -441,10 +436,9 @@ class Database:
         self.close()
 
     def close(self) -> None:
-        """Закрывает соединение с БД"""
+        """Закрытие соединения"""
         try:
             if self.conn:
                 self.conn.close()
-                logger.info("Соединение с базой данных закрыто")
         except Exception as e:
-            logger.error(f"Ошибка при закрытии соединения с БД: {e}")
+            logger.error(f"Ошибка закрытия БД: {e}")
