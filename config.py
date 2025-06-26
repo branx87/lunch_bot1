@@ -2,52 +2,32 @@
 import os
 import logging
 from dotenv import load_dotenv
+from db import db
 import pytz
-from pathlib import Path
-from typing import List, Set, Dict, Any
-
-# Настройка базовых путей
-BASE_DIR = Path(__file__).parent  # Теперь указывает на корень проекта
-DATA_DIR = BASE_DIR / 'data'
-LOGS_DIR = DATA_DIR / 'logs'
-REPORTS_DIR = DATA_DIR / 'reports'
-CONFIGS_DIR = DATA_DIR / 'configs'
-DB_PATH = DATA_DIR / 'lunch_bot.db'
-
-# Создание необходимых директорий
-for directory in [DATA_DIR, LOGS_DIR, REPORTS_DIR, CONFIGS_DIR]:
-    directory.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
 
-# Загрузка переменных окружения
-load_dotenv(CONFIGS_DIR / '.env')
+load_dotenv()
 
 class BotConfig:
     def __init__(self):
-        """Инициализация конфигурации бота"""
+        self._load_env_vars()
+        self._load_db_data()
         self._timezone = pytz.timezone('Europe/Moscow')
         self._locations = ["Офис", "ПЦ 1", "ПЦ 2", "Склад"]
+
+    def _load_env_vars(self):
+        """Загрузка переменных окружения"""
         self._token = os.getenv('BOT_TOKEN')
-        self._admin_ids = self._parse_ids(os.getenv("ADMIN_IDS", ""))
-        self._provider_ids = self._parse_ids(os.getenv("PROVIDER_IDS", ""))
-        self._accounting_ids = self._parse_ids(os.getenv("ACCOUNTING_IDS", ""))
-        self._staff_names = set()
-        self._holidays = {}
-        self._menu = {}
-        # Добавляем недостающие атрибуты
-        self._configs_dir = CONFIGS_DIR
-        self._logs_dir = LOGS_DIR
-        self._reports_dir = REPORTS_DIR
+        self._admin_ids = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
+        self._provider_ids = [int(x) for x in os.getenv("PROVIDER_IDS", "").split(",") if x.strip()]
+        self._accounting_ids = [int(x) for x in os.getenv("ACCOUNTING_IDS", "").split(",") if x.strip()]
 
-    def _parse_ids(self, ids_str: str) -> List[int]:
-        return [int(x) for x in ids_str.split(",") if x.strip()]
-
-    def init_db_data(self, db_connection):
-        """Инициализирует данные из БД"""
+    def _load_db_data(self):
+        """Загрузка динамических данных из БД"""
         try:
             # Загрузка сотрудников
-            employees = db_connection.get_employees(active_only=True)
+            employees = db.get_employees(active_only=True)
             self._staff_names = {emp['full_name'].lower() for emp in employees}
             
             # Добавляем варианты с обратным порядком имен
@@ -60,51 +40,56 @@ class BotConfig:
                     self._staff_names.add(reversed_name)
 
             # Загрузка праздников
-            self._holidays = {h['date']: h['name'] for h in db_connection.get_holidays()}
+            holidays = db.get_holidays()
+            self._holidays = {h['date']: h['name'] for h in holidays}
 
             # Загрузка меню
-            self._menu = {
-                item['day']: {
+            menu_items = db.get_full_menu()
+            self._menu = {}
+            for item in menu_items:
+                self._menu[item['day']] = {
                     "first": item['first_course'],
                     "main": item['main_course'],
                     "salad": item['salad']
-                } for item in db_connection.get_full_menu()
-            }
-            logger.info(f"Загружено меню: {self._menu}")  # Добавьте это для отладки
-        except Exception as e:
-            logger.error(f"Ошибка загрузки меню: {e}")
+                }
 
             logger.info("Конфигурация успешно загружена из БД")
         except Exception as e:
             logger.error(f"Ошибка при загрузке конфигурации: {e}")
             raise
 
+    def reload(self):
+        """Перезагружает конфигурацию из .env и БД"""
+        logger.info("🔄 Перезагрузка конфигурации...")
+        self._load_env_vars()
+        self._load_db_data()
+
     @property
-    def token(self) -> str:
+    def token(self):
         return self._token
 
     @property
-    def admin_ids(self) -> List[int]:
+    def admin_ids(self):
         return self._admin_ids
 
     @property
-    def provider_ids(self) -> List[int]:
+    def provider_ids(self):
         return self._provider_ids
 
     @property
-    def accounting_ids(self) -> List[int]:
+    def accounting_ids(self):
         return self._accounting_ids
 
     @property
-    def staff_names(self) -> Set[str]:
+    def staff_names(self):
         return self._staff_names
 
     @property
-    def holidays(self) -> Dict[str, str]:
+    def holidays(self):
         return self._holidays
 
     @property
-    def menu(self) -> Dict[str, Dict[str, str]]:
+    def menu(self):
         return self._menu
 
     @property
@@ -112,39 +97,16 @@ class BotConfig:
         return self._timezone
 
     @property
-    def locations(self) -> List[str]:
+    def locations(self):
         return self._locations
 
-    @property
-    def db_path(self) -> Path:
-        return DB_PATH
-
-    @property
-    def reports_dir(self) -> Path:
-        return REPORTS_DIR
-
-    @property
-    def logs_dir(self) -> Path:
-        return LOGS_DIR
-    
-    @property
-    def configs_dir(self) -> Path:
-        return self._configs_dir
-
-    @property
-    def logs_dir(self) -> Path:
-        return self._logs_dir
-
-    @property
-    def reports_dir(self) -> Path:
-        return self._reports_dir
 
 # Глобальный объект конфигурации
 CONFIG = BotConfig()
 
 # Для обратной совместимости
+MENU = CONFIG.menu
 HOLIDAYS = CONFIG.holidays
+ADMIN_IDS = CONFIG.admin_ids
 TIMEZONE = CONFIG.timezone
 LOCATIONS = CONFIG.locations
-MENU = CONFIG.menu
-ADMIN_IDS = CONFIG.admin_ids

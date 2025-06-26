@@ -2,13 +2,13 @@
 from telegram import Update
 from telegram.ext import BaseHandler, ContextTypes
 import logging
+from db import db
 
 logger = logging.getLogger(__name__)
 
 class AccessControlHandler(BaseHandler):
-    def __init__(self, db_connection):
+    def __init__(self):
         super().__init__(self._handle_update)
-        self.db = db_connection
         self.priority = -1
 
     def check_update(self, update: object) -> bool:
@@ -16,70 +16,72 @@ class AccessControlHandler(BaseHandler):
 
     async def _handle_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
-        if not user:
-            return False
-
-        # Проверяем кэш в user_data
         if context.user_data.get('is_verified'):
-            return True
-
+            return True  # Пропускаем проверку, если уже верифицирован в текущей сессии
+        
         try:
-            # Проверяем админов через конфиг
+            user = update.effective_user
+            if not user:
+                return False
+
             if user.id in context.application.bot_data.get('admin_ids', []):
-                context.user_data['is_verified'] = True
                 return True
 
-            # Проверяем обычных пользователей через БД
-            user_data = self.db.get_user(user.id)
-            if user_data and user_data.get('is_verified') and not user_data.get('is_deleted'):
-                context.user_data['is_verified'] = True
-                return True
-
-            logger.info(f"Доступ запрещен для пользователя {user.id}")
-            await self._deny_access(update)
-            return False
-
+            db.cursor.execute("""
+                SELECT is_verified, is_deleted 
+                FROM users 
+                WHERE telegram_id = ?
+            """, (user.id,))
+            result = db.cursor.fetchone()
+            
+            if not result:
+                logger.info(f"Незарегистрированный пользователь {user.id}")
+                return False
+                
+            if not result[0] or result[1]:
+                logger.info(f"Доступ запрещен для пользователя {user.id} (verified={result[0]}, deleted={result[1]})")
+                return False
+                
+            return True
         except Exception as e:
             logger.error(f"Ошибка проверки доступа: {e}", exc_info=True)
             return False
 
+    # async def _deny_access(self, update: Update):
+    #     """Уведомление об отказе только для пользователя"""
+    #     try:
+    #         if update.callback_query:
+    #             await update.callback_query.answer(
+    #                 "⛔ Доступ запрещён. Аккаунт неактивен", 
+    #                 show_alert=True
+    #             )
+    #         elif update.message:
+    #             await update.message.reply_text(
+    #                 "⛔ Ваш аккаунт деактивирован\nОбратитесь к администратору"
+    #             )
+    #     except Exception as e:
+    #         logger.error(f"Error showing access denied: {e}")
+
     async def _deny_access(self, update: Update):
         try:
+            message = "🔧 Бот временно на обслуживании. Приносим извинения за неудобства!"
             if update.callback_query:
-                await update.callback_query.answer(
-                    "⛔ Доступ запрещён. Обратитесь к администратору", 
-                    show_alert=True
-                )
+                await update.callback_query.answer(message, show_alert=True)
             elif update.message:
-                await update.message.reply_text(
-                    "⛔ Ваш аккаунт не верифицирован\nОбратитесь к администратору"
-                )
+                await update.message.reply_text(message)
         except Exception as e:
-            logger.error(f"Ошибка при отображении отказа: {e}")
+            logger.error(f"Error showing maintenance message: {e}")
 
-async def check_user_access(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+async def check_user_access(user_id: int, application=None) -> bool:
     """Проверка доступа без уведомлений администраторам"""
     try:
-        # Получаем необходимые данные из контекста
-        db = context.bot_data['db']
-        admin_ids = context.bot_data.get('admin_ids', [])
-        
-        if user_id in admin_ids:
+        if application and user_id in application.bot_data.get('admin_ids', []):
             return True
             
-        # Проверяем пользователя в БД
-        db.cursor.execute("""
-            SELECT is_verified, is_deleted 
-            FROM users 
-            WHERE telegram_id = ?
-        """, (user_id,))
-        user_data = db.cursor.fetchone()
+        db.cursor.execute("SELECT is_verified, is_deleted FROM users WHERE telegram_id = ?", (user_id,))
+        result = db.cursor.fetchone()
         
-        if user_data:
-            is_verified, is_deleted = user_data
-            return bool(is_verified and not is_deleted)
-        return False
-        
+        return bool(result and result[0] and not result[1])
     except Exception as e:
-        logger.error(f"Ошибка проверки доступа: {e}", exc_info=True)
+        logger.error(f"Ошибка проверки доступа: {e}")
         return False

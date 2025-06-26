@@ -2,7 +2,7 @@
 # import os
 # import logging
 # from dotenv import load_dotenv
-# from db import Database
+# from db import db
 # import pytz
 
 # logger = logging.getLogger(__name__)

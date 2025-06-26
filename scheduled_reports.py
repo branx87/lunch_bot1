@@ -5,8 +5,8 @@ from telegram.ext import Application
 from config import CONFIG, TIMEZONE
 from settings import SETTINGS_CONFIG
 
-from report_generators import ReportGenerator
-# from report_generators import report_generator
+from report_generators import export_accounting_report, export_daily_admin_report, export_daily_orders_for_provider
+
 logger = logging.getLogger(__name__)
 
 class FakeUpdate:

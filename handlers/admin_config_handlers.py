@@ -24,7 +24,7 @@ from telegram.error import BadRequest
 from pathlib import Path
 
 from config import CONFIG
-from db import Database
+from db import db
 from constants import (
     ADD_ACCOUNTANT, ADD_ADMIN, ADD_HOLIDAY_DATE, ADD_HOLIDAY_NAME, 
     ADD_PROVIDER, ADD_STAFF, CONFIG_MENU, DELETE_ACCOUNTANT, DELETE_ADMIN, 
@@ -422,7 +422,6 @@ async def show_staff_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_staff_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает список сотрудников с пагинацией"""
     try:
-        db = context.bot_data['db']
         user_id = update.effective_user.id
         
         # Получаем всех сотрудников
@@ -448,7 +447,6 @@ async def show_staff_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_staff_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает результаты поиска"""
     try:
-        db = context.bot_data['db']
         if not update.message or not update.message.text:
             await _send_error(update, "❌ Не получен текст для поиска")
             return await start_delete_staff(update, context)
@@ -547,7 +545,6 @@ async def _send_error_response(update: Update, text: str):
 
 async def show_holiday_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        db = context.bot_data['db']
         user_id = update.effective_user.id
         holidays = db.get_holidays()
 
@@ -696,7 +693,6 @@ async def handle_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE):
             staff_id = int(query.data.split('_')[2])
             
             try:
-                db = context.bot_data['db']
                 # Получаем данные из БД
                 db.cursor.execute("""
                     SELECT id, full_name, is_deleted 
@@ -787,7 +783,6 @@ async def handle_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CONFIG_MENU
     
 async def handle_add_staff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    db = context.bot_data['db']
     user_input = update.message.text.strip()
 
     if user_input.lower() in ["отмена", "❌ отмена"]:
@@ -854,7 +849,6 @@ async def handle_add_staff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CONFIG_MENU
 
 async def start_delete_holiday(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    db = context.bot_data['db']
     user_id = update.effective_user.id
     holidays = db.get_holidays()
     
@@ -986,7 +980,6 @@ async def handle_holiday_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     date_str = context.user_data['holiday_date']
     
     try:
-        db = context.bot_data['db']
         # Добавляем праздник в базу данных
         result = db.add_holiday(date_str, holiday_name)
         

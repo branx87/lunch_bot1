@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 from config import LOCATIONS
 from constants import AWAIT_MESSAGE_TEXT, FULL_NAME, LOCATION, PHONE
+from db import db
 from handlers.common import show_main_menu
 from handlers.message_handlers import handle_admin_message, start_user_to_admin_message
 
@@ -21,7 +22,6 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Получен номер телефона от пользователя {user.id}")
 
     try:
-        db = context.bot_data['db']
         # Получаем контакт или текст
         phone = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
 
@@ -62,7 +62,6 @@ async def get_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Не создаёт новых пользователей — этим занимается администратор.
     """
     try:
-        db = context.bot_data['db']
         user = update.effective_user  # Сначала получаем пользователя
 
         # Теперь можно безопасно логировать
@@ -183,7 +182,6 @@ async def get_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return LOCATION
 
     try:
-        db = context.bot_data['db']
         # Обновляем запись пользователя
         db.cursor.execute("""
             UPDATE users
@@ -197,7 +195,7 @@ async def get_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         verified_status = db.cursor.fetchone()[0]
         logger.info(f"Текущий статус верификации: {verified_status}")
 
-        await show_main_menu(update, context)
+        await show_main_menu(update, user.id)
         return ConversationHandler.END
 
     except Exception as e:

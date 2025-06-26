@@ -10,11 +10,12 @@ from datetime import datetime, timedelta
 from bot_keyboards import create_main_menu_keyboard
 from config import ADMIN_IDS, CONFIG, TIMEZONE
 from constants import FULL_NAME, PHONE, SELECT_MONTH_RANGE
+from db import db
 from handlers.common import show_main_menu
 from handlers.common_handlers import view_orders
 from handlers.common_report_handlers import select_month_range
 from handlers.menu_handlers import monthly_stats, show_today_menu, show_week_menu
-from report_generators import ReportGenerator
+from report_generators import export_accounting_report, export_daily_admin_report, export_daily_orders_for_provider
 from utils import check_registration, handle_unregistered
 from bot_keyboards import get_user_role
 
@@ -33,12 +34,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     try:
-        db = context.bot_data['db']
         # Проверяем, является ли пользователь админом, поставщиком или бухгалтером
         if user.id in CONFIG.admin_ids or \
            user.id in CONFIG.provider_ids or \
            user.id in CONFIG.accounting_ids:
-            return await show_main_menu(update, context)
+            
+            # Пропускаем регистрацию и сразу показываем главное меню
+            return await show_main_menu(update, user.id)
         
         # Сначала проверяем по telegram_id
         db.cursor.execute("""
@@ -59,7 +61,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return ConversationHandler.END
 
             if is_verified:
-                return await show_main_menu(update, context)
+                await show_main_menu(update, user.id)
+                return ConversationHandler.END
 
             # Регистрация не завершена — продолжаем её
             keyboard = [[KeyboardButton("📱 Отправить номер телефона", request_contact=True)]]
@@ -82,7 +85,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка в start: {e}")
         await update.message.reply_text("Произошла ошибка. Попробуйте снова.")
-        return await show_main_menu(update, context)
+        return await show_main_menu(update, user.id)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -112,7 +115,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def test_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        db = context.bot_data['db']
         # Удаляем саму команду /test (если есть права)
         try:
             await update.message.delete()
@@ -175,7 +177,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     logger.info(f"Получено сообщение: '{text}' от {user.id}")
 
     try:
-        db = context.bot_data['db']
         # Обработка сообщения от незарегистрированного пользователя
         if text == "Написать администратору":
             # Проверяем, есть ли пользователь в списке сотрудников (is_employee = TRUE)
@@ -231,7 +232,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             "⚠️ Произошла ошибка. Попробуйте снова или используйте /start",
             reply_markup=ReplyKeyboardRemove()
         )
-        return await show_main_menu(update, context)
+        return await show_main_menu(update, user.id)
 
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -268,7 +269,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await edit_menu(update, context)
             else:
                 await update.message.reply_text("❌ У вас нет прав для изменения меню")
-                return await show_main_menu(update, context)
+                return await show_main_menu(update, user.id)
         
         elif text == "📅 Отчет за месяц":
             # Устанавливаем тип отчета в зависимости от прав пользователя
@@ -280,7 +281,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data['report_type'] = 'accounting_monthly'
             else:
                 await update.message.reply_text("❌ У вас нет прав для просмотра отчетов")
-                return await show_main_menu(update, context)
+                return await show_main_menu(update, user.id)
 
             # Запрашиваем период
             await update.message.reply_text(
@@ -297,26 +298,23 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             today = datetime.now(TIMEZONE).date()
             if user.id in getattr(CONFIG, 'admin_ids', []):
                 context.user_data['report_type'] = 'admin_daily'
-                report_generator = context.bot_data.get('report_generator')
-                await report_generator.export_daily_admin_report(update, context, today)
+                await export_daily_admin_report(update, context, today)
             elif user.id in getattr(CONFIG, 'provider_ids', []):
                 context.user_data['report_type'] = 'provider_daily'
-                report_generator = context.bot_data.get('report_generator')
-                await report_generator.export_daily_orders_for_provider(update, context, today)
+                await export_daily_orders_for_provider(update, context, today)
             elif user.id in getattr(CONFIG, 'accounting_ids', []):
                 context.user_data['report_type'] = 'accounting_daily'
-                report_generator = context.bot_data.get('report_generator')
-                await report_generator.export_accounting_report(update, context, today)
+                await export_accounting_report(update, context, today, today)
             else:
                 await update.message.reply_text("❌ Нет прав доступа")
-            return await show_main_menu(update, context)
+            return await show_main_menu(update, user.id)
         
         elif text == "Вернуться в главное меню":
-            return await show_main_menu(update, context)
+            return await show_main_menu(update, user.id)
         
         elif text == "Обновить меню":
             await update.message.reply_text("Обновляю меню...", reply_markup=ReplyKeyboardRemove())
-            return await show_main_menu(update, context)
+            return await show_main_menu(update, user.id)
 
         # Обработка неизвестной команды
         else:
@@ -324,7 +322,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Неизвестная команда. Попробуйте обновить меню или используйте /start",
                 reply_markup=ReplyKeyboardRemove()
             )
-            return await show_main_menu(update, context)
+            return await show_main_menu(update, user.id)
 
     except Exception as e:
         logger.error(f"Ошибка в main_menu: {e}", exc_info=True)
@@ -410,7 +408,7 @@ async def handle_registered_user(update: Update, context: ContextTypes.DEFAULT_T
                         await export_daily_orders_for_provider(update, context, today)
                     elif role == 'accountant':
                         await export_accounting_report(update, context, today, today)
-                    return await show_main_menu(update, context)
+                    return await show_main_menu(update, user.id)
                 # Для месячных отчетов запрашиваем период
                 else:
                     await update.message.reply_text(
@@ -474,7 +472,6 @@ async def check_employee_registration(update: Update, context: ContextTypes.DEFA
         return True
 
     try:
-        db = context.bot_data['db']
         db.cursor.execute("""
             SELECT is_verified, is_employee 
             FROM users 

@@ -1,86 +1,107 @@
-# ##bot_core.py 25.06.25 9.39
+# ##bot_core.py
 from telegram.ext import ApplicationBuilder
 from middleware import AccessControlHandler
 import logging
 import asyncio
 from config import CONFIG
-from cron_jobs import CronManager
+from cron_jobs import CronManager  # Добавляем импорт
 
 logger = logging.getLogger(__name__)
 
 class LunchBot:
-    def __init__(self, db_connection, report_generator):
-        self.db = db_connection
-        self.report_generator = report_generator
+    def __init__(self):
         self.application = None
         self._running = False
-        self.cron_manager = None
+        self.cron_manager = None  # Добавляем атрибут для хранения менеджера cron
 
     async def run(self):
         try:
             self.application = ApplicationBuilder().token(CONFIG.token).build()
-            self.application.bot_data.update({
-                'db': self.db,
-                'admin_ids': CONFIG.admin_ids,
-                'report_generator': self.report_generator
-            })
+            self.application.bot_data['admin_ids'] = CONFIG.admin_ids
             
-            # Инициализация CronManager
+            # Инициализируем CronManager
             self.cron_manager = CronManager(self.application)
-            self.cron_manager.set_db(self.db)
-            await self.cron_manager.setup()
+            await self.cron_manager.setup()  # Настраиваем cron-задачи
             
-            self.application.add_handler(AccessControlHandler(self.db), group=-1)
+            # Добавляем обработчик контроля доступа первым
+            self.application.add_handler(AccessControlHandler(), group=-1)
             
+            # Настройка обработчиков
             from handlers import setup_handlers
-            setup_handlers(self.application, self.db)
+            setup_handlers(self.application)
 
             await self.application.initialize()
             await self.application.start()
 
             bot_info = await self.application.bot.get_me()
             logger.info(f"Бот @{bot_info.username} запущен")
+
             await self.application.updater.start_polling()
             self._running = True
             
             while self._running:
-                await asyncio.sleep(1)
-                
+                try:
+                    await asyncio.sleep(1)
+                except asyncio.CancelledError:
+                    logger.info("Получен запрос на остановку")
+                    break
+                    
         except asyncio.CancelledError:
             logger.info("Бот остановлен по запросу")
         except Exception as e:
-            logger.error(f"Ошибка запуска бота: {e}", exc_info=True)
+            logger.error(f"Ошибка: {e}")
         finally:
             await self.stop()
 
     async def stop(self):
-        """Улучшенная версия с остановкой cron задач"""
+        """Финальная версия метода остановки"""
+        stop_timeout = 3  # Максимальное время на остановку в секундах
         try:
             self._running = False
             if not self.application:
+                logger.info("Бот не был инициализирован")
                 return
 
             logger.info("Начинаем процесс остановки...")
             
-            # 1. Остановка cron задач
-            if self.cron_manager:
-                try:
-                    if hasattr(self.cron_manager, 'shutdown'):
-                        await self.cron_manager.shutdown()
-                    elif hasattr(self.cron_manager, 'stop'):
-                        await self.cron_manager.stop()
-                except Exception as e:
-                    logger.error(f"Ошибка остановки cron: {e}")
-
-            # 2. Остановка updater и application
+            # 1. Остановка updater
             if hasattr(self.application, 'updater') and self.application.updater:
-                await self.application.updater.stop()
-            
+                try:
+                    if self.application.updater.running:
+                        logger.debug("Останавливаем updater...")
+                        await asyncio.wait_for(self.application.updater.stop(), timeout=stop_timeout)
+                except asyncio.TimeoutError:
+                    logger.warning("Таймаут при остановке updater")
+                except Exception as e:
+                    logger.warning(f"Ошибка остановки updater: {str(e)}")
+
+            # 2. Остановка application
             if hasattr(self.application, 'running') and self.application.running:
-                await self.application.stop()
-                await self.application.shutdown()
+                try:
+                    logger.debug("Останавливаем application...")
+                    await asyncio.wait_for(self.application.stop(), timeout=stop_timeout)
+                    await asyncio.wait_for(self.application.shutdown(), timeout=stop_timeout)
+                except asyncio.TimeoutError:
+                    logger.warning("Таймаут при остановке application")
+                except Exception as e:
+                    logger.warning(f"Ошибка остановки application: {str(e)}")
+
+            # 3. Остановка cron задач (если менеджер существует)
+            if hasattr(self, 'cron_manager') and self.cron_manager:
+                try:
+                    logger.debug("Останавливаем cron задачи...")
+                    # Проверяем наличие метода stop/shutdown
+                    if hasattr(self.cron_manager, 'shutdown'):
+                        await asyncio.wait_for(self.cron_manager.shutdown(), timeout=stop_timeout)
+                    elif hasattr(self.cron_manager, 'stop'):
+                        await asyncio.wait_for(self.cron_manager.stop(), timeout=stop_timeout)
+                    else:
+                        logger.debug("CronManager не требует явной остановки")
+                except Exception as e:
+                    logger.warning(f"Ошибка остановки cron: {str(e)}")
 
         except Exception as e:
-            logger.error(f"Критическая ошибка при остановке: {e}")
+            logger.error(f"Критическая ошибка при остановке: {str(e)}", exc_info=True)
         finally:
-            logger.info("Все компоненты остановлены")
+            logger.info("Все компоненты успешно остановлены")
+            self._running = False

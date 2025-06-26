@@ -1,73 +1,53 @@
-# ##main.py - Главный файл для запуска бота
-# Версия: 26.06.2025
-
+# ##main.py
 import asyncio
 import logging
-import logging.handlers
-from pathlib import Path
 from bot_core import LunchBot
-from config import CONFIG
-from db import Database
-from report_generators import ReportGenerator
+from logging.handlers import RotatingFileHandler
+import matplotlib
+matplotlib.use('Agg')
 
 def setup_logging():
-    """Настраивает систему логирования"""
-    log_file = CONFIG.logs_dir / "bot.log"
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    
-    file_handler = logging.handlers.RotatingFileHandler(
-        filename=log_file,
+    handler = RotatingFileHandler(
+        'bot.log',
         maxBytes=5*1024*1024,
         backupCount=3,
         encoding='utf-8'
     )
-    
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[
-            file_handler,
-            logging.StreamHandler()
-        ]
+        handlers=[handler]
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.WARNING)
 
 async def main():
-    """Основная функция запуска бота"""
+    """Финальная версия основной функции"""
     setup_logging()
     logger = logging.getLogger(__name__)
     
+    bot = LunchBot()
     try:
-        logger.info("=== ЗАПУСК ПРОГРАММЫ ===")
-        
-        # 1. Инициализация базы данных
-        logger.info("Инициализация базы данных...")
-        db = Database(
-            db_path=str(CONFIG.db_path),
-            configs_dir=str(CONFIG.configs_dir)  # Теперь этот атрибут существует
-        )
-        
-        # 2. Загрузка данных в конфиг из БД
-        logger.info("Загрузка конфигурации...")
-        CONFIG.init_db_data(db)
-        
-        # 3. Создаем генератор отчетов
-        logger.info("Инициализация генератора отчетов...")
-        report_generator = ReportGenerator(db)
-        
-        # 4. Создаем и запускаем бота
-        logger.info("Создание экземпляра бота...")
-        bot = LunchBot(db, report_generator)
-        
-        logger.info("Запуск основного цикла бота...")
+        logger.info("🚀 Запуск бота...")
         await bot.run()
-        
     except KeyboardInterrupt:
-        logger.info("🛑 Корректная остановка по Ctrl+C")
+        logger.info("🛑 Получен сигнал KeyboardInterrupt")
+    except asyncio.CancelledError:
+        logger.info("🛑 Асинхронные задачи были отменены")
     except Exception as e:
-        logger.critical(f"⛔ Критическая ошибка: {e}", exc_info=True)
+        logger.critical(f"⛔ Фатальная ошибка: {str(e)}", exc_info=True)
     finally:
-        logger.info("✅ Работа программы завершена")
+        logger.info("Начало завершения работы...")
+        try:
+            await asyncio.wait_for(bot.stop(), timeout=5)
+        except asyncio.TimeoutError:
+            logger.error("⚠️ Превышено время ожидания остановки!")
+        except Exception as e:
+            logger.error(f"⚠️ Ошибка при остановке: {str(e)}")
+        finally:
+            # Финализируем ресурсы
+            await asyncio.sleep(0.1)  # Даем время на финализацию
+            logger.info("✅ Работа бота полностью завершена")
 
 if __name__ == "__main__":
     try:

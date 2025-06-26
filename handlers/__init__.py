@@ -38,7 +38,7 @@ from handlers.order_callbacks import callback_handler, setup_order_callbacks
 from handlers.provider_handlers import setup_provider_handlers
 from handlers.registration_handlers import get_full_name, get_location, get_phone
 
-def setup_handlers(application, db_connection):
+def setup_handlers(application):
     """Настройка всех обработчиков в правильном порядке"""
     
     # 1. Специальные команды (тестовые, служебные)

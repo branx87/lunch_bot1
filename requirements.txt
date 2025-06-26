@@ -2,13 +2,12 @@
 python-telegram-bot==20.3
 aiocron==1.8
 openpyxl==3.1.2
-pandas  # Для генерации Excel-отчётов
+pandas==2.2.0  # Для генерации Excel-отчётов
 pytz==2023.3
 python-dotenv==1.1.0
 httpx==0.24.1
 filelock==3.16.1  # Для блокировок при работе с файлами
-numpy<2.0.0  # Явно указываем версию ниже 2.0
-matplotlib==3.8.4  # Последняя версия, совместимая с numpy 1.x
+matplotlib==3.7.1; python_version < '3.12'  # Версия без жестких зависимостей
 
 # Optional for colored logs (Windows)
 colorlog==6.7.0
