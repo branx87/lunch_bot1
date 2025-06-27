@@ -35,6 +35,7 @@ async def export_orders_for_provider(
     """
     Формирует текстовый отчёт для поставщиков.
     Объединяет данные по локациям "Офис" и "ПЦ 2".
+    Добавляет строку с незарегистрированными сотрудниками, если такие есть.
     """
     try:
         # Если даты не заданы — используем сегодняшнюю
@@ -47,12 +48,12 @@ async def export_orders_for_provider(
 
         # Получаем данные по локациям
         db.cursor.execute('''
-            SELECT u.location, SUM(o.quantity)
+            SELECT COALESCE(u.location, 'Не указано'), SUM(o.quantity)
             FROM orders o
             JOIN users u ON o.user_id = u.id
             WHERE o.target_date BETWEEN ? AND ?
               AND o.is_cancelled = FALSE
-            GROUP BY u.location
+            GROUP BY COALESCE(u.location, 'Не указано')
         ''', (start_date.isoformat(), end_date.isoformat()))
 
         location_data = dict(db.cursor.fetchall())
@@ -61,8 +62,9 @@ async def export_orders_for_provider(
         office_portions = location_data.get("Офис", 0) + location_data.get("ПЦ 2", 0)
         pc1_portions = location_data.get("ПЦ 1", 0)
         warehouse_portions = location_data.get("Склад", 0)
+        unregistered_portions = location_data.get("Не указано", 0)
 
-        total_portions = office_portions + pc1_portions + warehouse_portions
+        total_portions = office_portions + pc1_portions + warehouse_portions + unregistered_portions
 
         # Формируем текстовое сообщение
         period_text = (
@@ -71,15 +73,22 @@ async def export_orders_for_provider(
             else f"{start_date.strftime('%d.%m.%Y')} — {end_date.strftime('%d.%m.%Y')}"
         )
 
-        message = (
-            f"📋 *Заказы на* | {period_text}\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"📌 Всего: *{total_portions}* порций\n\n"
-            
-            f"• 🏢 Офис: *{office_portions}*\n"
-            f"• 🏭 ПЦ 1: *{pc1_portions}*\n"
+        # Основные строки отчета
+        message_lines = [
+            f"📋 *Заказы на* | {period_text}",
+            f"━━━━━━━━━━━━━━━━━━",
+            f"📌 Всего: *{total_portions}* порций\n",
+            f"• 🏢 Офис: *{office_portions}*",
+            f"• 🏭 ПЦ 1: *{pc1_portions}*",
             f"• 📦 Склад: *{warehouse_portions}*"
-        )
+        ]
+
+        # Добавляем строку с незарегистрированными только если они есть
+        if unregistered_portions > 0:
+            message_lines.append(f"• ❓ Незарегистрированные: *{unregistered_portions}*")
+
+        # Собираем финальное сообщение
+        message = "\n".join(message_lines)
 
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
@@ -138,7 +147,7 @@ async def export_accounting_report(
         query = '''
             SELECT 
                 u.full_name,
-                u.location,
+                COALESCE(u.location, 'Не указано'),
                 date(o.created_at) as order_date,
                 time(o.created_at) as order_time,
                 o.target_date,
@@ -147,8 +156,7 @@ async def export_accounting_report(
             FROM orders o
             JOIN users u ON o.user_id = u.id
             WHERE o.target_date BETWEEN ? AND ?
-              AND o.is_cancelled = FALSE
-              AND u.is_deleted = FALSE
+            AND o.is_cancelled = FALSE
             ORDER BY o.target_date, u.full_name
         '''
         db.cursor.execute(query, (start_date.isoformat(), end_date.isoformat()))
@@ -173,13 +181,13 @@ async def export_accounting_report(
         db.cursor.execute('''
             SELECT 
                 u.full_name,
-                u.location,
+                COALESCE(u.location, 'Не указано'),
                 SUM(o.quantity)
             FROM orders o
             JOIN users u ON o.user_id = u.id
             WHERE o.target_date BETWEEN ? AND ?
-              AND o.is_cancelled = FALSE
-            GROUP BY u.full_name, u.location
+            AND o.is_cancelled = FALSE
+            GROUP BY u.full_name, COALESCE(u.location, 'Не указано')
             ORDER BY SUM(o.quantity) DESC
         ''', (start_date.isoformat(), end_date.isoformat()))
         
@@ -193,12 +201,12 @@ async def export_accounting_report(
         ws_summary_locations.auto_filter.ref = "A1:B1"
         
         db.cursor.execute('''
-            SELECT u.location, SUM(o.quantity)
+            SELECT COALESCE(u.location, 'Не указано'), SUM(o.quantity)
             FROM orders o
             JOIN users u ON o.user_id = u.id
             WHERE o.target_date BETWEEN ? AND ?
-              AND o.is_cancelled = FALSE
-            GROUP BY u.location
+            AND o.is_cancelled = FALSE
+            GROUP BY COALESCE(u.location, 'Не указано')
             ORDER BY SUM(o.quantity) DESC
         ''', (start_date.isoformat(), end_date.isoformat()))
         
@@ -337,15 +345,14 @@ async def export_monthly_report(
                     SELECT 
                         o.target_date,
                         u.full_name,
-                        u.location,
+                        COALESCE(u.location, 'Не указано'),
                         o.quantity,
                         CASE WHEN o.is_preliminary THEN 'Предзаказ' ELSE 'Обычный' END
                     FROM orders o
                     JOIN users u ON o.user_id = u.id
                     WHERE o.target_date BETWEEN ? AND ?
-                      AND u.location = ?
-                      AND o.is_cancelled = FALSE
-                      AND u.is_deleted = FALSE
+                    AND u.location = ?
+                    AND o.is_cancelled = FALSE
                     ORDER BY o.target_date, u.full_name
                 ''', (start_date.isoformat(), end_date.isoformat(), location))
             
@@ -362,7 +369,7 @@ async def export_monthly_report(
         # Аналогично меняем запрос для сводки
         if is_daily:
             db.cursor.execute('''
-                SELECT u.location, SUM(o.quantity)
+                SELECT COALESCE(u.location, 'Не указано'), SUM(o.quantity)
                 FROM orders o
                 JOIN users u ON o.user_id = u.id
                 WHERE o.target_date = ?
@@ -372,12 +379,12 @@ async def export_monthly_report(
             ''', (start_date.isoformat(),))
         else:
             db.cursor.execute('''
-                SELECT u.location, SUM(o.quantity)
+                SELECT COALESCE(u.location, 'Не указано'), SUM(o.quantity)
                 FROM orders o
                 JOIN users u ON o.user_id = u.id
                 WHERE o.target_date BETWEEN ? AND ?
-                  AND o.is_cancelled = FALSE
-                GROUP BY u.location
+                    AND o.is_cancelled = FALSE
+                GROUP BY COALESCE(u.location, 'Не указано')
                 ORDER BY SUM(o.quantity) DESC
             ''', (start_date.isoformat(), end_date.isoformat()))
         
