@@ -388,76 +388,114 @@ async def monthly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Обрабатывает выбор месяца для статистики. Вычисляет и показывает:
-    - Общее количество заказанных порций за месяц
-    - Информационное сообщение, если заказов нет
-    Автоматически определяет границы выбранного месяца.
+    Показывает статистику с разделением на:
+    - ✅ Выполненные (заказы, дата которых уже прошла)
+    - ⏳ Предстоящие (будущие заказы, которые можно отменить)
+    - ❌ Отмененные (по желанию)
     """
     try:
         user = update.effective_user
         text = update.message.text.strip()
+        today = datetime.now(CONFIG.timezone).date()
 
-        # Проверяем, хочет ли вернуться в меню
         if text == "Вернуться в главное меню":
             return await show_main_menu(update, user.id)
 
-        # Получаем текущую дату
-        now = datetime.now(CONFIG.timezone)
-        current_year = now.year
-        current_month = now.month
-
+        # Определяем период
         if text == "Текущий месяц":
-            start_date = now.replace(day=1).date()
-            month_name = now.strftime("%B %Y")
+            start_date = today.replace(day=1)
+            month_name = start_date.strftime("%B %Y")
         elif text == "Прошлый месяц":
-            # Вычисляем последний день прошлого месяца
-            first_day_current_month = now.replace(day=1)
-            last_day_prev_month = first_day_current_month - timedelta(days=1)
-            start_date = last_day_prev_month.replace(day=1)
-            month_name = last_day_prev_month.strftime("%B %Y")
+            start_date = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
+            month_name = start_date.strftime("%B %Y")
         else:
-            await update.message.reply_text("❌ Неизвестный период. Пожалуйста, выберите из предложенных вариантов.")
+            await update.message.reply_text("❌ Неизвестный период.")
             return SELECT_MONTH_RANGE_STATS
 
-        # Получаем ID пользователя из базы данных
+        end_date = (start_date + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+
+        # Получаем ID пользователя
         db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user.id,))
         user_record = db.cursor.fetchone()
         if not user_record:
-            await update.message.reply_text("❌ Пользователь не найден в системе.")
+            await update.message.reply_text("❌ Пользователь не найден.")
             return await show_main_menu(update, user.id)
 
         user_db_id = user_record[0]
 
-        # Считаем количество порций за выбранный месяц (только неотмененные заказы)
+        # Получаем статистику
         db.cursor.execute("""
-            SELECT SUM(quantity)
+            SELECT 
+                -- Выполненные заказы (дата прошла + не отменены)
+                SUM(CASE WHEN target_date < ? AND is_cancelled = FALSE THEN quantity ELSE 0 END) as completed,
+                
+                -- Предстоящие заказы (дата в будущем + не отменены)
+                SUM(CASE WHEN target_date >= ? AND is_cancelled = FALSE THEN quantity ELSE 0 END) as upcoming,
+                
+                -- Отмененные заказы
+                SUM(CASE WHEN is_cancelled = TRUE THEN quantity ELSE 0 END) as cancelled
             FROM orders
             WHERE user_id = ?
-              AND target_date >= ?
-              AND target_date <= date(?, 'start of month', '+1 month', '-1 day')
-              AND is_cancelled = FALSE
-        """, (user_db_id, start_date.isoformat(), start_date.isoformat()))
+              AND target_date BETWEEN ? AND ?
+        """, (today, today, user_db_id, start_date.isoformat(), end_date.isoformat()))
 
-        result = db.cursor.fetchone()
-        total_orders = result[0] or 0
+        stats = db.cursor.fetchone()
+        completed = stats[0] or 0
+        upcoming = stats[1] or 0
+        cancelled = stats[2] or 0
 
-        # Формируем ответ
-        if total_orders == 0:
-            message = f"📉 У вас пока нет заказов за {month_name}."
-        else:
-            message = (
-                f"📊 Ваша статистика за {month_name}:\n"
-                f"• Всего заказано порций: {total_orders}"
-            )
+        # Формируем сообщение
+        message_lines = [
+            f"📊 Статистика за {month_name}:",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"🍽 Всего порций: *{completed + upcoming}*",
+            "",
+            f"✅ Выполненные: *{completed}*",
+            f"⏳ Предстоящие: *{upcoming}*"
+        ]
 
-        await update.message.reply_text(message)
+        if cancelled > 0:
+            message_lines.append(f"❌ Отмененные: *{cancelled}*")
+
+        # Дополнительная информация о предстоящих заказах
+        if upcoming > 0:
+            db.cursor.execute("""
+                SELECT COUNT(*) 
+                FROM orders 
+                WHERE user_id = ? 
+                  AND target_date >= ? 
+                  AND is_cancelled = FALSE
+            """, (user_db_id, today))
+            order_count = db.cursor.fetchone()[0]
+            
+            next_order_date = None
+            db.cursor.execute("""
+                SELECT MIN(target_date)
+                FROM orders
+                WHERE user_id = ?
+                  AND target_date >= ?
+                  AND is_cancelled = FALSE
+            """, (user_db_id, today))
+            next_date = db.cursor.fetchone()[0]
+            
+            if next_date:
+                next_order_date = datetime.strptime(next_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+                message_lines.extend([
+                    "",
+                    f"Ближайший заказ: *{next_order_date}*",
+                    f"Всего предстоящих дней с заказами: *{order_count}*"
+                ])
+
+        await update.message.reply_text(
+            "\n".join(message_lines),
+            parse_mode="Markdown"
+        )
 
     except Exception as e:
-        logger.error(f"Ошибка при обработке выбора месяца в статистике: {e}", exc_info=True)
-        await update.message.reply_text("❌ Произошла ошибка при получении статистики.")
+        logger.error(f"Ошибка статистики: {e}", exc_info=True)
+        await update.message.reply_text("❌ Ошибка при получении статистики.")
 
-    finally:
-        return await show_main_menu(update, user.id)
+    return await show_main_menu(update, user.id)
     
 async def handle_order_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
