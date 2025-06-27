@@ -8,34 +8,17 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Указываем путь к базе данных
-DB_FOLDER = Path(__file__).parent.parent / 'data'
-DB_FOLDER.mkdir(exist_ok=True)  # Создаем папку, если её нет
-DB_PATH = DB_FOLDER / 'lunch_bot.db'
-
 class Database:
     def __init__(self):
-        try:
-            # Проверяем и создаем папку для базы данных
-            if not DB_FOLDER.exists():
-                DB_FOLDER.mkdir(parents=True)
-                logger.info(f"Создана папка для базы данных: {DB_FOLDER}")
-            
-            # Подключаемся к базе данных
-            self.conn = sqlite3.connect(str(DB_PATH), 
-                                      check_same_thread=False, 
-                                      isolation_level=None)
-            self.cursor = self.conn.cursor()
-            
-            logger.info(f"База данных подключена: {DB_PATH}")
-            self._init_db()
-            
-            if not self._is_data_loaded():
-                self._load_initial_data()
-                
-        except Exception as e:
-            logger.critical(f"Ошибка при подключении к базе данных: {e}")
-            raise
+        # Создаем путь к базе данных в папке data
+        db_path = Path('data') / 'lunch_bot.db'
+        db_path.parent.mkdir(parents=True, exist_ok=True)  # Создаем папку если ее нет
+        
+        self.conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        self.cursor = self.conn.cursor()
+        self._init_db()
+        if not self._is_data_loaded():
+            self._load_initial_data()
 
     def _is_data_loaded(self):
         """Проверяет, были ли уже загружены основные данные"""
@@ -47,12 +30,13 @@ class Database:
     def _load_initial_data(self):
         """Загружает начальные данные из Excel файла только при первом запуске"""
         try:
-            if not os.path.exists('config.xlsx'):
-                logger.warning("Файл config.xlsx не найден, пропускаем загрузку данных")
+            config_path = Path('data') / 'configs' / 'config.xlsx'
+            if not config_path.exists():
+                logger.warning(f"Файл {config_path} не найден, пропускаем загрузку данных")
                 return
 
             logger.info("Начальная загрузка данных из Excel...")
-            df = pd.read_excel('config.xlsx', header=0)
+            df = pd.read_excel(config_path, header=0)
             
             # Загрузка сотрудников (без дублирования)
             existing_employees = {e['full_name'].lower() for e in self.get_employees(active_only=False)}
@@ -72,7 +56,7 @@ class Database:
             menu_data = {}
             current_day = None
             
-            df = pd.read_excel('config.xlsx', header=None)
+            df = pd.read_excel(config_path, header=None)
             menu_data = {}
             current_day = None
 

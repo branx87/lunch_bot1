@@ -35,11 +35,11 @@ def ensure_reports_dir(report_type: str = 'accounting') -> str:
     base_dir = os.path.dirname(os.path.abspath(__file__))
     
     if report_type == 'provider':
-        reports_dir = os.path.join(base_dir, 'reports', 'provider_reports')
+        reports_dir = os.path.join(base_dir, 'data', 'reports', 'provider_reports')
     elif report_type == 'admin':
-        reports_dir = os.path.join(base_dir, 'reports', 'admin_reports')
+        reports_dir = os.path.join(base_dir, 'data', 'reports', 'admin_reports')
     else:
-        reports_dir = os.path.join(base_dir, 'reports', 'accounting_reports')
+        reports_dir = os.path.join(base_dir, 'data', 'reports', 'accounting_reports')
     
     os.makedirs(reports_dir, exist_ok=True)
     

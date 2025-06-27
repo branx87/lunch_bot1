@@ -33,11 +33,11 @@ class BotConfig:
         self._timezone = pytz.timezone('Europe/Moscow')
         self._locations = ["Офис", "ПЦ 1", "ПЦ 2", "Склад"]
         
-        self._load_config()
-
-    def _load_config(self):
-        """Загружает все настройки"""
+        # Сначала загружаем env переменные
         self._load_env_vars()
+        
+        # Затем инициализируем БД и загружаем данные
+        from db import db  # Импортируем здесь, чтобы избежать циклических импортов
         self._load_db_data()
 
     def _load_env_vars(self):
