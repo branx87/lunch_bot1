@@ -7,7 +7,7 @@ from telegram.ext import ConversationHandler
 from telegram.ext import ContextTypes
 from datetime import datetime, timedelta
 
-from bot_keyboards import create_main_menu_keyboard
+from bot_keyboards import create_admin_reports_menu, create_main_menu_keyboard, create_report_type_menu, create_month_selection_keyboard
 from config import CONFIG
 from constants import FULL_NAME, PHONE, SELECT_MONTH_RANGE
 from db import db
@@ -15,13 +15,16 @@ from handlers.common import show_main_menu
 from handlers.common_handlers import view_orders
 from handlers.common_report_handlers import select_month_range
 from handlers.menu_handlers import monthly_stats, show_today_menu, show_week_menu
-from report_generators import export_accounting_report, export_daily_admin_report, export_daily_orders_for_provider
+from report_generators import export_accounting_report, export_daily_admin_report, export_daily_orders_for_provider, export_orders_for_provider
 from utils import check_registration, handle_unregistered
 from bot_keyboards import get_user_role
 
 logger = logging.getLogger(__name__)
 
 __all__ = ['start', 'error_handler', 'test_connection', 'main_menu', 'handle_text_message']
+
+ADMIN_REPORTS_MENU = "ADMIN_REPORTS_MENU"
+SELECT_REPORT_TYPE = "SELECT_REPORT_TYPE"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -488,3 +491,83 @@ async def check_employee_registration(update: Update, context: ContextTypes.DEFA
     except Exception as e:
         logger.error(f"Ошибка при проверке регистрации: {e}")
         return False
+    
+async def admin_reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик меню отчетов админа"""
+    user = update.effective_user
+    if user.id not in CONFIG.admin_ids:
+        await update.message.reply_text("❌ У вас нет прав доступа")
+        return await show_main_menu(update, user.id)
+    
+    await update.message.reply_text(
+        "📊 Выберите период для отчета:",
+        reply_markup=create_admin_reports_menu()
+    )
+    return ADMIN_REPORTS_MENU
+
+async def handle_admin_reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик выбора в меню отчетов админа"""
+    user = update.effective_user
+    text = update.message.text
+    
+    if text == "📊 Отчет за день":
+        context.user_data['report_period'] = 'daily'
+        await update.message.reply_text(
+            "📋 Выберите тип отчета:",
+            reply_markup=create_report_type_menu()
+        )
+        return SELECT_REPORT_TYPE
+        
+    elif text == "📅 Отчет за месяц":
+        context.user_data['report_period'] = 'monthly'
+        await update.message.reply_text(
+            "📋 Выберите тип отчета:",
+            reply_markup=create_report_type_menu()
+        )
+        return SELECT_REPORT_TYPE
+        
+    elif text == "🏠 Главное меню":
+        return await show_main_menu(update, user.id)
+        
+    else:
+        await update.message.reply_text("Неизвестная команда")
+        return await admin_reports_menu(update, context)
+
+async def handle_report_type_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик выбора типа отчета"""
+    user = update.effective_user
+    text = update.message.text
+    
+    if text == "🔙 Назад":
+        return await admin_reports_menu(update, context)
+        
+    # Сохраняем тип отчета
+    if text == "💰 Бухгалтерский":
+        context.user_data['report_type'] = 'accounting'
+    elif text == "📦 Поставщика":
+        context.user_data['report_type'] = 'provider'
+    elif text == "👨‍💼 Админский":
+        context.user_data['report_type'] = 'admin'
+    else:
+        await update.message.reply_text("Неизвестный тип отчета")
+        return await handle_report_type_selection(update, context)
+    
+    # Для дневных отчетов - сразу генерируем
+    if context.user_data['report_period'] == 'daily':
+        today = datetime.now(CONFIG.timezone).date()
+        
+        if context.user_data['report_type'] == 'accounting':
+            await export_accounting_report(update, context, today, today)
+        elif context.user_data['report_type'] == 'provider':
+            await export_orders_for_provider(update, context, today, today)
+        elif context.user_data['report_type'] == 'admin':
+            await export_daily_admin_report(update, context, today)
+            
+        return await show_main_menu(update, user.id)
+    # Для месячных - запрашиваем месяц
+    else:
+        await update.message.reply_text(
+            "📅 Выберите месяц:",
+            reply_markup=create_month_selection_keyboard()
+        )
+        return SELECT_MONTH_RANGE
