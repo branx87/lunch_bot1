@@ -146,6 +146,7 @@ class Database:
                     is_employee BOOLEAN DEFAULT FALSE,
                     username TEXT,
                     is_deleted BOOLEAN DEFAULT FALSE,
+                    notifications_enabled BOOLEAN DEFAULT TRUE,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )

@@ -35,6 +35,9 @@ class LunchBot:
             # Настройка обработчиков
             from handlers import setup_handlers
             setup_handlers(self.application)
+            
+            from handlers.commands import setup as setup_commands
+            setup_commands(self.application)
 
             await self.application.initialize()
             await self.application.start()

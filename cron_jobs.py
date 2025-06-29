@@ -57,11 +57,14 @@ class CronManager:
                 SELECT telegram_id 
                 FROM users 
                 WHERE is_verified = TRUE 
+                AND notifications_enabled = TRUE
                 AND telegram_id NOT IN (
                     SELECT u.telegram_id 
                     FROM users u 
                     JOIN orders o ON u.id = o.user_id 
-                    WHERE o.target_date = ? AND o.is_preliminary = FALSE AND o.is_cancelled = FALSE
+                    WHERE o.target_date = ? 
+                    AND o.is_cancelled = FALSE
+                    AND o.status IN ('confirmed', 'preliminary')
                 )
             """, (now.date().isoformat(),))
             
@@ -74,7 +77,8 @@ class CronManager:
                     await self.application.bot.send_message(
                         chat_id=user_id,
                         text="⏰ *Не забудьте заказать обед!* 🍽\n\n"
-                             "Прием заказов открыт до 9:30.\n\n",
+                            "Прием заказов открыт до 9:30.\n\n"
+                            "Чтобы отключить уведомления: /notifications_off",
                         parse_mode="Markdown"
                     )
                 except Exception as e:

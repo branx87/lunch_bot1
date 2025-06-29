@@ -40,7 +40,7 @@ async def main():
         print("Токен бота:", CONFIG.token)
         print("Проверка конфига:")
         print("Токен существует:", hasattr(CONFIG, '_token'))
-        print("Путь к .env:", (Path(__file__).parent / 'configs' / '.env').exists())
+        print("Путь к .env:", (Path(__file__).parent / 'data' / 'configs' / '.env').exists())
         bot = LunchBot()
         
         await bot.run()
