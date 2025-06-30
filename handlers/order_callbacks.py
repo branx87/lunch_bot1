@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 from datetime import datetime, date, time, timedelta
 import logging
 
-from config import CONFIG
+from db import CONFIG
 from db import db
 from handlers.common import show_main_menu
 from middleware import check_user_access

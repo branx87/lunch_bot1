@@ -4,7 +4,7 @@ from telegram.ext import ConversationHandler
 from telegram.ext import ContextTypes  # вместо ContextType
 import logging
 
-from config import CONFIG
+from db import CONFIG
 from constants import MAIN_MENU
 from db import db
 from bot_keyboards import create_main_menu_keyboard, create_provider_menu_keyboard, create_unverified_user_keyboard

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 load_dotenv(CONFIGS_DIR / '.env')
 
 class BotConfig:
-    def __init__(self):
+    def __init__(self, db_connection):  # Теперь требует db_connection
         self._token = None
         self._admin_ids = []
         self._provider_ids = []
@@ -32,9 +32,11 @@ class BotConfig:
         self._menu = {}
         self._timezone = pytz.timezone('Europe/Moscow')
         self._locations = ["Офис", "ПЦ 1", "ПЦ 2", "Склад"]
+        self._db = db_connection  # Сохраняем соединение с БД
+        self._orders_enabled = self._load_orders_status()
         
-        # Сначала загружаем env переменные
         self._load_env_vars()
+        self._load_db_data()
         
         # Затем инициализируем БД и загружаем данные
         from db import db  # Импортируем здесь, чтобы избежать циклических импортов
@@ -86,6 +88,32 @@ class BotConfig:
             logger.error(f"Ошибка загрузки данных из БД: {e}")
             raise
 
+    def _load_orders_status(self):
+        """Загружает статус заказов из БД"""
+        try:
+            self._db.cursor.execute("SELECT setting_value FROM bot_settings WHERE setting_name = 'orders_enabled'")
+            result = self._db.cursor.fetchone()
+            return result and result[0] == 'True'
+        except Exception as e:
+            logger.error(f"Ошибка загрузки статуса заказов: {e}")
+            return True
+            
+    def toggle_orders(self, enabled: bool):
+        """Переключает статус заказов и сохраняет в БД"""
+        try:
+            self._orders_enabled = enabled
+            self._db.cursor.execute(
+                """INSERT OR REPLACE INTO bot_settings 
+                (setting_name, setting_value) 
+                VALUES (?, ?)""",
+                ('orders_enabled', str(enabled))
+            )
+            self._db.conn.commit()
+            logger.info(f"Статус заказов обновлен: {'разрешены' if enabled else 'запрещены'}")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения статуса заказов: {e}")
+            raise
+
     @property
     def token(self) -> str:
         return self._token
@@ -121,6 +149,7 @@ class BotConfig:
     @property
     def locations(self) -> list:
         return self._locations
-
-# Создаем глобальный объект конфигурации
-CONFIG = BotConfig()
+    
+    @property
+    def orders_enabled(self):
+        return self._orders_enabled

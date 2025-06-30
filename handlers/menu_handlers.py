@@ -5,7 +5,7 @@ from telegram.ext import ContextTypes
 from datetime import datetime, timedelta, date
 
 from bot_keyboards import create_main_menu_keyboard
-from config import CONFIG
+from db import CONFIG
 from constants import SELECT_MONTH_RANGE_STATS
 from db import db
 from handlers.common import show_main_menu

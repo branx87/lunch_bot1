@@ -4,7 +4,7 @@ from telegram.ext import ApplicationBuilder
 from middleware import AccessControlHandler
 import logging
 import asyncio
-from config import CONFIG
+from db import CONFIG
 from cron_jobs import CronManager
 
 logger = logging.getLogger(__name__)

@@ -220,6 +220,22 @@ class Database:
                     FOREIGN KEY(provider_id) REFERENCES users(id)
                 )
             ''')
+            
+            # Таблица запрета или разрешения на прием заказов
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS bot_settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    setting_name TEXT UNIQUE,
+                    setting_value TEXT,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            # Добавим начальное значение, если таблица пустая
+            self.cursor.execute('''
+                INSERT OR IGNORE INTO bot_settings (setting_name, setting_value)
+                VALUES ('orders_enabled', 'True')
+            ''')
+            self.conn.commit()
 
             # Создаем индексы
             with self.conn:
@@ -449,5 +465,9 @@ class Database:
         """Проверяет, есть ли уже данные в БД"""
         return self.cursor.execute("SELECT 1 FROM holidays LIMIT 1").fetchone() is not None
 
-# Глобальный экземпляр базы данных
+# Создаем глобальный экземпляр базы данных
 db = Database()
+
+# Инициализируем CONFIG после создания db
+from config import BotConfig
+CONFIG = BotConfig(db)  # Передаем экземпляр базы данных

@@ -23,7 +23,7 @@ import os
 from telegram.error import BadRequest
 from pathlib import Path
 
-from config import CONFIG
+from db import CONFIG
 from db import db
 from constants import (
     ADD_ACCOUNTANT, ADD_ADMIN, ADD_HOLIDAY_DATE, ADD_HOLIDAY_NAME, 
@@ -96,7 +96,7 @@ def update_env_file(key: str, value: str):
 
     # Перезагружаем конфиг в памяти
     load_dotenv(ENV_PATH, override=True)
-    from config import CONFIG
+    from db import CONFIG
     CONFIG.reload()
 
 async def config_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):

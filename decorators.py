@@ -3,7 +3,7 @@ from functools import wraps
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import CONFIG
+from db import CONFIG
 
 def admin_required(func):
     @wraps(func)

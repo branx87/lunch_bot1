@@ -2,7 +2,7 @@
 from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import ConversationHandler, MessageHandler, filters
 from telegram.ext import ContextTypes
-from config import CONFIG
+from db import CONFIG
 from db import db
 from constants import (
     EDIT_MENU_DAY, 

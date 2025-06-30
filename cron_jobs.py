@@ -1,6 +1,6 @@
 # ##handlers/cron_jobs.py
 import aiocron
-from config import CONFIG
+from db import CONFIG
 from datetime import datetime, timedelta
 import logging
 from db import db

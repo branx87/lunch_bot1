@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta, date, time
 import pytz
 
-from config import CONFIG
+from db import CONFIG
 from handlers.common import show_main_menu
 from settings import SETTINGS_CONFIG
 from db import db
@@ -34,6 +34,8 @@ def get_next_workday(date=None):
 
 def can_modify_order(target_date):
     """Проверяет, можно ли изменять заказ на указанную дату"""
+    if not CONFIG.orders_enabled:  # Первая проверка!
+        return False
     now = datetime.now(CONFIG.timezone)
     
     # Если target_date - строка, преобразуем в дату

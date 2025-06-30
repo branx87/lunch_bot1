@@ -6,7 +6,7 @@ from telegram.ext import ConversationHandler
 from telegram.ext import ContextTypes
 from datetime import datetime, timedelta
 
-from config import CONFIG
+from db import CONFIG
 from constants import AWAIT_MESSAGE_TEXT, FULL_NAME, LOCATION, PHONE
 from db import db
 from handlers.common import show_main_menu

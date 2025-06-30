@@ -3,7 +3,7 @@ import logging
 from telegram import InlineKeyboardButton, Update, InlineKeyboardMarkup
 from datetime import datetime, timedelta
 
-from config import CONFIG
+from db import CONFIG
 from db import db
 from handlers.common import show_main_menu
 from utils import can_modify_order

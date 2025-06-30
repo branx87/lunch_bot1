@@ -6,7 +6,7 @@ from bot_core import LunchBot
 from logging.handlers import RotatingFileHandler
 import matplotlib
 
-from config import CONFIG
+from db import CONFIG
 matplotlib.use('Agg')
 
 def setup_logging():

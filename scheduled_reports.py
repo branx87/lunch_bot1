@@ -2,7 +2,7 @@
 import logging
 from datetime import datetime
 from telegram.ext import Application
-from config import CONFIG
+from db import CONFIG
 from settings import SETTINGS_CONFIG
 
 from report_generators import export_accounting_report, export_daily_admin_report, export_daily_orders_for_provider

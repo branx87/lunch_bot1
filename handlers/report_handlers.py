@@ -7,7 +7,7 @@ import matplotlib
 
 matplotlib.use('Agg')
 
-from config import CONFIG
+from db import CONFIG
 from constants import SELECT_MONTH_RANGE
 from handlers.common import show_main_menu
 from report_generators import export_accounting_report, export_daily_admin_report, export_monthly_report, export_orders_for_provider

@@ -9,7 +9,7 @@ import os
 import logging
 import matplotlib
 
-from config import CONFIG
+from db import CONFIG
 matplotlib.use('Agg')  # Устанавливаем бэкенд, не требующий GUI
 import matplotlib.pyplot as plt
 try:

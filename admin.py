@@ -7,7 +7,7 @@ import logging
 import matplotlib
 matplotlib.use('Agg')
 
-from config import CONFIG
+from db import CONFIG
 from constants import ADMIN_MESSAGE, MAIN_MENU, SELECT_MONTH_RANGE
 from db import db
 from bot_keyboards import create_admin_keyboard

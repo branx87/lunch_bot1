@@ -3,7 +3,7 @@ import logging
 from telegram.ext import ContextTypes
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 from datetime import datetime, time, timedelta
-from config import CONFIG
+from db import CONFIG
 from db import db
 from telegram.ext import CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters
 import sqlite3

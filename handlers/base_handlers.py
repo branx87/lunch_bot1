@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 from datetime import datetime, timedelta
 
 from bot_keyboards import create_admin_reports_menu, create_main_menu_keyboard, create_report_type_menu, create_month_selection_keyboard
-from config import CONFIG
+from db import CONFIG
 from constants import FULL_NAME, PHONE, SELECT_MONTH_RANGE
 from db import db
 from handlers.common import show_main_menu

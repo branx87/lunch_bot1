@@ -3,7 +3,7 @@ from asyncio.log import logger
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
-from config import CONFIG
+from db import CONFIG
 from db import db
 from handlers.common import show_main_menu
 from utils import can_modify_order

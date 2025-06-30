@@ -12,7 +12,7 @@ from telegram.ext import (
 )
 
 from admin import message_history
-from config import CONFIG
+from db import CONFIG
 from constants import (
     ADMIN_REPORTS_MENU, AWAIT_MESSAGE_TEXT, FULL_NAME, LOCATION, MAIN_MENU, 
     ORDER_ACTION, ORDER_CONFIRMATION, PHONE, 
@@ -129,6 +129,11 @@ def setup_handlers(application):
     application.add_handler(MessageHandler(
         filters.Regex("^📜 История сообщений$") & filters.User(user_id=CONFIG.admin_ids),
         message_history
+    ))
+
+    application.add_handler(MessageHandler(
+        filters.Regex("^🔒 Вкл/Выкл заказы$") & filters.User(user_id=CONFIG.admin_ids),
+        handle_admin_choice
     ))
 
     # 7. Основные обработчики сообщений
