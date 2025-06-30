@@ -29,8 +29,8 @@ SELECT_REPORT_TYPE = "SELECT_REPORT_TYPE"
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обработчик команды /start. Проверяет регистрацию пользователя:
-    - Для новых пользователей начинает регистрацию
-    - Для незавершивших регистрацию предлагает повторно
+    - Для новых пользователей начинает регистрацию с кнопки отправки номера
+    - Для незавершивших регистрацию предлагает продолжить
     - Для зарегистрированных показывает главное меню
     """
     await update.message.reply_text("Обновляю меню...", reply_markup=ReplyKeyboardRemove())
@@ -45,7 +45,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Пропускаем регистрацию и сразу показываем главное меню
             return await show_main_menu(update, user.id)
         
-        # Сначала проверяем по telegram_id
+        # Проверяем регистрацию пользователя
         db.cursor.execute("""
             SELECT id, full_name, is_verified, is_deleted 
             FROM users 
@@ -67,20 +67,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await show_main_menu(update, user.id)
                 return ConversationHandler.END
 
-            # Регистрация не завершена — продолжаем её
-            keyboard = [[KeyboardButton("📱 Отправить номер телефона", request_contact=True)]]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-            await update.message.reply_text(
-                "Продолжим регистрацию. Отправьте номер телефона:",
-                reply_markup=reply_markup
-            )
-            return PHONE
-
-        # Пользователь не найден — начинаем регистрацию
+        # Показываем кнопку для отправки номера телефона
         keyboard = [[KeyboardButton("📱 Отправить номер телефона", request_contact=True)]]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
         await update.message.reply_text(
-            "Добро пожаловать! Для регистрации отправьте свой номер телефона:",
+            "Для регистрации отправьте свой номер телефона, используя кнопку ниже:",
             reply_markup=reply_markup
         )
         return PHONE

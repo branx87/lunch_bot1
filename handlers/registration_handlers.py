@@ -16,21 +16,38 @@ logger = logging.getLogger(__name__)
 
 async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Получает номер телефона и сохраняет его в существующей записи пользователя.
+    Получает номер телефона ТОЛЬКО через кнопку "📱 Отправить номер телефона"
     """
     user = update.effective_user
-    logger.info(f"Получен номер телефона от пользователя {user.id}")
+    logger.info(f"Получен запрос номера телефона от пользователя {user.id}")
+
+    # Если пользователь не отправил контакт, а написал текст
+    if not update.message.contact:
+        # Повторно показываем кнопку для отправки номера
+        keyboard = [[KeyboardButton("📱 Отправить номер телефона", request_contact=True)]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+        await update.message.reply_text(
+            "❌ Пожалуйста, используйте кнопку '📱 Отправить номер телефона' для отправки вашего номера",
+            reply_markup=reply_markup
+        )
+        return PHONE
 
     try:
-        # Получаем контакт или текст
-        phone = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
-
+        # Получаем номер из контакта
+        phone = update.message.contact.phone_number
+        
         if not phone:
             await update.message.reply_text("❌ Не удалось получить номер телефона.")
             return PHONE
 
+        # Нормализуем номер телефона (убираем все нецифровые символы кроме + в начале)
+        normalized_phone = normalize_phone(phone)
+        if not normalized_phone:
+            await update.message.reply_text("❌ Неверный формат номера телефона.")
+            return PHONE
+
         # Сохраняем в контекст
-        context.user_data['phone'] = phone
+        context.user_data['phone'] = normalized_phone
 
         # Обновляем запись в БД
         with db.conn:
@@ -38,7 +55,7 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 UPDATE users 
                 SET phone = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE telegram_id = ?
-            """, (phone, user.id))
+            """, (normalized_phone, user.id))
 
         # Проверяем, что запись действительно изменилась
         db.cursor.execute("SELECT phone FROM users WHERE telegram_id = ?", (user.id,))
@@ -46,13 +63,47 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"После обновления телефон в БД: {result[0] if result else None}")
 
         # Переход к имени
-        await update.message.reply_text("Введите ваше фамилию и имя:")
+        await update.message.reply_text(
+            "Введите ваше фамилию и имя:",
+            reply_markup=ReplyKeyboardRemove()  # Убираем клавиатуру после успешного ввода
+        )
         return FULL_NAME
 
     except Exception as e:
         logger.error(f"Ошибка в get_phone: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Ошибка при сохранении номера")
         return PHONE
+
+
+def is_valid_phone(phone: str) -> bool:
+    """Проверяет, является ли строка валидным номером телефона"""
+    if not phone:
+        return False
+    
+    # Удаляем все символы, кроме цифр и +
+    cleaned = ''.join(c for c in phone if c.isdigit() or c == '+')
+    
+    # Проверяем длину (минимум 10 цифр для российских номеров)
+    digits = [c for c in cleaned if c.isdigit()]
+    return len(digits) >= 10
+
+
+def normalize_phone(phone: str) -> str:
+    """Нормализует номер телефона к стандартному формату"""
+    if not phone:
+        return ""
+    
+    # Оставляем только цифры и +
+    cleaned = ''.join(c for c in phone if c.isdigit() or c == '+')
+    
+    # Если номер начинается с 8, заменяем на +7
+    if cleaned.startswith('8'):
+        cleaned = '+7' + cleaned[1:]
+    # Если номер начинается с 7, добавляем +
+    elif cleaned.startswith('7') and not cleaned.startswith('+7'):
+        cleaned = '+' + cleaned
+    
+    return cleaned
 
 async def get_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
