@@ -1,29 +1,27 @@
 ##import_from_excel.py
-# загрузка заказов
+# Загрузка в базу данных
 import sqlite3
 import pandas as pd
 
-conn = sqlite3.connect(r"C:\projects\lunch_bot\lunch_bot.db")
-df = pd.read_excel("orders.xlsx", sheet_name="orders")
-df.to_sql("orders", conn, if_exists="replace", index=False)  # "replace" удалит старые данные
-conn.close()
-
-# загрузка сотрудников
-import sqlite3
-import pandas as pd
-
+# Подключение к базе данных
 conn = sqlite3.connect(r"C:\projects\lunch_bot\lunch_bot.db")
 
-# Чтение Excel с явным указанием типов
-df = pd.read_excel("users.xlsx", dtype={
+# Загрузка users
+users_df = pd.read_excel("db_export.xlsx", sheet_name="users", dtype={
     'telegram_id': 'Int64',
     'phone': 'string'
 })
 
-# Очистка таблицы перед импортом
+# Очистка и загрузка таблицы users
 conn.execute("DELETE FROM users;")
+users_df.to_sql("users", conn, if_exists="append", index=False)
 
-# Импорт с правильными типами
-df.to_sql("users", conn, if_exists="append", index=False)
+# Загрузка orders
+orders_df = pd.read_excel("db_export.xlsx", sheet_name="orders")
+
+# Очистка и загрузка таблицы orders
+conn.execute("DELETE FROM orders;")
+orders_df.to_sql("orders", conn, if_exists="append", index=False)
 
 conn.close()
+print("Данные успешно импортированы из db_export.xlsx в базу данных")
