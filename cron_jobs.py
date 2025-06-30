@@ -29,6 +29,7 @@ class CronManager:
         # Утренние напоминания в 9:00
         self.jobs.append(aiocron.crontab(
             '0 9 * * 1-5',
+            # '* * * * * ',
             func=self._morning_reminder,
             tz=CONFIG.timezone
         ))
@@ -48,7 +49,7 @@ class CronManager:
         ))
 
     async def _morning_reminder(self):
-        """Ваш код утренних напоминаний"""
+        """Утренние напоминания пользователям без заказов на сегодня"""
         if await self.is_workday(datetime.now(CONFIG.timezone)):
             now = datetime.now(CONFIG.timezone)
             logger.info(f"Запуск напоминаний в {now}")
@@ -64,7 +65,7 @@ class CronManager:
                     JOIN orders o ON u.id = o.user_id 
                     WHERE o.target_date = ? 
                     AND o.is_cancelled = FALSE
-                    AND o.status IN ('confirmed', 'preliminary')
+                    AND o.quantity > 0
                 )
             """, (now.date().isoformat(),))
             
@@ -76,10 +77,12 @@ class CronManager:
                 try:
                     await self.application.bot.send_message(
                         chat_id=user_id,
-                        text="⏰ *Не забудьте заказать обед!* 🍽\n\n"
+                        text=(
+                            "⏰ <b>Не забудьте заказать обед!</b> 🍽\n\n"
                             "Прием заказов открыт до 9:30.\n\n"
-                            "Чтобы отключить уведомления: /notifications_off",
-                        parse_mode="Markdown"
+                            "Чтобы отключить напоминания отправьте: /notifications_off"
+                        ),
+                        parse_mode="HTML"
                     )
                 except Exception as e:
                     logger.error(f"Ошибка при отправке напоминания пользователю {user_id}: {e}")
