@@ -108,29 +108,25 @@ def normalize_phone(phone: str) -> str:
 async def get_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обрабатывает ввод ФИО при регистрации.
-    Ищет совпадение в БД по full_name.
-    Если нашёл — обновляет telegram_id и username у существующей записи.
-    Не создаёт новых пользователей — этим занимается администратор.
+    Понимает разные варианты написания одного и того же имени (например, "Гребеньков Иван" и "Иван Гребеньков").
     """
     try:
-        user = update.effective_user  # Сначала получаем пользователя
+        user = update.effective_user
+        user_input = update.message.text.strip()
+        logger.info(f"Получено имя: '{user_input}' от пользователя {user.id}")
 
-        # Теперь можно безопасно логировать
+        # Проверка существующей записи пользователя
         db.cursor.execute("SELECT id, phone FROM users WHERE telegram_id = ?", (user.id,))
         record_before = db.cursor.fetchone()
         logger.info(f"Запись в БД перед get_full_name: {record_before}")
 
-        user_input = update.message.text.strip()
-        logger.info(f"Получено имя: '{user_input}' от пользователя {user.id}")
-
         # Обработка специальных команд
         if user_input == "Написать администратору":
-            # Сразу переходим к вводу сообщения, минуя проверки
             await update.message.reply_text(
                 "✍️ Введите ваше сообщение администратору:",
                 reply_markup=ReplyKeyboardMarkup([["❌ Отменить"]], resize_keyboard=True)
             )
-            context.user_data['user_name'] = user_input  # Сохраняем то, что ввел пользователь
+            context.user_data['user_name'] = user_input
             context.user_data['is_registered'] = False
             return AWAIT_MESSAGE_TEXT
 
@@ -139,50 +135,43 @@ async def get_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return FULL_NAME
 
         # Проверяем формат имени
-        name_parts = user_input.split()
+        name_parts = [part for part in user_input.split() if part]
         if len(name_parts) < 2:
-            await update.message.reply_text("❌ Пожалуйста, введите фамилию и имя полностью.\nПример: Иванов Иван")
-            return FULL_NAME
-
-        full_name = ' '.join(name_parts)
-        context.user_data['full_name'] = full_name
-
-        # Проверяем, есть ли такой сотрудник в списке сотрудников
-        # Используй прямой SQL-запрос:
-        db.cursor.execute("SELECT id FROM users WHERE telegram_id = ? AND is_employee = TRUE", (user.id,))
-        result = db.cursor.fetchone()
-        if result:
-            # Пользователь является сотрудником
-            context.user_data['unverified_name'] = full_name
-            reply_markup = ReplyKeyboardMarkup(
-                [["Попробовать снова"], ["Написать администратору"]],
-                resize_keyboard=True
-            )
             await update.message.reply_text(
-                "❌ Вас нет в списке сотрудников.",
-                reply_markup=reply_markup
+                "❌ Пожалуйста, введите фамилию и имя полностью.\nПример: Иванов Иван",
+                reply_markup=ReplyKeyboardMarkup(
+                    [["Попробовать снова"], ["Написать администратору"]],
+                    resize_keyboard=True
+                )
             )
             return FULL_NAME
 
-        # Проверяем, зарегистрирован ли уже по telegram_id
-        db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user.id,))
-        existing_by_telegram = db.cursor.fetchone()
+        # Нормализуем ввод пользователя
+        normalized_input = ' '.join(name_parts).lower()
 
-        if existing_by_telegram:
-            await update.message.reply_text("⚠️ Вы уже зарегистрированы.")
-            return ConversationHandler.END
-
-        # Ищем пользователя по полному совпадению full_name
+        # Ищем совпадения в базе данных среди незарегистрированных пользователей
         db.cursor.execute("""
             SELECT id, full_name 
             FROM users 
-            WHERE full_name = ? AND telegram_id IS NULL
-        """, (full_name,))
+            WHERE telegram_id IS NULL AND is_employee = TRUE
+        """)
+        all_users = db.cursor.fetchall()
 
-        existing_by_name = db.cursor.fetchone()
+        matched_user = None
+        for db_user in all_users:
+            user_id, db_full_name = db_user
+            if not db_full_name:
+                continue
 
-        if not existing_by_name:
-            # Нет подходящей записи для привязки
+            # Нормализуем имя из базы и сравниваем наборы слов
+            db_parts = {part.lower() for part in db_full_name.split()}
+            input_parts = {part.lower() for part in name_parts}
+            
+            if db_parts == input_parts:
+                matched_user = (user_id, db_full_name)
+                break
+
+        if not matched_user:
             reply_markup = ReplyKeyboardMarkup(
                 [["Попробовать снова"], ["Написать администратору"]],
                 resize_keyboard=True
@@ -193,25 +182,22 @@ async def get_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return FULL_NAME
 
-        # Получаем телефон из контекста
-        phone = context.user_data.get('phone')
+        user_id, db_full_name = matched_user
+        context.user_data['full_name'] = db_full_name  # Сохраняем оригинальное имя из базы
 
-        # Обновляем существующую запись — добавляем telegram_id, username и телефон
+        # Обновляем запись в БД
+        phone = context.user_data.get('phone')
         with db.conn:
             db.cursor.execute("""
                 UPDATE users
                 SET telegram_id = ?, 
                     username = ?,
-                    phone = ?
+                    phone = ?,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, (user.id, user.username, phone, existing_by_name[0]))
+            """, (user.id, user.username, phone, user_id))
 
-        logger.info(f"Обновлена запись пользователя ID: {existing_by_name[0]}")
-
-        # Логируем после обновления
-        db.cursor.execute("SELECT id, phone FROM users WHERE telegram_id = ?", (user.id,))
-        record_after = db.cursor.fetchone()
-        logger.info(f"Запись в БД после get_full_name: {record_after}")
+        logger.info(f"Обновлена запись пользователя ID: {user_id}")
 
         # Переход к выбору локации
         keyboard = [[loc] for loc in CONFIG.locations]
@@ -221,8 +207,14 @@ async def get_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Ошибка в get_full_name: {e}", exc_info=True)
-        await update.message.reply_text("⚠️ Произошла ошибка. Попробуйте снова.")
-        return ConversationHandler.END
+        await update.message.reply_text(
+            "⚠️ Произошла ошибка. Попробуйте снова.",
+            reply_markup=ReplyKeyboardMarkup(
+                [["Попробовать снова"], ["Написать администратору"]],
+                resize_keyboard=True
+            )
+        )
+        return FULL_NAME
 
 async def get_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
