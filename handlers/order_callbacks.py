@@ -18,13 +18,28 @@ from notifications import show_access_denied
 logger = logging.getLogger(__name__)
     
 async def handle_order_callback(query, now, user, context):
-    """
-    Обработчик оформления нового заказа. Выполняет:
-    - Проверку допустимости заказа (выходные, временные ограничения)
-    - Создание записи заказа в базе данных
-    - Обновление интерфейса через refresh_day_view
-    - Обработку всех возможных ошибок
-    """
+    """Обработчик оформления заказа с проверкой доступности заказов"""
+    # Проверяем, разрешены ли заказы
+    if not CONFIG.orders_enabled:
+        await query.answer("❌ Приём заказов временно приостановлен", show_alert=True)
+        await query.edit_message_reply_markup(reply_markup=None)  # Убираем кнопки
+        return
+
+    # Проверяем "возраст" кнопки (если нужно ограничить время жизни)
+    if '_ts_' in query.data:  # Если в callback_data есть timestamp
+        _, day_offset_str, timestamp_str = query.data.split("_", 2)
+        request_time = datetime.fromtimestamp(int(timestamp_str))
+        if (now - request_time) > timedelta(minutes=30):  # Кнопка "просрочена"
+            await query.answer("⏳ Время действия кнопки истекло", show_alert=True)
+            await query.edit_message_reply_markup(reply_markup=None)
+            return
+    else:
+        day_offset_str = query.data.split("_", 1)[1]
+
+    # Остальная логика обработки заказа...
+    day_offset = int(day_offset_str)
+    target_date = (now + timedelta(days=day_offset)).date()
+    
     # Добавляем проверку доступа в начале функции
     if not await check_user_access(user.id, context.application):
         await show_access_denied(update)

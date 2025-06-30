@@ -61,7 +61,7 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # if not await check_registration(update, context):
     #     return await handle_unregistered(update, context)
 
-    can_modify = can_modify_order(today)
+    can_modify = can_modify_order(today) and CONFIG.orders_enabled  # Добавляем проверку
     
     if has_active_order:
         if can_modify:
@@ -147,9 +147,9 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = []
             if order:
                 menu_text += f"\n✅ Заказ: {order[0]} порции"
-                if can_modify_order(day_date):
+                if can_modify_order(day_date) and CONFIG.orders_enabled:  # Добавляем проверку
                     keyboard.append([InlineKeyboardButton("✏️ Изменить", callback_data=f"change_{day_offset}")])
-            elif can_modify_order(day_date):
+            elif can_modify_order(day_date) and CONFIG.orders_enabled:  # Добавляем проверку
                 keyboard.append([InlineKeyboardButton("✅ Заказать", callback_data=f"order_{day_offset}")])
             
             await update.message.reply_text(
@@ -194,12 +194,9 @@ async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_
         target_date = now.date() + timedelta(days=day_offset)
         day_name = days_ru[target_date.weekday()]
         date_iso = target_date.isoformat()
-        is_tomorrow = day_offset == 1
-        is_today = day_offset == 0
 
         # Проверяем праздник
-        holiday_name = CONFIG.holidays.get(date_iso)
-        if holiday_name:
+        if holiday_name := CONFIG.holidays.get(date_iso):
             await update.message.reply_text(f"🎉 {day_name} ({target_date.strftime('%d.%m')}) — {holiday_name}! Меню не предусмотрено.")
             return
 
@@ -208,59 +205,52 @@ async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_
             await update.message.reply_text(f"⏳ {day_name} ({target_date.strftime('%d.%m')}) — Выходной! Меню не предусмотрено.")
             return
 
-        menu = CONFIG.menu.get(day_name)
-        if not menu:
+        # Получаем меню
+        if not (menu := CONFIG.menu.get(day_name)):
             await update.message.reply_text(f"⏳ На {day_name} меню не загружено")
             return
 
-        message = format_menu(menu, day_name, is_tomorrow=is_tomorrow)
+        # Формируем сообщение
+        message = format_menu(menu, day_name, is_tomorrow=day_offset == 1)
 
-        # Получаем ID пользователя из БД
-        db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user.id,))
-        user_record = db.cursor.fetchone()
-        if not user_record:
+        # Получаем ID пользователя
+        if not (user_record := db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user.id,)).fetchone()):
             await update.message.reply_text("❌ Пользователь не найден")
             return
         user_db_id = user_record[0]
 
-        # Получаем текущий заказ
-        db.cursor.execute("""
-            SELECT quantity 
-            FROM orders 
-            WHERE user_id = ?
-              AND target_date = ?
-              AND is_cancelled = FALSE
-        """, (user_db_id, date_iso))
-        order = db.cursor.fetchone()
+        # Проверяем существующий заказ
+        order = db.cursor.execute("""
+            SELECT quantity FROM orders 
+            WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
+        """, (user_db_id, date_iso)).fetchone()
 
-        # Добавляем информацию о заказе
+        # Формируем клавиатуру
         keyboard = []
+        can_modify = can_modify_order(target_date) and CONFIG.orders_enabled  # Основная проверка
 
-        if order:
-            qty = order[0]
-            message += f"\n\n✅ {'Предзаказ' if day_offset > 0 else 'Заказ'}: {qty} порции"
-
-            can_modify = can_modify_order(target_date)
+        if order:  # Если заказ уже есть
+            message += f"\n\n✅ {'Предзаказ' if day_offset > 0 else 'Заказ'}: {order[0]} порции"
+            
             if can_modify:
                 keyboard.append([InlineKeyboardButton("✏️ Изменить количество", callback_data=f"change_{day_offset}")])
-            keyboard.append([
-                InlineKeyboardButton("❌ Отменить заказ", callback_data=f"cancel_{day_offset}")
-            ])
-        else:
-            can_modify = can_modify_order(target_date)
+            
+            keyboard.append([InlineKeyboardButton("❌ Отменить заказ", callback_data=f"cancel_{day_offset}")])
+        else:  # Если заказа нет
             if can_modify:
                 keyboard.append([InlineKeyboardButton("✅ Заказать", callback_data=f"order_{day_offset}")])
             else:
-                keyboard.append([InlineKeyboardButton("⏳ Приём заказов завершён", callback_data="noop")])
+                status_msg = "⏳ Приём заказов завершён" if not CONFIG.orders_enabled else "⏳ Время для заказов истекло"
+                keyboard.append([InlineKeyboardButton(status_msg, callback_data="noop")])
 
         await update.message.reply_text(
             message,
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
             parse_mode="Markdown"
         )
 
     except Exception as e:
-        logger.error(f"Ошибка в show_day_menu: {e}")
+        logger.error(f"Ошибка в show_day_menu: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Ошибка загрузки меню")
 
 async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -273,7 +263,12 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     try:
         query = update.callback_query
-        await query.answer()  # Подтверждаем нажатие кнопки
+        await query.answer()
+        
+        # Добавляем глобальную проверку
+        if not CONFIG.orders_enabled and query.data.startswith(('order_', 'change_', 'confirm_')):
+            await query.answer("❌ Приём заказов временно приостановлен", show_alert=True)
+            return
 
         logger.info(f"Получен callback: {query.data} от пользователя {query.from_user.id}")
 
