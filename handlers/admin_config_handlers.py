@@ -152,7 +152,7 @@ async def handle_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_add_provider(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Введите Telegram ID нового поставщика:",
-        reply_markup=ReplyKeyboardMarkup([["❌ Отмена"]], resize_keyboard=True)
+        reply_markup=ReplyKeyboardMarkup([["❌ Отмена"]], resize_keyboard=True, one_time_keyboard=True)
     )
     return ADD_PROVIDER
 
@@ -905,28 +905,27 @@ async def start_add_staff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ADD_STAFF
 
 async def cancel_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Универсальная функция отмены.
-    Работает как с message, так и с callback_query.
-    """
+    """Универсальная функция отмены."""
     try:
+        reply_markup = create_admin_config_keyboard()
         if update.message:
             await update.message.reply_text(
                 "❌ Операция отменена",
-                reply_markup=create_admin_config_keyboard()
+                reply_markup=reply_markup
             )
         elif update.callback_query:
-            query = update.callback_query
-            await query.answer()
-            await query.edit_message_text(
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(
                 "❌ Операция отменена",
-                reply_markup=create_admin_config_keyboard()
+                reply_markup=reply_markup
             )
-        else:
-            # Если ни один тип обновления не подошёл
-            pass
     except Exception as e:
         logger.error(f"Ошибка при отмене: {e}")
+        if update.message:
+            await update.message.reply_text(
+                "❌ Операция отменена",
+                reply_markup=reply_markup
+            )
     
     return CONFIG_MENU
 
@@ -1048,12 +1047,30 @@ def setup_admin_config_handlers(application):
                 MessageHandler(filters.Regex("^(Удалить праздник|➖ Удалить праздник)$"), start_delete_holiday),
                 MessageHandler(filters.Regex("^(Назад|❌ Отмена)$"), cancel_config),
             ],
-            ADD_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_admin)],
-            ADD_PROVIDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_provider)],
-            ADD_ACCOUNTANT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_accountant)],
-            ADD_STAFF: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_staff)],
-            ADD_HOLIDAY_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_holiday_date)],
-            ADD_HOLIDAY_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_holiday_name)],
+            ADD_ADMIN: [
+                MessageHandler(filters.Regex("^(❌ Отмена|Отмена)$"), cancel_config),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_admin)
+            ],
+            ADD_PROVIDER: [
+                MessageHandler(filters.Regex("^(❌ Отмена|Отмена)$"), cancel_config),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_provider)
+            ],
+            ADD_ACCOUNTANT: [
+                MessageHandler(filters.Regex("^(❌ Отмена|Отмена)$"), cancel_config),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_accountant)
+            ],
+            ADD_STAFF: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_staff),
+                MessageHandler(filters.Regex("^(❌ Отмена|Отмена)$"), cancel_config)
+            ],
+            ADD_HOLIDAY_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_holiday_date),
+                MessageHandler(filters.Regex("^(❌ Отмена|Отмена)$"), cancel_config)
+            ],
+            ADD_HOLIDAY_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_holiday_name),
+                MessageHandler(filters.Regex("^(❌ Отмена|Отмена)$"), cancel_config)
+            ],
             DELETE_ADMIN: [
                 CallbackQueryHandler(handle_deletion, pattern=r'^del_admin_\d+|cancel_delete$'),
                 CallbackQueryHandler(handle_pagination, pattern=PAGINATION_PATTERN)
