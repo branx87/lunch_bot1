@@ -601,23 +601,16 @@ async def handle_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    if query.data == "staff_show_all":
-        context.user_data.pop('search_text', None)
-        return await show_staff_list(update, context)
-    
     try:
-        query = update.callback_query
+        # Добавляем импорт CONFIG в начале функции
+        from db import CONFIG
+        
+        if query.data == "staff_show_all":
+            context.user_data.pop('search_text', None)
+            return await show_staff_list(update, context)
+        
         if not query or not query.data:
             return CONFIG_MENU
-
-        # Добавляем проверку на устаревшие запросы
-        try:
-            await query.answer()
-        except BadRequest as e:
-            if "Query is too old" in str(e):
-                logger.warning(f"Устаревший callback_query: {query.data}")
-                return CONFIG_MENU
-            raise
 
         # Обработка отмены
         if query.data == "cancel_delete":
@@ -639,6 +632,7 @@ async def handle_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE):
             admin_id = query.data.split('_')[2]
             current_ids = [str(id) for id in CONFIG.admin_ids if str(id) != admin_id]
             update_env_file('ADMIN_IDS', ','.join(current_ids))
+            CONFIG.reload()  # Обновляем конфиг
             try:
                 await query.edit_message_text(
                     f"✅ Администратор {admin_id} удален",
@@ -657,6 +651,7 @@ async def handle_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE):
             provider_id = query.data.split('_')[2]
             current_ids = [str(id) for id in CONFIG.provider_ids if str(id) != provider_id]
             update_env_file('PROVIDER_IDS', ','.join(current_ids))
+            CONFIG.reload()  # Обновляем конфиг
             try:
                 await query.edit_message_text(
                     f"✅ Поставщик {provider_id} удален",
@@ -675,6 +670,7 @@ async def handle_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE):
             accountant_id = query.data.split('_')[2]
             current_ids = [str(id) for id in CONFIG.accounting_ids if str(id) != accountant_id]
             update_env_file('ACCOUNTING_IDS', ','.join(current_ids))
+            CONFIG.reload()  # Обновляем конфиг
             try:
                 await query.edit_message_text(
                     f"✅ Бухгалтер {accountant_id} удален",
