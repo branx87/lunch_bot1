@@ -32,7 +32,7 @@ from constants import (
 )
 from bot_keyboards import create_admin_config_keyboard, create_admin_keyboard, create_main_menu_keyboard, get_cancel_button
 
-ENV_PATH = Path(".env")
+ENV_PATH = Path("data/configs/.env")
 
 logger = logging.getLogger(__name__)
 load_dotenv()
@@ -757,6 +757,7 @@ async def handle_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 db.cursor.execute("DELETE FROM holidays WHERE date = ?", (holiday_date,))
                 
             # ОБНОВЛЯЕМ КОНФИГУРАЦИЮ БЕЗ ПЕРЕЗАПУСКА
+            from db import CONFIG
             CONFIG.reload()
                 
             try:
@@ -990,6 +991,7 @@ async def handle_holiday_name(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
         else:
             # ОБНОВЛЯЕМ КОНФИГУРАЦИЮ БЕЗ ПЕРЕЗАПУСКА
+            from db import CONFIG
             CONFIG.reload()
             
             await update.message.reply_text(

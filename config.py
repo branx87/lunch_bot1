@@ -114,6 +114,21 @@ class BotConfig:
             logger.error(f"Ошибка сохранения статуса заказов: {e}")
             raise
 
+    def reload(self):
+        """Перезагружает конфигурацию из файла .env и базы данных"""
+        try:
+            # Перезагружаем переменные окружения
+            load_dotenv(CONFIGS_DIR / '.env', override=True)
+            self._load_env_vars()
+            
+            # Перезагружаем данные из базы данных
+            self._load_db_data()
+            
+            logger.info("Конфигурация успешно перезагружена")
+        except Exception as e:
+            logger.error(f"Ошибка при перезагрузке конфигурации: {e}")
+            raise
+
     @property
     def token(self) -> str:
         return self._token
