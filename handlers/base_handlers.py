@@ -26,6 +26,21 @@ __all__ = ['start', 'error_handler', 'test_connection', 'main_menu', 'handle_tex
 ADMIN_REPORTS_MENU = "ADMIN_REPORTS_MENU"
 SELECT_REPORT_TYPE = "SELECT_REPORT_TYPE"
 
+def get_user_role(user_id):
+    """Определяет роль пользователя на основе ID"""
+    
+    user_id = str(user_id)
+    roles = []
+    
+    if user_id in [str(id) for id in CONFIG.admin_ids]:
+        roles.append("Администратор")
+    if user_id in [str(id) for id in CONFIG.provider_ids]:
+        roles.append("Поставщик")
+    if user_id in [str(id) for id in CONFIG.accounting_ids]:
+        roles.append("Бухгалтер")
+    
+    return ", ".join(roles) if roles else "Пользователь"
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обработчик команды /start. Проверяет регистрацию пользователя:
@@ -141,12 +156,13 @@ async def test_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Имя: {full_name}\n"
             f"Телефон: {phone if phone else 'не указан'}\n"
             f"ID: {user.id}\n"
+            f"Роль: {get_user_role(user.id)}\n"  # Новая строка с определением роли
             f"Логин: @{user.username if user.username else 'не установлен'}\n"
             f"Статус: {user_status}\n\n"
             f"🤖 Бот:\n"
             f"ID: {bot_info.id}\n"
             f"Имя: @{bot_info.username}\n"
-            f"Версия: 2.1.4\n"
+            f"Версия: 2.1.5\n"
             f"Статус: активен"
         )
         
