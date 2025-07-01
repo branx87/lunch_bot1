@@ -18,15 +18,12 @@ logger = logging.getLogger(__name__)
 
 async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отображает меню на текущий день с учетом праздников"""
-    # if not await check_registration(update, context):
-    #     return await handle_unregistered(update, context)
-    
     user_id = update.effective_user.id
     now = datetime.now(CONFIG.timezone)
-    today = now.date()  # Важно: получаем только дату без времени
+    today = now.date()
     days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
     day_name = days_ru[today.weekday()]
-    date_str = today.strftime("%d.%m")  # Форматируем дату как "13.06"
+    date_str = today.strftime("%d.%m")
     
     # Проверяем праздник
     holiday_name = CONFIG.holidays.get(today.isoformat())
@@ -44,7 +41,7 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⏳ На сегодня ({date_str}) меню не загружено.")
         return await show_main_menu(update, user_id)
     
-    # Формируем сообщение с корректной датой
+    # Формируем сообщение
     message = f"🍽 Меню на {day_name} ({date_str}):\n"
     message += f"1. 🍲 Первое: {menu['first']}\n"
     message += f"2. 🍛 Основное блюдо: {menu['main']}\n"
@@ -58,30 +55,27 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     has_active_order = db.cursor.fetchone() is not None
 
-    # if not await check_registration(update, context):
-    #     return await handle_unregistered(update, context)
-
-    can_modify = can_modify_order(today) and CONFIG.orders_enabled  # Добавляем проверку
+    can_modify = can_modify_order(today)
     
-    if has_active_order:
+    keyboard = []
+    if not CONFIG.orders_enabled:
+        # Заказы отключены глобально
+        message += "\n\n⚠️ Приём заказов временно приостановлен"
+        keyboard.append([InlineKeyboardButton("⏳ Заказы принимаются через Битрикс", callback_data="noop")])
+    elif has_active_order:
+        # Есть активный заказ
+        message += f"\n\n✅ Заказ: {db.cursor.fetchone()[0]} порции"
         if can_modify:
-            keyboard = [
-                [InlineKeyboardButton("✏️ Изменить количество", callback_data="change_0")],
-                [InlineKeyboardButton("❌ Отменить заказ", callback_data="cancel_0")]
-            ]
+            keyboard.append([InlineKeyboardButton("✏️ Изменить количество", callback_data="change_0")])
+            keyboard.append([InlineKeyboardButton("❌ Отменить заказ", callback_data="cancel_0")])
         else:
-            keyboard = [
-                [InlineKeyboardButton("ℹ️ Заказ оформлен (изменение невозможно)", callback_data="noop")]
-            ]
+            keyboard.append([InlineKeyboardButton("ℹ️ Заказ оформлен (изменение невозможно)", callback_data="noop")])
     else:
+        # Нет активного заказа
         if can_modify:
-            keyboard = [
-                [InlineKeyboardButton("✅ Заказать", callback_data="order_0")]
-            ]
+            keyboard.append([InlineKeyboardButton("✅ Заказать", callback_data="order_0")])
         else:
-            keyboard = [
-                [InlineKeyboardButton("⏳ Прием заказов завершен", callback_data="info")]
-            ]
+            keyboard.append([InlineKeyboardButton("⏳ Время для заказов истекло", callback_data="noop")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(message, reply_markup=reply_markup)
@@ -145,13 +139,19 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             order = db.cursor.fetchone()
             
             keyboard = []
-            if order:
-                menu_text += f"\n✅ Заказ: {order[0]} порции"
-                if can_modify_order(day_date) and CONFIG.orders_enabled:  # Добавляем проверку
-                    keyboard.append([InlineKeyboardButton("✏️ Изменить", callback_data=f"change_{day_offset}")])
-            elif can_modify_order(day_date) and CONFIG.orders_enabled:  # Добавляем проверку
-                keyboard.append([InlineKeyboardButton("✅ Заказать", callback_data=f"order_{day_offset}")])
-            
+            if not CONFIG.orders_enabled:
+                # Добавляем информационную кнопку, если заказы отключены
+                menu_text += "\n\n⚠️ Приём заказов временно приостановлен"
+                keyboard.append([InlineKeyboardButton("⏳ Заказы принимаются через Битрикс", callback_data="noop")])
+            else:
+                # Логика для включенных заказов
+                if order:
+                    menu_text += f"\n✅ Заказ: {order[0]} порции"
+                    if can_modify_order(day_date):
+                        keyboard.append([InlineKeyboardButton("✏️ Изменить", callback_data=f"change_{day_offset}")])
+                elif can_modify_order(day_date):
+                    keyboard.append([InlineKeyboardButton("✅ Заказать", callback_data=f"order_{day_offset}")])
+
             await update.message.reply_text(
                 menu_text,
                 reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
@@ -227,22 +227,24 @@ async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_
 
         # Формируем клавиатуру
         keyboard = []
-        can_modify = can_modify_order(target_date) and CONFIG.orders_enabled  # Основная проверка
-
-        if order:  # Если заказ уже есть
-            message += f"\n\n✅ {'Предзаказ' if day_offset > 0 else 'Заказ'}: {order[0]} порции"
-            
-            if can_modify:
-                keyboard.append([InlineKeyboardButton("✏️ Изменить количество", callback_data=f"change_{day_offset}")])
-            
-            keyboard.append([InlineKeyboardButton("❌ Отменить заказ", callback_data=f"cancel_{day_offset}")])
-        else:  # Если заказа нет
-            if can_modify:
-                keyboard.append([InlineKeyboardButton("✅ Заказать", callback_data=f"order_{day_offset}")])
-            else:
-                status_msg = "⏳ Приём заказов завершён" if not CONFIG.orders_enabled else "⏳ Время для заказов истекло"
-                keyboard.append([InlineKeyboardButton(status_msg, callback_data="noop")])
-
+        if not CONFIG.orders_enabled:
+            # Добавляем информационную кнопку, если заказы отключены
+            message += "\n\n⚠️ Приём заказов временно приостановлен"
+            keyboard.append([InlineKeyboardButton("⏳ Заказы принимаются через Битрикс", callback_data="noop")])
+        else:
+            # Существующая логика для включенных заказов
+            can_modify = can_modify_order(target_date)
+            if order:  # Если заказ уже есть
+                message += f"\n\n✅ {'Предзаказ' if day_offset > 0 else 'Заказ'}: {order[0]} порции"
+                if can_modify:
+                    keyboard.append([InlineKeyboardButton("✏️ Изменить количество", callback_data=f"change_{day_offset}")])
+                keyboard.append([InlineKeyboardButton("❌ Отменить заказ", callback_data=f"cancel_{day_offset}")])
+            else:  # Если заказа нет
+                if can_modify:
+                    keyboard.append([InlineKeyboardButton("✅ Заказать", callback_data=f"order_{day_offset}")])
+                else:
+                    keyboard.append([InlineKeyboardButton("⏳ Время для заказов истекло", callback_data="noop")])
+        
         await update.message.reply_text(
             message,
             reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,

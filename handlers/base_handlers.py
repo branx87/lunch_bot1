@@ -146,7 +146,7 @@ async def test_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🤖 Бот:\n"
             f"ID: {bot_info.id}\n"
             f"Имя: @{bot_info.username}\n"
-            f"Версия: 2.1.2\n"
+            f"Версия: 2.1.3\n"
             f"Статус: активен"
         )
         
