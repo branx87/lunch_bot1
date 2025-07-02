@@ -107,20 +107,25 @@ async def export_accounting_report(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None
 ):
-    """Временная версия функции с заглушками, но с полным функционалом"""
     try:
-        # Создаем русскую локаль для месяцев
+        # 1. Настройка форматирования чисел
         import locale
-        # month_names = {
-        #     1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель", 
-        #     5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
-        #     9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
-        # }
-        # month_year = f"{month_names[now.month]} {now.year}"
-        
+        try:
+            locale.setlocale(locale.LC_NUMERIC, 'ru_RU.UTF-8')
+        except:
+            pass
+
+        # 2. Словарь месяцев
+        month_names = {
+            1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+            5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+            9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
+        }
+
         reports_dir = ensure_reports_dir('accounting')
         now = datetime.now(CONFIG.timezone)
-        
+        month_year = f"{month_names[now.month]} {now.year}"
+
         # Обработка дат
         if not start_date or not end_date:
             start_date = end_date = now.date()
@@ -136,13 +141,7 @@ async def export_accounting_report(
         ws = wb.active
         ws.title = "Удержания за обеды"
         
-        # Заголовок отчета (с русским месяцем)
-        month_names = {
-            1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель", 
-            5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
-            9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
-        }
-        month_year = f"{month_names[now.month]} {now.year}"
+        # Заголовки
         ws.append(["Список сотрудников на удержание обедов из ежемесячной премии"])
         ws.append([f"за {month_year} г."])
         ws.append([])
@@ -162,19 +161,21 @@ async def export_accounting_report(
             "Сумма удержания с НДФЛ"
         ]
         ws.append(headers)
-        
-        # Включаем автофильтр для заголовков таблицы (строка 7)
-        ws.auto_filter.ref = f"A7:H7"
-        
-        # Временный запрос с заглушками
+        ws.auto_filter.ref = f"A{ws.max_row}:H{ws.max_row}"
+
+        # Функция форматирования валюты
+        def format_currency(amount):
+            return f"{float(amount):,.2f}".replace(",", " ").replace(".", ",")
+
+        # Запрос с заглушками для всех недостающих полей
         query = '''
             SELECT 
                 'Основной офис' as department,
                 u.full_name,
                 SUM(o.quantity) as portions,
                 'Сотрудник' as position,
-                COALESCE(u.location, 'Не указано') as location,
-                '01.01.2023' as hire_date
+                'Не указана' as location,
+                'Не указана' as hire_date
             FROM orders o
             JOIN users u ON o.user_id = u.id
             WHERE o.target_date BETWEEN ? AND ?
@@ -182,86 +183,93 @@ async def export_accounting_report(
             GROUP BY u.id
             ORDER BY u.full_name
         '''
-        db.cursor.execute(query, (start_date.isoformat(), end_date.isoformat()))
-        
+
+        # Инициализация переменных
         total_portions = 0
         total_without_ndfl = 0
         total_with_ndfl = 0
-        
-        for row in db.cursor.fetchall():
-            portions = row[2]
-            amount_without_ndfl = portions * 150
-            amount_with_ndfl = round(amount_without_ndfl / 0.87, 2)  # Правильный расчет НДФЛ (150 / 0.87 = 172.41)
-            
+
+        # Выполнение запроса
+        db.cursor.execute(query, (start_date.isoformat(), end_date.isoformat()))
+        rows = db.cursor.fetchall()
+
+        if not rows:
+            ws.append(["Нет данных за выбранный период", "", "", "", "", "", "", ""])
+        else:
+            for row in rows:
+                portions = row[2]
+                amount_without_ndfl = portions * 150
+                amount_with_ndfl = round(amount_without_ndfl / 0.87, 2)
+                
+                ws.append([
+                    row[0],  # department
+                    row[1],  # full_name
+                    portions,
+                    row[3],  # position
+                    row[4],  # location
+                    row[5],  # hire_date
+                    format_currency(amount_without_ndfl),
+                    format_currency(amount_with_ndfl)
+                ])
+                
+                total_portions += portions
+                total_without_ndfl += amount_without_ndfl
+                total_with_ndfl += amount_with_ndfl
+
+            # Итоговая строка
             ws.append([
-                row[0],  # department
-                row[1],  # full_name
-                portions,
-                row[3],  # position
-                row[4],  # location
-                row[5],  # hire_date
-                f"{amount_without_ndfl:,.2f}".replace(",", " ").replace(".", ","),
-                f"{amount_with_ndfl:,.2f}".replace(",", " ").replace(".", ",")
+                "ВСЕГО",
+                "",
+                total_portions,
+                "",
+                "",
+                "",
+                format_currency(total_without_ndfl),
+                format_currency(total_with_ndfl)
             ])
-            
-            total_portions += portions
-            total_without_ndfl += amount_without_ndfl
-            total_with_ndfl += amount_with_ndfl
-        
-        # Итоговая строка
-        ws.append([
-            "ВСЕГО",
-            "",
-            total_portions,
-            "",
-            "",
-            "",
-            f"{total_without_ndfl:,.2f}".replace(",", " ").replace(".", ","),
-            f"{total_with_ndfl:,.2f}".replace(",", " ").replace(".", ",")
-        ])
-        
+
         # Форматирование
         bold_font = Font(bold=True)
         money_format = '# ##0.00'
         
-        # Применяем стили
-        for row in ws.iter_rows(min_row=1, max_row=6):  # Заголовок отчета
+        # Применение стилей
+        for row in ws.iter_rows(min_row=1, max_row=6):
             for cell in row:
                 cell.font = bold_font
                 
-        for cell in ws[7]:  # Заголовки таблицы (строка 7)
+        for cell in ws[7]:
             cell.font = bold_font
             
-        for cell in ws[ws.max_row]:  # Итоговая строка
+        for cell in ws[ws.max_row]:
             cell.font = bold_font
         
         # Формат денежных значений
-        for row in ws.iter_rows(min_row=8, max_row=ws.max_row):  # Данные начинаются с 8 строки
-            for cell in row[6:8]:  # Колонки с суммами
+        for row in ws.iter_rows(min_row=8, max_row=ws.max_row):
+            for cell in row[6:8]:
                 cell.number_format = money_format
         
-        # Автоподбор ширины столбцов с учетом кириллицы
+        # Автоподбор ширины столбцов
         column_widths = {}
         for row in ws.iter_rows():
             for cell in row:
-                length = len(str(cell.value)) * 1.2  # Коэффициент для кириллицы
+                length = len(str(cell.value)) * 1.2
                 if cell.column_letter not in column_widths or length > column_widths[cell.column_letter]:
                     column_widths[cell.column_letter] = length
         
         for col, width in column_widths.items():
-            ws.column_dimensions[col].width = min(width, 50)  # Максимальная ширина 50
+            ws.column_dimensions[col].width = min(width, 50)
         
-        # Сохраняем файл
+        # Сохранение файла
         file_name = f"salary_deductions_{now.strftime('%Y%m')}.xlsx"
         file_path = os.path.join(reports_dir, file_name)
         wb.save(file_path)
         
-        # Отправляем файл
+        # Отправка файла
         caption = (
             f"📋 Отчет для удержаний из зарплаты\n"
             f"📅 Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n"
             f"🍽 Всего обедов: {total_portions}\n"
-            f"💰 Сумма удержания: {total_with_ndfl:,.2f} руб. (с НДФЛ)"
+            f"💰 Сумма удержания: {format_currency(total_with_ndfl)} руб. (с НДФЛ)"
         )
 
         with open(file_path, 'rb') as file:
@@ -276,9 +284,7 @@ async def export_accounting_report(
 
     except Exception as e:
         logger.error(f"Ошибка формирования отчета: {e}", exc_info=True)
-        await update.message.reply_text(
-            "❌ Произошла ошибка при создании отчета. Подробности в логах."
-        )
+        await update.message.reply_text("❌ Произошла ошибка при создании отчета.")
         raise
     
 async def export_monthly_report(
