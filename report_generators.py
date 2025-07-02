@@ -107,19 +107,17 @@ async def export_accounting_report(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None
 ):
-    """
-    Генерирует детализированный бухгалтерский отчет в формате Excel.
-    
-    Args:
-        update: Объект Update от Telegram.
-        context: Контекст обработчика.
-        start_date: Начальная дата периода.
-        end_date: Конечная дата периода.
-    
-    Returns:
-        str: Путь к сохраненному файлу отчета.
-    """
+    """Временная версия функции с заглушками, но с полным функционалом"""
     try:
+        # Создаем русскую локаль для месяцев
+        import locale
+        # month_names = {
+        #     1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель", 
+        #     5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+        #     9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
+        # }
+        # month_year = f"{month_names[now.month]} {now.year}"
+        
         reports_dir = ensure_reports_dir('accounting')
         now = datetime.now(CONFIG.timezone)
         
@@ -135,134 +133,135 @@ async def export_accounting_report(
 
         # Создаем Excel файл
         wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Удержания за обеды"
         
-        # 1. Лист "Детализация"
-        ws_detailed = wb.active
-        ws_detailed.title = "Детализация"
-        detailed_headers = ["ФИО", "Объект", "Дата заказа", "Время заказа", "Дата обеда", "Количество", "Тип заказа"]
-        ws_detailed.append(detailed_headers)
-        ws_detailed.auto_filter.ref = "A1:G1"
+        # Заголовок отчета (с русским месяцем)
+        month_names = {
+            1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель", 
+            5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+            9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
+        }
+        month_year = f"{month_names[now.month]} {now.year}"
+        ws.append(["Список сотрудников на удержание обедов из ежемесячной премии"])
+        ws.append([f"за {month_year} г."])
+        ws.append([])
+        ws.append(["", "удержание стоимости 1 обеда составляет", "150,00 руб. (без НДФЛ)"])
+        ws.append(["", "", "172,41 руб. (с НДФЛ 13%)"])
+        ws.append([])
         
-        # Получаем данные (только неотмененные заказы)
+        # Заголовки таблицы
+        headers = [
+            "Подразделение",
+            "ФИО",
+            "Кол-во обедов",
+            "Должность",
+            "Территория",
+            "Дата приема",
+            "Сумма удержания без НДФЛ",
+            "Сумма удержания с НДФЛ"
+        ]
+        ws.append(headers)
+        
+        # Включаем автофильтр для заголовков таблицы (строка 7)
+        ws.auto_filter.ref = f"A7:H7"
+        
+        # Временный запрос с заглушками
         query = '''
             SELECT 
+                'Основной офис' as department,
                 u.full_name,
-                COALESCE(u.location, 'Не указано'),
-                date(o.created_at) as order_date,
-                time(o.created_at) as order_time,
-                o.target_date,
-                o.quantity,
-                CASE WHEN o.is_preliminary THEN 'Предзаказ' ELSE 'Обычный' END
-            FROM orders o
-            JOIN users u ON o.user_id = u.id
-            WHERE o.target_date BETWEEN ? AND ?
-            AND o.is_cancelled = FALSE
-            ORDER BY o.target_date, u.full_name
-        '''
-        db.cursor.execute(query, (start_date.isoformat(), end_date.isoformat()))
-        
-        total_portions = 0
-        orders_count = 0
-        for row in db.cursor.fetchall():
-            order_date = datetime.strptime(row[2], "%Y-%m-%d").strftime("%d.%m.%Y")
-            target_date = datetime.strptime(row[4], "%Y-%m-%d").strftime("%d.%m.%Y")
-            ws_detailed.append([
-                row[0], row[1], order_date, row[3], target_date, row[5], row[6]
-            ])
-            total_portions += row[5]
-            orders_count += 1
-
-        # 2. Лист "Сводка по сотрудникам"
-        ws_summary_users = wb.create_sheet("Сводка по сотрудникам")
-        summary_headers = ["ФИО", "Объект", "Всего порций"]
-        ws_summary_users.append(summary_headers)
-        ws_summary_users.auto_filter.ref = "A1:C1"
-        
-        db.cursor.execute('''
-            SELECT 
-                u.full_name,
-                COALESCE(u.location, 'Не указано'),
-                SUM(o.quantity)
-            FROM orders o
-            JOIN users u ON o.user_id = u.id
-            WHERE o.target_date BETWEEN ? AND ?
-            AND o.is_cancelled = FALSE
-            GROUP BY u.full_name, COALESCE(u.location, 'Не указано')
-            ORDER BY SUM(o.quantity) DESC
-        ''', (start_date.isoformat(), end_date.isoformat()))
-        
-        for row in db.cursor.fetchall():
-            ws_summary_users.append(row)
-
-        # 3. Лист "Сводка по объектам"
-        ws_summary_locations = wb.create_sheet("Сводка по объектам")
-        loc_headers = ["Объект", "Порции"]
-        ws_summary_locations.append(loc_headers)
-        ws_summary_locations.auto_filter.ref = "A1:B1"
-        
-        db.cursor.execute('''
-            SELECT COALESCE(u.location, 'Не указано'), SUM(o.quantity)
-            FROM orders o
-            JOIN users u ON o.user_id = u.id
-            WHERE o.target_date BETWEEN ? AND ?
-            AND o.is_cancelled = FALSE
-            GROUP BY COALESCE(u.location, 'Не указано')
-            ORDER BY SUM(o.quantity) DESC
-        ''', (start_date.isoformat(), end_date.isoformat()))
-        
-        for row in db.cursor.fetchall():
-            ws_summary_locations.append(row)
-        ws_summary_locations.append(["ВСЕГО", total_portions])
-
-        # 4. Лист "Итоги"
-        ws_stats = wb.create_sheet("Итоги")
-        stats_headers = ["Показатель", "Значение"]
-        ws_stats.append(stats_headers)
-        
-        db.cursor.execute('''
-            SELECT COUNT(DISTINCT u.id)
+                SUM(o.quantity) as portions,
+                'Сотрудник' as position,
+                COALESCE(u.location, 'Не указано') as location,
+                '01.01.2023' as hire_date
             FROM orders o
             JOIN users u ON o.user_id = u.id
             WHERE o.target_date BETWEEN ? AND ?
               AND o.is_cancelled = FALSE
-        ''', (start_date.isoformat(), end_date.isoformat()))
-        unique_users = db.cursor.fetchone()[0]
-
-        stats_data = [
-            ["Период", f"{start_date.strftime('%d.%m.%Y')} — {end_date.strftime('%d.%m.%Y')}"],
-            ["Всего заказов", orders_count],
-            ["Всего порций", total_portions],
-            ["Уникальных сотрудников", unique_users],
-            ["Дата формирования", now.strftime("%d.%m.%Y %H:%M")]
-        ]
-        for row in stats_data:
-            ws_stats.append(row)
-
+            GROUP BY u.id
+            ORDER BY u.full_name
+        '''
+        db.cursor.execute(query, (start_date.isoformat(), end_date.isoformat()))
+        
+        total_portions = 0
+        total_without_ndfl = 0
+        total_with_ndfl = 0
+        
+        for row in db.cursor.fetchall():
+            portions = row[2]
+            amount_without_ndfl = portions * 150
+            amount_with_ndfl = round(amount_without_ndfl / 0.87, 2)  # Правильный расчет НДФЛ (150 / 0.87 = 172.41)
+            
+            ws.append([
+                row[0],  # department
+                row[1],  # full_name
+                portions,
+                row[3],  # position
+                row[4],  # location
+                row[5],  # hire_date
+                f"{amount_without_ndfl:,.2f}".replace(",", " ").replace(".", ","),
+                f"{amount_with_ndfl:,.2f}".replace(",", " ").replace(".", ",")
+            ])
+            
+            total_portions += portions
+            total_without_ndfl += amount_without_ndfl
+            total_with_ndfl += amount_with_ndfl
+        
+        # Итоговая строка
+        ws.append([
+            "ВСЕГО",
+            "",
+            total_portions,
+            "",
+            "",
+            "",
+            f"{total_without_ndfl:,.2f}".replace(",", " ").replace(".", ","),
+            f"{total_with_ndfl:,.2f}".replace(",", " ").replace(".", ",")
+        ])
+        
         # Форматирование
         bold_font = Font(bold=True)
-        for sheet in wb.worksheets:
-            # Заголовки жирным
-            for row in sheet.iter_rows(min_row=1, max_row=1):
-                for cell in row:
-                    cell.font = bold_font
+        money_format = '# ##0.00'
+        
+        # Применяем стили
+        for row in ws.iter_rows(min_row=1, max_row=6):  # Заголовок отчета
+            for cell in row:
+                cell.font = bold_font
+                
+        for cell in ws[7]:  # Заголовки таблицы (строка 7)
+            cell.font = bold_font
             
-            # Автоподбор ширины столбцов
-            for col in sheet.columns:
-                max_length = max(len(str(cell.value)) for cell in col)
-                sheet.column_dimensions[col[0].column_letter].width = max_length + 2
-
+        for cell in ws[ws.max_row]:  # Итоговая строка
+            cell.font = bold_font
+        
+        # Формат денежных значений
+        for row in ws.iter_rows(min_row=8, max_row=ws.max_row):  # Данные начинаются с 8 строки
+            for cell in row[6:8]:  # Колонки с суммами
+                cell.number_format = money_format
+        
+        # Автоподбор ширины столбцов с учетом кириллицы
+        column_widths = {}
+        for row in ws.iter_rows():
+            for cell in row:
+                length = len(str(cell.value)) * 1.2  # Коэффициент для кириллицы
+                if cell.column_letter not in column_widths or length > column_widths[cell.column_letter]:
+                    column_widths[cell.column_letter] = length
+        
+        for col, width in column_widths.items():
+            ws.column_dimensions[col].width = min(width, 50)  # Максимальная ширина 50
+        
         # Сохраняем файл
-        timestamp = now.strftime("%Y%m%d_%H%M%S")
-        file_name = f"accounting_report_{timestamp}.xlsx"
+        file_name = f"salary_deductions_{now.strftime('%Y%m')}.xlsx"
         file_path = os.path.join(reports_dir, file_name)
         wb.save(file_path)
-
+        
         # Отправляем файл
         caption = (
-            f"📊 Бухгалтерский отчет\n"
-            f"📅 Период: {start_date.strftime('%d.%m.%Y')} — {end_date.strftime('%d.%m.%Y')}\n"
-            f"🍽 Всего порций: {total_portions}\n"
-            f"👥 Уникальных сотрудников: {unique_users}"
+            f"📋 Отчет для удержаний из зарплаты\n"
+            f"📅 Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n"
+            f"🍽 Всего обедов: {total_portions}\n"
+            f"💰 Сумма удержания: {total_with_ndfl:,.2f} руб. (с НДФЛ)"
         )
 
         with open(file_path, 'rb') as file:
