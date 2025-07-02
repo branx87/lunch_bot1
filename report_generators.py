@@ -163,10 +163,6 @@ async def export_accounting_report(
         ws.append(headers)
         ws.auto_filter.ref = f"A{ws.max_row}:H{ws.max_row}"
 
-        # Функция форматирования валюты
-        def format_currency(amount):
-            return f"{float(amount):,.2f}".replace(",", " ").replace(".", ",")
-
         # Запрос с заглушками для всех недостающих полей
         query = '''
             SELECT 
@@ -208,8 +204,8 @@ async def export_accounting_report(
                     row[3],  # position
                     row[4],  # location
                     row[5],  # hire_date
-                    format_currency(amount_without_ndfl),
-                    format_currency(amount_with_ndfl)
+                    amount_without_ndfl,  # числовое значение
+                    amount_with_ndfl      # числовое значение
                 ])
                 
                 total_portions += portions
@@ -224,8 +220,8 @@ async def export_accounting_report(
                 "",
                 "",
                 "",
-                format_currency(total_without_ndfl),
-                format_currency(total_with_ndfl)
+                total_without_ndfl,  # числовое значение
+                total_with_ndfl      # числовое значение
             ])
 
         # Форматирование
@@ -243,10 +239,13 @@ async def export_accounting_report(
         for cell in ws[ws.max_row]:
             cell.font = bold_font
         
-        # Формат денежных значений
+        # Формат денежных значений (применяем к числовым ячейкам)
         for row in ws.iter_rows(min_row=8, max_row=ws.max_row):
             for cell in row[6:8]:
                 cell.number_format = money_format
+                # Для правильного отображения чисел в Excel
+                if isinstance(cell.value, (int, float)):
+                    cell.value = float(cell.value)
         
         # Автоподбор ширины столбцов
         column_widths = {}
@@ -264,6 +263,10 @@ async def export_accounting_report(
         file_path = os.path.join(reports_dir, file_name)
         wb.save(file_path)
         
+        # Функция форматирования валюты для вывода в сообщении
+        def format_currency(amount):
+            return f"{float(amount):,.2f}".replace(",", " ").replace(".", ",")
+
         # Отправка файла
         caption = (
             f"📋 Отчет для удержаний из зарплаты\n"
