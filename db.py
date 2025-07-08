@@ -151,6 +151,18 @@ class Database:
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            
+            # В методе _init_db() добавьте таблицу соответствий:
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS bitrix_mapping (
+                    local_id INTEGER NOT NULL,
+                    local_type TEXT NOT NULL,  # 'user', 'order', 'menu'
+                    bitrix_id INTEGER NOT NULL,
+                    bitrix_entity_type TEXT NOT NULL,  # 'employee', 'deal', 'lunch'
+                    last_sync TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (local_id, local_type)
+                )
+            ''')
 
             # Таблица заказов
             self.cursor.execute('''
@@ -345,6 +357,28 @@ class Database:
             query += " AND is_deleted = FALSE"
         self.cursor.execute(query)
         return self._rows_to_dicts(self.cursor.fetchall())
+    
+    # Добавьте методы для работы с Bitrix:
+    def get_bitrix_id(self, local_id: int, entity_type: str) -> Optional[int]:
+        """Возвращает bitrix_id для локального объекта"""
+        row = self.cursor.execute(
+            "SELECT bitrix_id FROM bitrix_mapping WHERE local_id = ? AND local_type = ?",
+            (local_id, entity_type)
+        ).fetchone()
+        return row[0] if row else None
+
+    def add_bitrix_mapping(self, local_id: int, local_type: str, bitrix_id: int, bitrix_entity_type: str):
+        """Добавляет или обновляет соответствие"""
+        self.cursor.execute(
+            """
+            INSERT INTO bitrix_mapping (local_id, local_type, bitrix_id, bitrix_entity_type)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(local_id, local_type) DO UPDATE SET
+                bitrix_id = excluded.bitrix_id,
+                last_sync = CURRENT_TIMESTAMP
+            """,
+            (local_id, local_type, bitrix_id, bitrix_entity_type)
+        )
 
     # ===== МЕТОДЫ ДЛЯ РАБОТЫ С ПРАЗДНИКАМИ =====
     def add_holiday(self, date: str, name: str, is_recurring: bool = False) -> int:

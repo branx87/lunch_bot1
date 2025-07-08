@@ -44,6 +44,11 @@ class LunchBot:
 
             bot_info = await self.application.bot.get_me()
             logger.info(f"Бот @{bot_info.username} запущен")
+            
+            # Добавьте синхронизацию при старте
+            from bitrix import BitrixSync
+            bitrix_sync = BitrixSync()
+            await bitrix_sync.sync_employees()
 
             await self.application.updater.start_polling()
             self._running = True

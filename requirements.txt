@@ -8,6 +8,7 @@ python-dotenv==1.1.0
 httpx==0.24.1
 filelock==3.16.1  # Для блокировок при работе с файлами
 matplotlib==3.7.1; python_version < '3.12'  # Версия без жестких зависимостей
+fast_bitrix24
 
 # Optional for colored logs (Windows)
 colorlog==6.7.0

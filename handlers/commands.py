@@ -24,3 +24,22 @@ async def notifications_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def setup(application):
     application.add_handler(CommandHandler("notifications_on", notifications_on))
     application.add_handler(CommandHandler("notifications_off", notifications_off))
+    
+async def check_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    synced_users = db.execute('''
+        SELECT u.id, u.full_name, b.bitrix_id
+        FROM users u
+        JOIN bitrix_mapping b ON u.id = b.local_id AND b.local_type = 'user'
+    ''')
+    
+    if not synced_users:
+        await update.message.reply_text("Нет синхронизированных пользователей.")
+        return
+    
+    msg = "Сопоставленные сотрудники:\n" + "\n".join(
+        f"{u[0]}: {u[1]} → Bitrix ID {u[2]}" for u in synced_users
+    )
+    await update.message.reply_text(msg)
+
+def setup_commands(app):
+    app.add_handler(CommandHandler("checksync", check_sync))
