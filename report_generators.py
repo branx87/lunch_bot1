@@ -294,10 +294,9 @@ async def export_monthly_report(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     start_date: Optional[date] = None,
-    end_date: Optional[date] = None,
-    is_daily: bool = False  # Добавляем флаг для дневного отчёта
+    end_date: Optional[date] = None
 ):
-    """Генерация административного отчёта с возможностью указания дат"""
+    """Генерация отчета для удержания из зарплаты"""
     try:
         if update.effective_user.id not in CONFIG.admin_ids:
             await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
@@ -307,132 +306,145 @@ async def export_monthly_report(
         
         # Если даты не переданы - используем текущий месяц
         if not start_date or not end_date:
-            month_start = now.replace(day=1).date()
+            start_date = now.replace(day=1).date()
             end_date = now.date()
         else:
             # Проверяем, что start_date <= end_date
             if start_date > end_date:
                 start_date, end_date = end_date, start_date
 
-        reports_dir = ensure_reports_dir('admin')
+        reports_dir = ensure_reports_dir('salary_deductions')
         
+        # Создаем Excel файл
         wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Удержания за обед"
         
-        # Удаляем лист по умолчанию, если он есть
-        if 'Sheet' in wb.sheetnames:
-            del wb['Sheet']
+        # Заголовок отчета
+        ws.append(["Список сотрудников на удержание обедов из ежем.премии сотрудников"])
+        ws.append([f"за {start_date.strftime('%B %Y')} г."])
+        ws.append([])
+        ws.append(["", "удержание стоимости 1 обеда составляет", "150"])
+        ws.append([])
         
-        # Создаем листы для каждой локации
-        for location in CONFIG.locations:
-            ws = wb.create_sheet(location)
-            headers = ["Дата обеда", "Сотрудник", "Территориальный признак", "Подпись", "Кол-во обедов", "Тип заказа"]
-            ws.append(headers)
-            ws.auto_filter.ref = f"A1:F1"
+        # Заголовки таблицы
+        headers = [
+            "Подразделение",
+            "ФИО Битрикс",
+            "Кол-во обедов",
+            "Должность",
+            "Территория",
+            "Дата приема",
+            "Сумма удержания без НДФЛ",
+            "Сумма удержания с НДФЛ"
+        ]
+        ws.append(headers)
+        
+        # Получаем данные из БД
+        query = '''
+            SELECT 
+                COALESCE(u.department, 'Не указано') as department,
+                u.full_name,
+                SUM(o.quantity) as total_portions,
+                COALESCE(u.position, 'Не указано') as position,
+                COALESCE(u.location, 'Не указано') as location,
+                CASE 
+                    WHEN u.hire_date IS NULL THEN 'Не указана'
+                    ELSE u.hire_date 
+                END as hire_date
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            WHERE o.target_date BETWEEN ? AND ?
+            AND o.is_cancelled = FALSE
+            AND u.is_deleted = FALSE
+            GROUP BY u.id
+            ORDER BY department, u.full_name
+        '''
+        db.cursor.execute(query, (start_date.isoformat(), end_date.isoformat()))
+        
+        total_portions = 0
+        total_without_ndfl = 0
+        total_with_ndfl = 0
+        
+        for row in db.cursor.fetchall():
+            department, full_name, portions, position, location, hire_date = row
             
-            # Изменяем запрос в зависимости от типа отчёта
-            if is_daily:
-                # Для дневного отчёта берём только одну дату
-                db.cursor.execute('''
-                    SELECT 
-                        o.target_date,
-                        u.full_name,
-                        u.location,
-                        o.quantity,
-                        CASE WHEN o.is_preliminary THEN 'Предзаказ' ELSE 'Обычный' END
-                    FROM orders o
-                    JOIN users u ON o.user_id = u.id
-                    WHERE o.target_date = ?
-                      AND u.location = ?
-                      AND o.is_cancelled = FALSE
-                      AND u.is_deleted = FALSE
-                    ORDER BY u.full_name
-                ''', (start_date.isoformat(), location))
-            else:
-                # Для месячного отчёта берём диапазон
-                db.cursor.execute('''
-                    SELECT 
-                        o.target_date,
-                        u.full_name,
-                        COALESCE(u.location, 'Не указано'),
-                        o.quantity,
-                        CASE WHEN o.is_preliminary THEN 'Предзаказ' ELSE 'Обычный' END
-                    FROM orders o
-                    JOIN users u ON o.user_id = u.id
-                    WHERE o.target_date BETWEEN ? AND ?
-                    AND u.location = ?
-                    AND o.is_cancelled = FALSE
-                    ORDER BY o.target_date, u.full_name
-                ''', (start_date.isoformat(), end_date.isoformat(), location))
+            # Рассчитываем суммы
+            amount_without_ndfl = portions * 150  # 150 руб за обед
+            amount_with_ndfl = round(amount_without_ndfl * 1.13)  # НДФЛ 13%
             
-            for row in db.cursor.fetchall():
-                target_date = datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
-                ws.append([target_date, row[1], row[2], "", row[3], row[4]])  # Пустая колонка для подписи
+            # Форматируем дату приема
+            hire_date_formatted = datetime.strptime(hire_date, "%Y-%m-%d").strftime("%d.%m.%Y") if hire_date else ""
+            
+            # Добавляем строку в отчет
+            ws.append([
+                department,
+                full_name,
+                portions,
+                position,
+                location,
+                hire_date_formatted,
+                f"{amount_without_ndfl:,.2f}".replace(",", " ").replace(".", ","),
+                f"{amount_with_ndfl:,.2f}".replace(",", " ").replace(".", ",")
+            ])
+            
+            # Суммируем итоги
+            total_portions += portions
+            total_without_ndfl += amount_without_ndfl
+            total_with_ndfl += amount_with_ndfl
         
-        # Лист "Итоги"
-        ws_summary = wb.create_sheet("Итоги")
-        summary_headers = ["Локация", "Порции"]
-        ws_summary.append(summary_headers)
-        ws_summary.auto_filter.ref = "A1:B1"
-        
-        # Аналогично меняем запрос для сводки
-        if is_daily:
-            db.cursor.execute('''
-                SELECT COALESCE(u.location, 'Не указано'), SUM(o.quantity)
-                FROM orders o
-                JOIN users u ON o.user_id = u.id
-                WHERE o.target_date = ?
-                  AND o.is_cancelled = FALSE
-                GROUP BY u.location
-                ORDER BY SUM(o.quantity) DESC
-            ''', (start_date.isoformat(),))
-        else:
-            db.cursor.execute('''
-                SELECT COALESCE(u.location, 'Не указано'), SUM(o.quantity)
-                FROM orders o
-                JOIN users u ON o.user_id = u.id
-                WHERE o.target_date BETWEEN ? AND ?
-                    AND o.is_cancelled = FALSE
-                GROUP BY COALESCE(u.location, 'Не указано')
-                ORDER BY SUM(o.quantity) DESC
-            ''', (start_date.isoformat(), end_date.isoformat()))
-        
-        total = 0
-        for location, portions in db.cursor.fetchall():
-            ws_summary.append([location, portions])
-            total += portions
-        
-        ws_summary.append(["ВСЕГО", total])
+        # Добавляем итоговую строку
+        ws.append([
+            "ВСЕГО",
+            "",
+            total_portions,
+            "",
+            "",
+            "",
+            f"{total_without_ndfl:,.2f}".replace(",", " ").replace(".", ","),
+            f"{total_with_ndfl:,.2f}".replace(",", " ").replace(".", ",")
+        ])
         
         # Форматирование
         bold_font = Font(bold=True)
-        for sheet in wb.worksheets:
-            # Заголовки жирным
-            for row in sheet.iter_rows(min_row=1, max_row=1):
-                for cell in row:
-                    cell.font = bold_font
-            
-            # Автоподбор ширины столбцов
-            for col in sheet.columns:
-                max_length = max(len(str(cell.value)) for cell in col)
-                sheet.column_dimensions[col[0].column_letter].width = max_length + 2
-
+        money_format = '# ##0,00'
+        
+        # Заголовок отчета
+        for row in ws.iter_rows(min_row=1, max_row=5):
+            for cell in row:
+                cell.font = bold_font
+        
+        # Заголовки таблицы
+        for cell in ws[6]:
+            cell.font = bold_font
+        
+        # Итоговая строка
+        for cell in ws[ws.max_row]:
+            cell.font = bold_font
+        
+        # Формат денежных значений
+        for row in ws.iter_rows(min_row=7, max_row=ws.max_row):
+            for cell in row[6:8]:  # Колонки с суммами
+                cell.number_format = money_format
+        
+        # Автоподбор ширины столбцов
+        for col in ws.columns:
+            max_length = max(len(str(cell.value)) for cell in col)
+            ws.column_dimensions[col[0].column_letter].width = max_length + 2
+        
         # Сохраняем файл
         timestamp = now.strftime("%Y%m%d_%H%M%S")
-        file_name = f"admin_report_{timestamp}.xlsx"
+        file_name = f"salary_deductions_{start_date.strftime('%Y%m')}.xlsx"
         file_path = os.path.join(reports_dir, file_name)
         wb.save(file_path)
         
-        # Меняем текст сообщения в зависимости от типа отчёта
-        if is_daily:
-            caption = (
-                f"📅 Админ отчет за {start_date.strftime('%d.%m.%Y')}\n"
-                f"🍽 Всего порций: {total}"
-            )
-        else:
-            caption = (
-                f"📅 Админ отчет за {start_date.strftime('%B %Y')}\n"
-                f"🍽 Всего порций: {total}"
-            )
+        # Отправляем файл
+        caption = (
+            f"📋 Отчет для удержаний из зарплаты\n"
+            f"📅 Период: {start_date.strftime('%B %Y')}\n"
+            f"🍽 Всего обедов: {total_portions}\n"
+            f"💰 Общая сумма удержаний: {total_with_ndfl:,.2f} руб."
+        )
         
         with open(file_path, 'rb') as file:
             await context.bot.send_document(
@@ -443,8 +455,11 @@ async def export_monthly_report(
             )
 
     except Exception as e:
-        logger.error(f"Ошибка формирования админ отчёта: {e}")
-        await update.message.reply_text("❌ Ошибка формирования отчёта")
+        logger.error(f"Ошибка формирования отчета для удержаний: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ Произошла ошибка при создании отчета для удержаний."
+        )
+        raise
         
 async def export_daily_admin_report(
     update: Update, 
