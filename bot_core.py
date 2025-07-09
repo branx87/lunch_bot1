@@ -48,7 +48,7 @@ class LunchBot:
             # Добавьте синхронизацию при старте
             from bitrix import BitrixSync
             bitrix_sync = BitrixSync()
-            await bitrix_sync.sync_employees()
+            asyncio.create_task(bitrix_sync.sync_employees())  # Запуск в фоне
 
             await self.application.updater.start_polling()
             self._running = True

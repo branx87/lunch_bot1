@@ -156,9 +156,9 @@ class Database:
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS bitrix_mapping (
                     local_id INTEGER NOT NULL,
-                    local_type TEXT NOT NULL,  # 'user', 'order', 'menu'
+                    local_type TEXT NOT NULL,
                     bitrix_id INTEGER NOT NULL,
-                    bitrix_entity_type TEXT NOT NULL,  # 'employee', 'deal', 'lunch'
+                    bitrix_entity_type TEXT NOT NULL,
                     last_sync TEXT DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (local_id, local_type)
                 )
