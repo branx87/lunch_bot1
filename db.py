@@ -166,7 +166,7 @@ class Database:
             #     )
             # ''')
 
-            # Таблица заказов
+            # В методе _init_db() обновляем таблицу orders:
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS orders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,6 +177,7 @@ class Database:
                     quantity INTEGER NOT NULL CHECK(quantity BETWEEN 1 AND 3),
                     is_preliminary BOOLEAN DEFAULT FALSE,
                     is_cancelled BOOLEAN DEFAULT FALSE,
+                    is_from_bitrix BOOLEAN DEFAULT FALSE,
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 )
             ''')

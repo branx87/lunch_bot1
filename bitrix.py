@@ -1,5 +1,6 @@
 # ##bitrix.py
 # bitrix.py
+from datetime import datetime
 import os
 from fast_bitrix24 import Bitrix
 from dotenv import load_dotenv
@@ -180,6 +181,160 @@ class BitrixSync:
         except Exception as e:
             logger.error(f"Ошибка получения Bitrix ID: {e}")
             return None
+        
+    async def sync_orders(self, start_date: str, end_date: str) -> Dict[str, int]:
+        """Синхронизирует заказы из Bitrix в локальную базу"""
+        stats = {
+            'total': 0,
+            'added': 0,
+            'updated': 0,
+            'errors': 0
+        }
+        
+        try:
+            # Получаем заказы из Bitrix
+            bitrix_orders = await self._get_bitrix_orders(start_date, end_date)
+            if not bitrix_orders:
+                logger.warning(f"Не найдено заказов в Bitrix за период {start_date} - {end_date}")
+                return stats
+                
+            # Получаем локальные заказы за тот же период
+            local_orders = self._get_local_orders(start_date, end_date)
+            
+            # Синхронизируем
+            for bitrix_order in bitrix_orders:
+                try:
+                    # Ищем пользователя по Bitrix ID
+                    user_id = self._find_user_by_bitrix_id(bitrix_order['employee_id'])
+                    if not user_id:
+                        logger.warning(f"Пользователь с Bitrix ID {bitrix_order['employee_id']} не найден")
+                        stats['errors'] += 1
+                        continue
+                        
+                    # Проверяем, есть ли такой заказ уже в локальной базе
+                    existing_order = self._find_local_order(local_orders, user_id, bitrix_order['date'])
+                    
+                    if existing_order:
+                        # Обновляем существующий заказ
+                        if self._update_local_order(existing_order['id'], bitrix_order):
+                            stats['updated'] += 1
+                    else:
+                        # Добавляем новый заказ
+                        if self._add_local_order(user_id, bitrix_order):
+                            stats['added'] += 1
+                            
+                    stats['total'] += 1
+                    
+                except Exception as e:
+                    logger.error(f"Ошибка обработки заказа {bitrix_order}: {e}")
+                    stats['errors'] += 1
+                    
+            logger.info(f"Синхронизация заказов завершена. Добавлено: {stats['added']}, Обновлено: {stats['updated']}, Ошибок: {stats['errors']}")
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Ошибка синхронизации заказов: {e}", exc_info=True)
+            return stats
+
+    async def _get_bitrix_orders(self, start_date: str, end_date: str) -> List[Dict]:
+        """Получает заказы из Bitrix за указанный период"""
+        params = {
+            'entityTypeId': 1222,  # ID сущности "Заказы обедов"
+            'select': [
+                'id', 
+                'ufCrm45_1743599470',  # ID сотрудника
+                'ufCrm45ObedyCount',   # Количество обедов
+                'ufCrm45ObedyFrom',    # Локация
+                'createdTime'          # Дата создания
+            ],
+            'filter': {
+                '>=createdTime': f'{start_date}T00:00:00+03:00',
+                '<createdTime': f'{end_date}T00:00:00+03:00'
+            }
+        }
+        
+        try:
+            orders = await self.bx.get_all('crm.item.list', params)
+            return [self._parse_bitrix_order(o) for o in orders]
+        except Exception as e:
+            logger.error(f"Ошибка получения заказов из Bitrix: {e}")
+            return []
+
+    def _parse_bitrix_order(self, order: Dict) -> Dict:
+        """Парсит данные заказа из Bitrix в наш формат"""
+        return {
+            'bitrix_id': order.get('id'),
+            'employee_id': order.get('ufCrm45_1743599470'),
+            'quantity': self._map_quantity(order.get('ufCrm45ObedyCount')),
+            'location': self._map_location(order.get('ufCrm45ObedyFrom')),
+            'date': order.get('createdTime', '').split('T')[0],
+            'is_from_bitrix': True  # Добавляем признак, что заказ из Bitrix
+        }
+
+    def _get_local_orders(self, start_date: str, end_date: str) -> List[Dict]:
+        """Получает локальные заказы за период"""
+        db.cursor.execute("""
+            SELECT id, user_id, target_date, quantity, is_cancelled 
+            FROM orders 
+            WHERE target_date BETWEEN ? AND ?
+        """, (start_date, end_date))
+        
+        columns = [col[0] for col in db.cursor.description]
+        return [dict(zip(columns, row)) for row in db.cursor.fetchall()]
+
+    def _find_user_by_bitrix_id(self, bitrix_id: int) -> Optional[int]:
+        """Находит локальный ID пользователя по Bitrix ID"""
+        db.cursor.execute("""
+            SELECT id FROM users WHERE bitrix_id = ? LIMIT 1
+        """, (bitrix_id,))
+        result = db.cursor.fetchone()
+        return result[0] if result else None
+
+    def _find_local_order(self, local_orders: List[Dict], user_id: int, date: str) -> Optional[Dict]:
+        """Ищет заказ в локальной базе"""
+        for order in local_orders:
+            if order['user_id'] == user_id and order['target_date'] == date:
+                return order
+        return None
+
+    def _update_local_order(self, order_id: int, bitrix_order: Dict) -> bool:
+        """Обновляет локальный заказ данными из Bitrix"""
+        try:
+            db.cursor.execute("""
+                UPDATE orders 
+                SET quantity = ?, 
+                    is_from_bitrix = TRUE,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND is_cancelled = FALSE
+            """, (bitrix_order['quantity'], order_id))
+            db.conn.commit()
+            return db.cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Ошибка обновления заказа {order_id}: {e}")
+            return False
+
+    def _add_local_order(self, user_id: int, bitrix_order: Dict) -> bool:
+        """Добавляет новый заказ из Bitrix"""
+        try:
+            db.cursor.execute("""
+                INSERT INTO orders (
+                    user_id, 
+                    target_date, 
+                    order_time, 
+                    quantity, 
+                    is_from_bitrix
+                ) VALUES (?, ?, ?, ?, TRUE)
+            """, (
+                user_id,
+                bitrix_order['date'],
+                datetime.now().strftime('%H:%M'),
+                bitrix_order['quantity']
+            ))
+            db.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка добавления заказа: {e}")
+            return False
 
 async def test_sync():
     """Тестовая функция для проверки"""
