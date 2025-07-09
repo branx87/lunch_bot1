@@ -147,22 +147,24 @@ class Database:
                     username TEXT,
                     is_deleted BOOLEAN DEFAULT FALSE,
                     notifications_enabled BOOLEAN DEFAULT TRUE,
+                    bitrix_id INTEGER,
+                    bitrix_entity_type TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
             
-            # В методе _init_db() добавьте таблицу соответствий:
-            self.cursor.execute('''
-                CREATE TABLE IF NOT EXISTS bitrix_mapping (
-                    local_id INTEGER NOT NULL,
-                    local_type TEXT NOT NULL,
-                    bitrix_id INTEGER NOT NULL,
-                    bitrix_entity_type TEXT NOT NULL,
-                    last_sync TEXT DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (local_id, local_type)
-                )
-            ''')
+            # # В методе _init_db() добавьте таблицу соответствий:
+            # self.cursor.execute('''
+            #     CREATE TABLE IF NOT EXISTS bitrix_mapping (
+            #         local_id INTEGER NOT NULL,
+            #         local_type TEXT NOT NULL,
+            #         bitrix_id INTEGER NOT NULL,
+            #         bitrix_entity_type TEXT NOT NULL,
+            #         last_sync TEXT DEFAULT CURRENT_TIMESTAMP,
+            #         PRIMARY KEY (local_id, local_type)
+            #     )
+            # ''')
 
             # Таблица заказов
             self.cursor.execute('''
@@ -350,13 +352,40 @@ class Database:
         ).fetchone()
         return self._row_to_dict(row) if row else None
 
-    def get_employees(self, active_only=True):
-        """Возвращает сотрудников (пользователей с is_employee=True)"""
-        query = "SELECT * FROM users WHERE is_employee = TRUE"
-        if active_only:
-            query += " AND is_deleted = FALSE"
-        self.cursor.execute(query)
-        return self._rows_to_dicts(self.cursor.fetchall())
+    def get_employees(self, active_only: bool = True) -> List[Dict[str, Any]]:
+        """Получаем список сотрудников"""
+        try:
+            query = '''
+                SELECT id, full_name, bitrix_id 
+                FROM users 
+                WHERE is_employee = TRUE AND is_deleted = FALSE
+                {}
+            '''.format("AND is_verified = TRUE" if active_only else "")
+            
+            self.cursor.execute(query)
+            columns = [col[0] for col in self.cursor.description]
+            return [dict(zip(columns, row)) for row in self.cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Ошибка получения сотрудников: {e}")
+            return []
+        
+    def update_user_bitrix_data(self, user_id: int, bitrix_id: int, entity_type: str) -> bool:
+        """Обновляем Bitrix ID пользователя"""
+        try:
+            self.cursor.execute('''
+                UPDATE users 
+                SET bitrix_id = ?, bitrix_entity_type = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (bitrix_id, entity_type, user_id))
+            self.conn.commit()
+            return self.cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Ошибка обновления Bitrix данных: {e}")
+            return False
+        
+    def __del__(self):
+        """Закрываем соединение при удалении объекта"""
+        self.conn.close()
     
     # Добавьте методы для работы с Bitrix:
     def get_bitrix_id(self, local_id: int, entity_type: str) -> Optional[int]:
