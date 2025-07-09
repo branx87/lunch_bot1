@@ -28,8 +28,14 @@ class BitrixSync:
             raise
 
     async def sync_employees(self) -> Dict[str, int]:
-        """Синхронизация сотрудников с учетом отчеств в Bitrix"""
-        stats = {'total': 0, 'updated': 0, 'errors': 0, 'no_match': 0}
+        """Синхронизация сотрудников с автоматическим добавлением новых"""
+        stats = {
+            'total': 0, 
+            'updated': 0, 
+            'added': 0,
+            'errors': 0, 
+            'no_match': 0
+        }
         
         try:
             # 1. Получаем данные из Bitrix
@@ -38,31 +44,35 @@ class BitrixSync:
                 logger.error("Не удалось получить сотрудников из Bitrix")
                 return stats
 
-            # 2. Получаем локальных сотрудников
+            # 2. Получаем локальных сотрудников и создаем множество имен
             local_employees = db.get_employees(active_only=False)
+            local_names = {self._normalize_name(e['full_name']) for e in local_employees}
             stats['total'] = len(local_employees)
             
-            # 3. Создаем удобную структуру для поиска
+            # 3. Создаем структуры для поиска
             bitrix_employees = {
-                self._normalize_name(emp['VALUE']): emp['ID']
+                self._normalize_name(emp['VALUE']): {
+                    'id': emp['ID'],
+                    'name': emp['VALUE']
+                }
                 for emp in crm_employees
             }
 
-            # 4. Проходим по локальным сотрудникам
+            # 4. Проходим по локальным сотрудникам для обновления Bitrix ID
             for employee in local_employees:
                 try:
                     local_name = self._normalize_name(employee['full_name'])
-                    bitrix_id = self._find_bitrix_employee(local_name, bitrix_employees)
+                    bitrix_emp = self._find_bitrix_employee(local_name, bitrix_employees)
 
-                    if bitrix_id:
+                    if bitrix_emp:
                         success = db.update_user_bitrix_data(
                             user_id=employee['id'],
-                            bitrix_id=bitrix_id,
+                            bitrix_id=bitrix_emp['id'],
                             entity_type='crm_employee'
                         )
                         if success:
                             stats['updated'] += 1
-                            logger.debug(f"Сопоставлено: {employee['full_name']} -> {bitrix_id}")
+                            logger.debug(f"Сопоставлено: {employee['full_name']} -> {bitrix_emp['id']}")
                         else:
                             stats['errors'] += 1
                     else:
@@ -73,9 +83,31 @@ class BitrixSync:
                     stats['errors'] += 1
                     logger.error(f"Ошибка обработки {employee}: {e}")
 
+            # 5. Добавляем новых сотрудников из Bitrix, которых нет в локальной базе
+            for bitrix_emp in bitrix_employees.values():
+                bitrix_name = bitrix_emp['name']
+                normalized_name = self._normalize_name(bitrix_name)
+                
+                # Проверяем, есть ли такой сотрудник в локальной базе
+                if normalized_name not in local_names:
+                    try:
+                        # Добавляем нового сотрудника (is_employee=True, is_verified=False)
+                        db.execute(
+                            """INSERT INTO users 
+                            (full_name, is_employee, is_verified, bitrix_id, bitrix_entity_type)
+                            VALUES (?, ?, ?, ?, ?)""",
+                            (bitrix_name, True, False, bitrix_emp['id'], 'crm_employee')
+                        )
+                        stats['added'] += 1
+                        logger.info(f"Добавлен новый сотрудник: {bitrix_name} (Bitrix ID: {bitrix_emp['id']})")
+                    except Exception as e:
+                        stats['errors'] += 1
+                        logger.error(f"Ошибка добавления сотрудника {bitrix_name}: {e}")
+
             logger.info(
                 f"Синхронизация завершена. Всего: {stats['total']}, "
                 f"Обновлено: {stats['updated']}, "
+                f"Добавлено: {stats['added']}, "
                 f"Без соответствия: {stats['no_match']}, "
                 f"Ошибок: {stats['errors']}"
             )
