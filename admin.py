@@ -180,39 +180,46 @@ async def handle_history_pagination(update: Update, context: ContextTypes.DEFAUL
     await message_history(update, context)
     
 async def handle_sync_bitrix(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ручной запуск синхронизации с Bitrix"""
-    if update.effective_user.id not in CONFIG.admin_ids:
+    """Ручной запуск синхронизации с Bitrix (/sync_bitrix)"""
+    user = update.effective_user
+    if user.id not in CONFIG.admin_ids:
         await update.message.reply_text("❌ У вас нет прав для этой команды")
         return
-        
+
+    msg = await update.message.reply_text("🔄 Начинаю синхронизацию с Bitrix...")
+    
     try:
         from bitrix import BitrixSync
         sync = BitrixSync()
         
-        # Синхронизируем сотрудников
+        # 1. Синхронизация сотрудников
+        await msg.edit_text("🔄 Синхронизирую сотрудников...")
         emp_stats = await sync.sync_employees()
-        await update.message.reply_text(
-            f"Сотрудники синхронизированы:\n"
-            f"Всего: {emp_stats['total']}\n"
-            f"Обновлено: {emp_stats['updated']}\n"
-            f"Добавлено: {emp_stats['added']}\n"
-            f"Ошибок: {emp_stats['errors']}"
-        )
         
-        # Синхронизируем заказы за текущий месяц
+        # 2. Синхронизация заказов (текущий месяц)
+        await msg.edit_text("🔄 Синхронизирую заказы...")
         today = datetime.now().date()
         start_date = today.replace(day=1).strftime('%Y-%m-%d')
         end_date = today.strftime('%Y-%m-%d')
-        
         order_stats = await sync.sync_orders(start_date, end_date)
-        await update.message.reply_text(
-            f"Заказы синхронизированы:\n"
-            f"Всего: {order_stats['total']}\n"
-            f"Добавлено: {order_stats['added']}\n"
-            f"Обновлено: {order_stats['updated']}\n"
-            f"Ошибок: {order_stats['errors']}"
+        
+        # Формируем отчет
+        report = (
+            "✅ Синхронизация завершена\n\n"
+            "👥 Сотрудники:\n"
+            f"• Всего: {emp_stats['total']}\n"
+            f"• Обновлено: {emp_stats['updated']}\n"
+            f"• Добавлено: {emp_stats['added']}\n"
+            f"• Ошибок: {emp_stats['errors']}\n\n"
+            "🍽 Заказы:\n"
+            f"• Всего: {order_stats['total']}\n"
+            f"• Добавлено: {order_stats['added']}\n"
+            f"• Обновлено: {order_stats['updated']}\n"
+            f"• Ошибок: {order_stats['errors']}"
         )
+        
+        await msg.edit_text(report)
         
     except Exception as e:
         logger.error(f"Ошибка синхронизации: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Ошибка синхронизации: {str(e)}")
+        await msg.edit_text(f"❌ Ошибка синхронизации: {str(e)}")

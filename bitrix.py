@@ -28,14 +28,47 @@ class BitrixSync:
             logger.critical(f"Ошибка инициализации BitrixSync: {e}")
             raise
 
+    def _find_bitrix_employee(self, local_name: str, bitrix_employees: Dict[str, dict]) -> Optional[dict]:
+        """Ищем соответствие сотрудника с учетом возможного отчества в Bitrix"""
+        # 1. Прямое совпадение
+        if local_name in bitrix_employees:
+            return bitrix_employees[local_name]
+        
+        # 2. Разбиваем имена на части
+        local_parts = local_name.lower().split()
+        if not local_parts:
+            return None
+        
+        # 3. Ищем по разным комбинациям:
+        # - Фамилия + Имя (без отчества)
+        search_key_simple = f"{local_parts[0]} {local_parts[1]}"
+        
+        # - Фамилия + первая буква имени (на случай Иванов И.И.)
+        search_key_initial = f"{local_parts[0]} {local_parts[1][0]}"
+        
+        for bitrix_name, bitrix_data in bitrix_employees.items():
+            bitrix_name_lower = bitrix_name.lower()
+            
+            # Проверяем разные варианты совпадений
+            if (bitrix_name_lower.startswith(search_key_simple) or 
+                bitrix_name_lower.startswith(search_key_initial)):
+                return bitrix_data
+            
+            # Дополнительно проверяем совпадение Bitrix ID
+            if bitrix_data.get('id') and self.get_bitrix_id(local_name) == bitrix_data['id']:
+                return bitrix_data
+        
+        return None
+
     async def sync_employees(self) -> Dict[str, int]:
-        """Синхронизация сотрудников с автоматическим добавлением новых"""
+        """Улучшенная синхронизация сотрудников"""
         stats = {
             'total': 0, 
             'updated': 0, 
             'added': 0,
             'errors': 0, 
-            'no_match': 0
+            'no_match': 0,
+            'merged': 0
         }
         
         try:
@@ -45,37 +78,48 @@ class BitrixSync:
                 logger.error("Не удалось получить сотрудников из Bitrix")
                 return stats
 
-            # 2. Получаем локальных сотрудников и создаем множество имен
+            # 2. Создаем улучшенную структуру для поиска
+            bitrix_employees = {}
+            for emp in crm_employees:
+                name = emp['VALUE']
+                normalized = self._normalize_name(name)
+                
+                # Добавляем разные варианты имен для поиска
+                parts = normalized.split()
+                if len(parts) >= 2:
+                    # Вариант с фамилией и именем (без отчества)
+                    simple_key = f"{parts[0]} {parts[1]}"
+                    bitrix_employees[simple_key] = {'id': emp['ID'], 'name': name}
+                    
+                    # Вариант с инициалом имени (Иванов И.И.)
+                    initial_key = f"{parts[0]} {parts[1][0]}"
+                    bitrix_employees[initial_key] = {'id': emp['ID'], 'name': name}
+                
+                # Оригинальное полное имя
+                bitrix_employees[normalized] = {'id': emp['ID'], 'name': name}
+
+            # 3. Синхронизируем локальных сотрудников
             local_employees = db.get_employees(active_only=False)
-            local_names = {self._normalize_name(e['full_name']) for e in local_employees}
             stats['total'] = len(local_employees)
             
-            # 3. Создаем структуры для поиска
-            bitrix_employees = {
-                self._normalize_name(emp['VALUE']): {
-                    'id': emp['ID'],
-                    'name': emp['VALUE']
-                }
-                for emp in crm_employees
-            }
-
-            # 4. Проходим по локальным сотрудникам для обновления Bitrix ID
             for employee in local_employees:
                 try:
                     local_name = self._normalize_name(employee['full_name'])
                     bitrix_emp = self._find_bitrix_employee(local_name, bitrix_employees)
 
                     if bitrix_emp:
-                        success = db.update_user_bitrix_data(
-                            user_id=employee['id'],
-                            bitrix_id=bitrix_emp['id'],
-                            entity_type='crm_employee'
-                        )
-                        if success:
-                            stats['updated'] += 1
-                            logger.debug(f"Сопоставлено: {employee['full_name']} -> {bitrix_emp['id']}")
-                        else:
-                            stats['errors'] += 1
+                        # Проверяем, не изменился ли Bitrix ID
+                        if employee.get('bitrix_id') != bitrix_emp['id']:
+                            success = db.update_user_bitrix_data(
+                                user_id=employee['id'],
+                                bitrix_id=bitrix_emp['id'],
+                                entity_type='crm_employee'
+                            )
+                            if success:
+                                stats['updated'] += 1
+                                logger.debug(f"Сопоставлено: {employee['full_name']} -> {bitrix_emp['id']}")
+                            else:
+                                stats['errors'] += 1
                     else:
                         stats['no_match'] += 1
                         logger.warning(f"Не найдено соответствие для: {employee['full_name']}")
@@ -84,54 +128,40 @@ class BitrixSync:
                     stats['errors'] += 1
                     logger.error(f"Ошибка обработки {employee}: {e}")
 
-            # 5. Добавляем новых сотрудников из Bitrix, которых нет в локальной базе
+            # 4. Добавляем новых сотрудников из Bitrix
+            existing_names = {self._normalize_name(e['full_name']) for e in local_employees}
+            
             for bitrix_emp in bitrix_employees.values():
                 bitrix_name = bitrix_emp['name']
-                normalized_name = self._normalize_name(bitrix_name)
+                normalized = self._normalize_name(bitrix_name)
                 
-                # Проверяем, есть ли такой сотрудник в локальной базе
-                if normalized_name not in local_names:
+                # Проверяем все возможные варианты имени
+                parts = normalized.split()
+                simple_name = f"{parts[0]} {parts[1]}" if len(parts) >= 2 else normalized
+                
+                if simple_name not in existing_names and normalized not in existing_names:
                     try:
-                        # Добавляем нового сотрудника (is_employee=True, is_verified=False)
+                        # Добавляем сокращенное имя (без отчества)
+                        display_name = ' '.join(parts[:2]) if len(parts) >= 2 else bitrix_name
+                        
                         db.execute(
                             """INSERT INTO users 
                             (full_name, is_employee, is_verified, bitrix_id, bitrix_entity_type)
                             VALUES (?, ?, ?, ?, ?)""",
-                            (bitrix_name, True, False, bitrix_emp['id'], 'crm_employee')
+                            (display_name, True, False, bitrix_emp['id'], 'crm_employee')
                         )
                         stats['added'] += 1
-                        logger.info(f"Добавлен новый сотрудник: {bitrix_name} (Bitrix ID: {bitrix_emp['id']})")
+                        logger.info(f"Добавлен сотрудник: {display_name} (Bitrix: {bitrix_name})")
                     except Exception as e:
                         stats['errors'] += 1
                         logger.error(f"Ошибка добавления сотрудника {bitrix_name}: {e}")
 
-            logger.info(
-                f"Синхронизация завершена. Всего: {stats['total']}, "
-                f"Обновлено: {stats['updated']}, "
-                f"Добавлено: {stats['added']}, "
-                f"Без соответствия: {stats['no_match']}, "
-                f"Ошибок: {stats['errors']}"
-            )
+            logger.info(f"Синхронизация завершена. Статистика: {stats}")
             return stats
 
         except Exception as e:
             logger.error(f"Ошибка синхронизации: {e}", exc_info=True)
             return stats
-
-    def _find_bitrix_employee(self, local_name: str, bitrix_employees: Dict[str, int]) -> Optional[int]:
-        """Ищем соответствие сотрудника с учетом отчества"""
-        # Прямое совпадение (если вдруг есть)
-        if local_name in bitrix_employees:
-            return bitrix_employees[local_name]
-        
-        # Ищем по фамилии и имени (игнорируя отчество)
-        local_parts = local_name.split()
-        if len(local_parts) >= 2:
-            search_key = f"{local_parts[0]} {local_parts[1]}"
-            for bitrix_name, bitrix_id in bitrix_employees.items():
-                if bitrix_name.startswith(search_key):
-                    return bitrix_id
-        return None
 
     @staticmethod
     def _normalize_name(name: str) -> str:

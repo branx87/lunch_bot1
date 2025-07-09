@@ -1,4 +1,5 @@
 # ##bot_core.py
+from datetime import datetime, timedelta
 import sqlite3
 from telegram.ext import ApplicationBuilder
 from middleware import AccessControlHandler
@@ -49,7 +50,8 @@ class LunchBot:
             from bitrix import BitrixSync
             bitrix_sync = BitrixSync()
             asyncio.create_task(bitrix_sync.sync_employees())  # Запуск в фоне
-
+            asyncio.create_task(self._initial_sync(bitrix_sync))
+            
             await self.application.updater.start_polling()
             self._running = True
             
@@ -66,6 +68,24 @@ class LunchBot:
             logger.error(f"Ошибка: {e}")
         finally:
             await self.stop()
+            
+    async def _initial_sync(self, sync):
+        """Выполняет начальную синхронизацию"""
+        try:
+            logger.info("Запуск начальной синхронизации с Bitrix...")
+            
+            # 1. Синхронизируем сотрудников
+            emp_stats = await sync.sync_employees()
+            logger.info(f"Сотрудники синхронизированы: {emp_stats}")
+            
+            # 2. Синхронизируем заказы за последние 30 дней
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+            order_stats = await sync.sync_orders(start_date, end_date)
+            logger.info(f"Заказы синхронизированы: {order_stats}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка начальной синхронизации: {e}", exc_info=True)
 
     async def stop(self):
         """Финальная версия метода остановки"""

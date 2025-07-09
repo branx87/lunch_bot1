@@ -1,6 +1,7 @@
 # ##handlers/commands.py
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
+from admin import handle_sync_bitrix
 from db import db
 
 async def notifications_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -24,6 +25,7 @@ async def notifications_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def setup(application):
     application.add_handler(CommandHandler("notifications_on", notifications_on))
     application.add_handler(CommandHandler("notifications_off", notifications_off))
+    application.add_handler(CommandHandler('sync_bitrix', handle_sync_bitrix))
     
 async def check_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     synced_users = db.execute('''
