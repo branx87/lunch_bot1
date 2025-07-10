@@ -170,14 +170,17 @@ class Database:
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS orders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bitrix_order_id TEXT DEFAULT CURRENT_TIMESTAMP,
                     user_id INTEGER NOT NULL,
                     target_date TEXT NOT NULL,
                     order_time TEXT NOT NULL,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    quantity INTEGER NOT NULL CHECK(quantity BETWEEN 1 AND 3),
+                    quantity INTEGER NOT NULL CHECK(quantity BETWEEN 1 AND 850),
                     is_preliminary BOOLEAN DEFAULT FALSE,
                     is_cancelled BOOLEAN DEFAULT FALSE,
                     is_from_bitrix BOOLEAN DEFAULT FALSE,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    bitrix_quantity_id TEXT DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 )
             ''')

@@ -20,16 +20,13 @@ WEBHOOK = os.getenv('BITRIX_WEBHOOK')
 def map_quantity(quantity_id):
     """Преобразует ID количества обедов в число"""
     quantity_map = {
-        '821': 1,
-        '822': 2,
-        '823': 3,
-        '824': 4,
-        '825': 5,
-        '1743599470': 1,
-        '1743599471': 2,
-        '1743599472': 3
+        '821': '1',
+        '822': '2',
+        '823': '3',
+        '824': '4',
+        '825': '5'
     }
-    return quantity_map.get(str(quantity_id), 1)  # По умолчанию 1 обед
+    return quantity_map.get(str(quantity_id), '0')
 
 def map_location(location_id):
     """Преобразует ID локации в название"""
@@ -60,16 +57,14 @@ async def export_monthly_orders(year=None, month=None):
         # Определяем даты начала и конца месяца
         start_date = datetime(year=year, month=month, day=1)
         if month == 12:
-            end_date = datetime(year=year+1, month=1, day=1) - timedelta(days=1)
+            end_date = datetime(year=year+1, month=1, day=1)
         else:
-            end_date = datetime(year=year, month=month+1, day=1) - timedelta(days=1)
+            end_date = datetime(year=year, month=month+1, day=1)
         
-        # Форматируем даты для Bitrix24 (учитываем часовой пояс)
+        # Форматируем даты для Bitrix24
         start_date_str = start_date.strftime('%Y-%m-%d')
         end_date_str = end_date.strftime('%Y-%m-%d')
 
-        logger.info(f"Запрашиваю данные о заказах с {start_date_str} по {end_date_str}...")
-        
         # Параметры запроса с фильтром по месяцу
         params = {
             'entityTypeId': 1222,
@@ -82,67 +77,49 @@ async def export_monthly_orders(year=None, month=None):
             ],
             'filter': {
                 '>=createdTime': f'{start_date_str}T00:00:00+03:00',
-                '<=createdTime': f'{end_date_str}T23:59:59+03:00'
+                '<createdTime': f'{end_date_str}T00:00:00+03:00'
             }
         }
 
+        logger.info(f"Запрашиваю данные о заказах за {year}-{month:02d}...")
+        
         # Получаем данные
         orders = await bx.get_all('crm.item.list', params)
         
-        # Сортируем заказы по дате создания
-        orders.sort(key=lambda x: x.get('createdTime', ''))
-        
         if not orders:
             logger.warning(f"Не найдено заказов за {year}-{month:02d}")
-            return None
+            return
 
         logger.info(f"Всего получено {len(orders)} заказов за месяц")
 
-        # Инициализируем BitrixSync для работы с базой данных
-        bitrix_sync = BitrixSync()
-        
-        # Синхронизируем сотрудников перед обработкой заказов
-        await bitrix_sync.sync_employees()
+        # Получаем список сотрудников из БД
+        cursor = db.conn.cursor()
+        cursor.execute("SELECT id, full_name, bitrix_id FROM users WHERE is_employee = TRUE AND is_deleted = FALSE")
+        employees = cursor.fetchall()
+        employee_map = {str(e[2]): e[1] for e in employees if e[2]}  # Создаем словарь {bitrix_id: full_name}
 
         # Обработка данных
         processed_data = []
-        stats = {'total': 0, 'added': 0, 'updated': 0, 'errors': 0}
-
-        for order in sorted(orders, key=lambda x: x.get('createdTime', '')):  # Сортируем по дате создания
-            # Парсим заказ
-            parsed_order = bitrix_sync._parse_bitrix_order(order)
-            if not parsed_order:
-                stats['errors'] += 1
-                continue
-                
-            # Обрабатываем заказ (добавляем/обновляем в базе)
-            await bitrix_sync._process_single_order(parsed_order, stats)
-            
-            # Также добавляем данные для Excel
+        for order in orders:
+            # Получаем имя сотрудника
             employee_bitrix_id = str(order.get('ufCrm45_1743599470', ''))
-            employee_name = await get_employee_name(employee_bitrix_id)
-            
+            employee_name = employee_map.get(employee_bitrix_id, f"Неизвестный сотрудник (ID: {employee_bitrix_id})")
+
+            # Преобразуем количество и локацию
             quantity = map_quantity(order.get('ufCrm45ObedyCount'))
             location = map_location(order.get('ufCrm45ObedyFrom'))
+
+            # Обработка даты
             created_time = order.get('createdTime', '')
             created_date = created_time.split('T')[0] if created_time else ''
 
             processed_data.append({
-                'ID_заказа_Bitrix': order.get('id'),  # Добавляем ID из Bitrix
-                'ID_сотрудника': employee_bitrix_id,
+                'ID': order.get('id'),
                 'Сотрудник': employee_name,
                 'Количество_обедов': quantity,
                 'Локация': location,
-                'Дата_заказа': created_date,
-                'Время_заказа': created_time.split('T')[1][:8] if 'T' in created_time else ''
+                'Дата_создания': created_date
             })
-
-        # Сортируем данные для вывода
-        df = pd.DataFrame(processed_data)
-        # Сортировка по дате и времени
-        df = df.sort_values(by=['Дата_заказа', 'Время_заказа'])
-
-        logger.info(f"Статистика обработки заказов: Добавлено: {stats['added']}, Обновлено: {stats['updated']}, Ошибок: {stats['errors']}")
 
         # Создаем DataFrame
         df = pd.DataFrame(processed_data)
@@ -161,18 +138,6 @@ async def export_monthly_orders(year=None, month=None):
     except Exception as e:
         logger.error(f"Ошибка при экспорте: {str(e)}", exc_info=True)
         raise
-
-async def get_employee_name(bitrix_id: str) -> str:
-    """Получаем имя сотрудника по его Bitrix ID"""
-    try:
-        result = db.execute(
-            "SELECT full_name FROM users WHERE bitrix_id = ? LIMIT 1",
-            (bitrix_id,)
-        )
-        return result[0][0] if result else f"Неизвестный сотрудник (ID: {bitrix_id})"
-    except Exception as e:
-        logger.error(f"Ошибка получения имени сотрудника: {e}")
-        return f"Неизвестный сотрудник (ID: {bitrix_id})"
 
 if __name__ == '__main__':
     # Примеры использования:
