@@ -295,7 +295,7 @@ async def export_monthly_report(
     context: ContextTypes.DEFAULT_TYPE,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    is_daily: bool = False  # Добавляем флаг для дневного отчёта
+    is_daily: bool = False
 ):
     """Генерация административного отчёта с возможностью указания дат"""
     try:
@@ -322,51 +322,93 @@ async def export_monthly_report(
         if 'Sheet' in wb.sheetnames:
             del wb['Sheet']
         
+        # Создаем лист "Все заказы" (первым в книге)
+        ws_all = wb.create_sheet("Все заказы", 0)
+        all_headers = ["Дата обеда", "Сотрудник", "Локация", "Подпись", "Кол-во обедов", "Тип заказа"]
+        ws_all.append(all_headers)
+        ws_all.auto_filter.ref = "A1:F1"
+        
+        # Сначала получаем ВСЕ заказы для общего листа
+        if is_daily:
+            db.cursor.execute('''
+                SELECT 
+                    o.target_date,
+                    u.full_name,
+                    COALESCE(u.location, 'Не указано'),
+                    o.quantity,
+                    CASE WHEN o.is_preliminary THEN 'Предзаказ' ELSE 'Обычный' END,
+                    o.created_at,
+                    o.bitrix_order_id
+                FROM orders o
+                JOIN users u ON o.user_id = u.id
+                WHERE o.target_date = ?
+                AND o.is_cancelled = FALSE
+                AND u.is_deleted = FALSE
+                ORDER BY 
+                    o.target_date,
+                    CASE WHEN o.bitrix_order_id IS NULL THEN o.created_at ELSE o.bitrix_order_id END,
+                    u.full_name
+            ''', (start_date.isoformat(),))
+        else:
+            db.cursor.execute('''
+                SELECT 
+                    o.target_date,
+                    u.full_name,
+                    COALESCE(u.location, 'Не указано'),
+                    o.quantity,
+                    CASE WHEN o.is_preliminary THEN 'Предзаказ' ELSE 'Обычный' END,
+                    o.created_at,
+                    o.bitrix_order_id
+                FROM orders o
+                JOIN users u ON o.user_id = u.id
+                WHERE o.target_date BETWEEN ? AND ?
+                AND o.is_cancelled = FALSE
+                AND u.is_deleted = FALSE
+                ORDER BY 
+                    o.target_date,
+                    CASE WHEN o.bitrix_order_id IS NULL THEN o.created_at ELSE o.bitrix_order_id END,
+                    u.full_name
+            ''', (start_date.isoformat(), end_date.isoformat()))
+        
+        all_orders = db.cursor.fetchall()
+        
+        # Группируем заказы по дате для общего листа
+        orders_by_date = {}
+        for row in all_orders:
+            date_key = row[0]
+            if date_key not in orders_by_date:
+                orders_by_date[date_key] = []
+            orders_by_date[date_key].append(row)
+        
+        # Заполняем лист "Все заказы"
+        for date_key in sorted(orders_by_date.keys()):
+            for row in orders_by_date[date_key]:
+                target_date = datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
+                ws_all.append([target_date, row[1], row[2], "", row[3], row[4]])
+        
         # Создаем листы для каждой локации
         for location in CONFIG.locations:
             ws = wb.create_sheet(location)
             headers = ["Дата обеда", "Сотрудник", "Территориальный признак", "Подпись", "Кол-во обедов", "Тип заказа"]
             ws.append(headers)
-            ws.auto_filter.ref = f"A1:F1"
+            ws.auto_filter.ref = "A1:F1"
             
-            # Изменяем запрос в зависимости от типа отчёта
-            if is_daily:
-                # Для дневного отчёта берём только одну дату
-                db.cursor.execute('''
-                    SELECT 
-                        o.target_date,
-                        u.full_name,
-                        u.location,
-                        o.quantity,
-                        CASE WHEN o.is_preliminary THEN 'Предзаказ' ELSE 'Обычный' END
-                    FROM orders o
-                    JOIN users u ON o.user_id = u.id
-                    WHERE o.target_date = ?
-                      AND u.location = ?
-                      AND o.is_cancelled = FALSE
-                      AND u.is_deleted = FALSE
-                    ORDER BY u.full_name
-                ''', (start_date.isoformat(), location))
-            else:
-                # Для месячного отчёта берём диапазон
-                db.cursor.execute('''
-                    SELECT 
-                        o.target_date,
-                        u.full_name,
-                        COALESCE(u.location, 'Не указано'),
-                        o.quantity,
-                        CASE WHEN o.is_preliminary THEN 'Предзаказ' ELSE 'Обычный' END
-                    FROM orders o
-                    JOIN users u ON o.user_id = u.id
-                    WHERE o.target_date BETWEEN ? AND ?
-                    AND u.location = ?
-                    AND o.is_cancelled = FALSE
-                    ORDER BY o.target_date, u.full_name
-                ''', (start_date.isoformat(), end_date.isoformat(), location))
+            # Фильтруем общие данные по локации
+            location_orders = [row for row in all_orders if row[2] == location]
             
-            for row in db.cursor.fetchall():
-                target_date = datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
-                ws.append([target_date, row[1], row[2], "", row[3], row[4]])  # Пустая колонка для подписи
+            # Группируем по дате для текущей локации
+            loc_orders_by_date = {}
+            for row in location_orders:
+                date_key = row[0]
+                if date_key not in loc_orders_by_date:
+                    loc_orders_by_date[date_key] = []
+                loc_orders_by_date[date_key].append(row)
+            
+            # Заполняем лист локации
+            for date_key in sorted(loc_orders_by_date.keys()):
+                for row in loc_orders_by_date[date_key]:
+                    target_date = datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
+                    ws.append([target_date, row[1], row[2], "", row[3], row[4]])
         
         # Лист "Итоги"
         ws_summary = wb.create_sheet("Итоги")
@@ -374,30 +416,17 @@ async def export_monthly_report(
         ws_summary.append(summary_headers)
         ws_summary.auto_filter.ref = "A1:B1"
         
-        # Аналогично меняем запрос для сводки
-        if is_daily:
-            db.cursor.execute('''
-                SELECT COALESCE(u.location, 'Не указано'), SUM(o.quantity)
-                FROM orders o
-                JOIN users u ON o.user_id = u.id
-                WHERE o.target_date = ?
-                  AND o.is_cancelled = FALSE
-                GROUP BY u.location
-                ORDER BY SUM(o.quantity) DESC
-            ''', (start_date.isoformat(),))
-        else:
-            db.cursor.execute('''
-                SELECT COALESCE(u.location, 'Не указано'), SUM(o.quantity)
-                FROM orders o
-                JOIN users u ON o.user_id = u.id
-                WHERE o.target_date BETWEEN ? AND ?
-                    AND o.is_cancelled = FALSE
-                GROUP BY COALESCE(u.location, 'Не указано')
-                ORDER BY SUM(o.quantity) DESC
-            ''', (start_date.isoformat(), end_date.isoformat()))
+        # Подсчет итогов
+        location_totals = {}
+        for row in all_orders:
+            location = row[2]
+            quantity = row[3]
+            if location not in location_totals:
+                location_totals[location] = 0
+            location_totals[location] += quantity
         
         total = 0
-        for location, portions in db.cursor.fetchall():
+        for location, portions in sorted(location_totals.items(), key=lambda x: x[1], reverse=True):
             ws_summary.append([location, portions])
             total += portions
         

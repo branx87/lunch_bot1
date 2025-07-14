@@ -7,6 +7,7 @@ import logging
 from typing import List, Dict, Optional
 import asyncio
 from db import db
+import json
 
 logger = logging.getLogger(__name__)
 logging.getLogger('fast_bitrix24').setLevel(logging.WARNING)
@@ -29,6 +30,11 @@ class BitrixSync:
                 '826': 'Офис', '827': 'ПЦ 1', '828': 'ПЦ 2', '1063': 'Склад'
             }
             
+            self._status_map = {
+                '1061': False,  # "Да" - заказ принят (не отменен)
+                '1062': True    # "Нет" - заказ отменен
+            }
+            
             logger.info("Подключение к Bitrix24 инициализировано")
             self.bx = Bitrix(self.webhook)
             
@@ -39,14 +45,12 @@ class BitrixSync:
     async def sync_last_two_months_orders(self) -> Dict[str, int]:
         """Синхронизирует заказы за последние 2 месяца"""
         end_date = datetime.now()
-        start_date = end_date.replace(day=1) - timedelta(days=60)  # Ровно 2 месяца назад
+        start_date = end_date.replace(day=1) - timedelta(days=60)
         
         logger.info(f"Синхронизация заказов с {start_date.date()} по {end_date.date()}")
         
-        # Сначала синхронизируем сотрудников
         await self.sync_employees()
         
-        # Затем синхронизируем заказы
         return await self.sync_orders(
             start_date.strftime('%Y-%m-%d'),
             end_date.strftime('%Y-%m-%d')
@@ -60,23 +64,19 @@ class BitrixSync:
         }
         
         try:
-            # Получаем сотрудников из Bitrix
             crm_employees = await self._get_crm_employees()
             if not crm_employees:
                 logger.error("Не удалось получить сотрудников из Bitrix")
                 return stats
 
-            # Создаем структуру для поиска
             bitrix_employees = self._create_employee_search_structure(crm_employees)
             
-            # Синхронизируем локальных сотрудников
             local_employees = db.get_employees(active_only=False)
             stats['total'] = len(local_employees)
             
             for employee in local_employees:
                 await self._sync_single_employee(employee, bitrix_employees, stats)
 
-            # Добавляем новых сотрудников из Bitrix
             await self._add_new_employees(bitrix_employees, stats)
 
             logger.info(f"Синхронизация сотрудников завершена. Статистика: {stats}")
@@ -91,7 +91,6 @@ class BitrixSync:
         stats = {'total': 0, 'added': 0, 'updated': 0, 'errors': 0}
         
         try:
-            # Получаем заказы из Bitrix
             bitrix_orders = await self._get_bitrix_orders(start_date, end_date)
             if not bitrix_orders:
                 logger.warning(f"Не найдено заказов за период {start_date} - {end_date}")
@@ -99,7 +98,9 @@ class BitrixSync:
                 
             logger.info(f"Получено {len(bitrix_orders)} заказов из Bitrix")
             
-            # Обрабатываем каждый заказ
+            # Сортируем заказы по ID перед обработкой
+            bitrix_orders.sort(key=lambda x: int(x['id']))
+            
             for order in bitrix_orders:
                 parsed_order = self._parse_bitrix_order(order)
                 if not parsed_order:
@@ -116,16 +117,10 @@ class BitrixSync:
             return stats
 
     async def _get_bitrix_orders(self, start_date: str, end_date: str) -> List[Dict]:
-        """Получает заказы из Bitrix за указанный период"""
         params = {
             'entityTypeId': 1222,
-            'select': [
-                'id',
-                'ufCrm45_1743599470',  # ID сотрудника
-                'ufCrm45ObedyCount',   # Количество обедов
-                'ufCrm45ObedyFrom',    # Локация
-                'createdTime'          # Дата создания
-            ],
+            'select': ['id', 'ufCrm45_1743599470', 'ufCrm45ObedyCount', 
+                    'ufCrm45ObedyFrom', 'ufCrm45_1744188327370', 'createdTime'],
             'filter': {
                 '>=createdTime': f'{start_date}T00:00:00+03:00',
                 '<=createdTime': f'{end_date}T23:59:59+03:00'
@@ -136,8 +131,13 @@ class BitrixSync:
             logger.info(f"Запрос заказов с {start_date} по {end_date}")
             orders = await self.bx.get_all('crm.item.list', params)
             
-            # Сортируем полученные данные локально
-            orders.sort(key=lambda x: x.get('createdTime', ''))
+            if orders:
+                logger.info(f"Получено {len(orders)} заказов")
+                # Сортируем заказы по ID сразу после получения
+                orders.sort(key=lambda x: int(x['id']))
+            else:
+                logger.warning("Не получено ни одного заказа")
+                
             return orders
         except Exception as e:
             logger.error(f"Ошибка получения заказов: {e}")
@@ -148,13 +148,23 @@ class BitrixSync:
         try:
             employee_id = order.get('ufCrm45_1743599470')
             if not employee_id:
-                logger.warning(f"Заказ {order.get('id')} без ID сотрудника - будет пропущен")
+                logger.warning(f"Заказ {order.get('id')} без ID сотрудника")
                 return None
                 
-            # Получаем оригинальное значение количества из Bitrix
-            bitrix_quantity = str(order.get('ufCrm45ObedyCount', ''))
+            status_value = order.get('ufCrm45_1744188327370')
+            is_cancelled = False
             
-            # Преобразуем в числовое значение согласно маппингу
+            if isinstance(status_value, list) and status_value:
+                status_id = str(status_value[0].get('ID', '')) if isinstance(status_value[0], dict) else str(status_value[0])
+                is_cancelled = self._status_map.get(status_id, False)
+            elif isinstance(status_value, dict):
+                status_id = str(status_value.get('ID', ''))
+                is_cancelled = self._status_map.get(status_id, False)
+            elif status_value is not None:
+                status_id = str(status_value)
+                is_cancelled = self._status_map.get(status_id, False)
+            
+            bitrix_quantity = str(order.get('ufCrm45ObedyCount', ''))
             quantity = self._quantity_map.get(bitrix_quantity, 1)
                 
             location_code = str(order.get('ufCrm45ObedyFrom', ''))
@@ -164,33 +174,41 @@ class BitrixSync:
             date = created_time.split('T')[0] if created_time else datetime.now().strftime('%Y-%m-%d')
                 
             return {
-                'bitrix_id': str(order.get('id')),  # Преобразуем в строку для единообразия
+                'bitrix_id': str(order.get('id')),
                 'employee_id': employee_id,
                 'quantity': quantity,
                 'bitrix_quantity': bitrix_quantity,
                 'location': location,
                 'date': date,
                 'created_time': created_time,
+                'is_cancelled': is_cancelled,
                 'is_from_bitrix': True
             }
         except Exception as e:
-            logger.error(f"Ошибка парсинга заказа: {e}")
+            logger.error(f"Ошибка парсинга заказа {order.get('id', 'unknown')}: {e}")
             return None
 
     async def _process_single_order(self, order: Dict, stats: Dict):
         """Обрабатывает один заказ"""
         try:
-            # Находим пользователя по Bitrix ID
+            if not order or not isinstance(order, dict):
+                logger.error("Некорректный формат заказа")
+                stats['errors'] += 1
+                return
+                
+            if not order.get('bitrix_id'):
+                logger.error("Заказ без ID из Bitrix")
+                stats['errors'] += 1
+                return
+            
             user_id = await self._get_local_user_id(order['employee_id'])
             if not user_id:
                 logger.warning(f"Пользователь с Bitrix ID {order['employee_id']} не найден")
                 stats['errors'] += 1
                 return
                 
-            # Обновляем локацию пользователя
             await self._update_user_location(user_id, order['location'])
                 
-            # Проверяем существование заказа по ID из Bitrix
             existing_order = self._find_local_order(order['bitrix_id'])
             
             if existing_order:
@@ -241,11 +259,13 @@ class BitrixSync:
                 UPDATE orders SET 
                     quantity = ?,
                     bitrix_quantity_id = ?,
+                    is_cancelled = ?,
                     updated_at = datetime('now')
-                WHERE id = ? AND is_cancelled = FALSE
+                WHERE id = ?
             """, (
                 order['quantity'],
                 order.get('bitrix_quantity', ''),
+                order['is_cancelled'],
                 order_id
             ))
             db.conn.commit()
@@ -261,15 +281,16 @@ class BitrixSync:
                 INSERT INTO orders (
                     user_id, target_date, order_time, 
                     quantity, bitrix_quantity_id, bitrix_order_id,
-                    is_from_bitrix, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, TRUE, datetime('now'))
+                    is_cancelled, is_from_bitrix, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, TRUE, datetime('now'))
             """, (
                 user_id,
                 order['date'],
                 datetime.now().strftime('%H:%M'),
                 order['quantity'],
                 order.get('bitrix_quantity', ''),
-                order.get('bitrix_id', ''),  # Сохраняем ID из Bitrix
+                order.get('bitrix_id', ''),
+                order['is_cancelled']
             ))
             db.conn.commit()
             return True
@@ -293,13 +314,11 @@ class BitrixSync:
     async def _get_crm_employees(self) -> List[Dict[str, str]]:
         """Получаем список сотрудников из CRM Bitrix"""
         try:
-            # Получаем поля сущности
             fields = await self.bx.get_all(
                 'crm.item.fields',
-                {'entityTypeId': 1222}  # Убедитесь, что это правильный ID вашей сущности
+                {'entityTypeId': 1222}
             )
             
-            # Находим поле "Сотрудник"
             emp_field = next(
                 (field for field in fields.values() 
                  if field.get('title') == 'Сотрудник' and field.get('type') == 'enumeration'),
@@ -325,15 +344,12 @@ class BitrixSync:
             parts = normalized.split()
             
             if len(parts) >= 2:
-                # Вариант с фамилией и именем
                 simple_key = f"{parts[0]} {parts[1]}"
                 bitrix_employees[simple_key] = {'id': emp['ID'], 'name': name}
                 
-                # Вариант с инициалом имени
                 initial_key = f"{parts[0]} {parts[1][0]}"
                 bitrix_employees[initial_key] = {'id': emp['ID'], 'name': name}
             
-            # Полное имя
             bitrix_employees[normalized] = {'id': emp['ID'], 'name': name}
         
         return bitrix_employees
@@ -370,7 +386,7 @@ class BitrixSync:
         
         for bitrix_emp in bitrix_employees.values():
             bitrix_name = bitrix_emp['name']
-            normalized = self._normalize_name(bitrix_name)
+            normalized = bitrix_name
             parts = normalized.split()
             simple_name = ' '.join(parts[:2]) if len(parts) >= 2 else bitrix_name
             
@@ -380,40 +396,33 @@ class BitrixSync:
                         """INSERT INTO users 
                         (full_name, is_employee, is_verified, bitrix_id, bitrix_entity_type)
                         VALUES (?, ?, ?, ?, ?)""",
-                        (simple_name, True, False, bitrix_emp['id'], 'crm_employee')
+                        (bitrix_name, True, False, bitrix_emp['id'], 'crm_employee')
                     )
                     stats['added'] += 1
+                    logger.info(f"Добавлен новый сотрудник: {bitrix_name}")
                 except Exception as e:
                     stats['errors'] += 1
                     logger.error(f"Ошибка добавления сотрудника: {e}")
 
     def _find_bitrix_employee(self, local_name: str, bitrix_employees: Dict[str, dict]) -> Optional[dict]:
         """Ищем соответствие сотрудника с учетом возможного отчества в Bitrix"""
-        # 1. Прямое совпадение
         if local_name in bitrix_employees:
             return bitrix_employees[local_name]
         
-        # 2. Разбиваем имена на части
         local_parts = local_name.lower().split()
         if not local_parts:
             return None
         
-        # 3. Ищем по разным комбинациям:
-        # - Фамилия + Имя (без отчества)
         search_key_simple = f"{local_parts[0]} {local_parts[1]}"
-        
-        # - Фамилия + первая буква имени (на случай Иванов И.И.)
         search_key_initial = f"{local_parts[0]} {local_parts[1][0]}"
         
         for bitrix_name, bitrix_data in bitrix_employees.items():
             bitrix_name_lower = bitrix_name.lower()
             
-            # Проверяем разные варианты совпадений
             if (bitrix_name_lower.startswith(search_key_simple) or 
                 bitrix_name_lower.startswith(search_key_initial)):
                 return bitrix_data
             
-            # Дополнительно проверяем совпадение Bitrix ID
             if bitrix_data.get('id') and self.get_bitrix_id(local_name) == bitrix_data['id']:
                 return bitrix_data
         
@@ -422,7 +431,6 @@ class BitrixSync:
     def _user_exists(self, bitrix_id: int, full_name: str) -> bool:
         """Проверяет существование пользователя по Bitrix ID или имени"""
         try:
-            # Проверка по Bitrix ID
             if bitrix_id:
                 result = db.execute(
                     "SELECT 1 FROM users WHERE bitrix_id = ? LIMIT 1",
@@ -431,7 +439,6 @@ class BitrixSync:
                 if result:
                     return True
             
-            # Проверка по имени (без отчества)
             name_parts = full_name.split()
             simple_name = ' '.join(name_parts[:2]) if len(name_parts) >= 2 else full_name
             
@@ -476,7 +483,6 @@ async def main():
     
     sync = BitrixSync()
     
-    # Синхронизируем за последние 2 месяца
     result = await sync.sync_last_two_months_orders()
     print(f"Результат синхронизации: {result}")
 

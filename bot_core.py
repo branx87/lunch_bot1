@@ -11,7 +11,8 @@ from cron_jobs import CronManager
 logger = logging.getLogger(__name__)
 
 class LunchBot:
-    def __init__(self):
+    def __init__(self, bitrix_sync=None):
+        self.bitrix_sync = bitrix_sync
         # Исправляем подключение к базе данных
         self.conn = sqlite3.connect('data/lunch_bot.db', 
                                    check_same_thread=False,

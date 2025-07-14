@@ -5,6 +5,7 @@ from pathlib import Path
 from bot_core import LunchBot
 from logging.handlers import RotatingFileHandler
 import matplotlib
+from datetime import datetime, time
 
 from db import CONFIG
 matplotlib.use('Agg')
@@ -15,7 +16,7 @@ def setup_logging():
     logs_dir.mkdir(parents=True, exist_ok=True)
     
     handler = RotatingFileHandler(
-        logs_dir / 'bot.log',  # Теперь логи тоже в папке data
+        logs_dir / 'bot.log',
         maxBytes=5*1024*1024,
         backupCount=3,
         encoding='utf-8'
@@ -29,39 +30,32 @@ def setup_logging():
     logging.getLogger("telegram").setLevel(logging.WARNING)
 
 async def main():
-    """Финальная версия основной функции"""
     setup_logging()
     logger = logging.getLogger(__name__)
     
     try:
         logger.info("🚀 Запуск бота...")
         
-        # Инициализируем бота БЕЗ передачи db_path (оставляем как было)
-        print("Токен бота:", CONFIG.token)
-        print("Проверка конфига:")
-        print("Токен существует:", hasattr(CONFIG, '_token'))
-        print("Путь к .env:", (Path(__file__).parent / 'data' / 'configs' / '.env').exists())
-        bot = LunchBot()
+        # Инициализация BitrixSync
+        bitrix_sync = None
+        try:
+            from bitrix import BitrixSync
+            bitrix_sync = BitrixSync()
+            logger.info("BitrixSync инициализирован")
+            asyncio.create_task(bitrix_sync.run_sync_tasks())
+        except ImportError as e:
+            logger.error(f"Ошибка импорта BitrixSync: {e}")
+        except Exception as e:
+            logger.error(f"Ошибка инициализации BitrixSync: {e}")
+
+        # Инициализация бота
+        bot = LunchBot(bitrix_sync=bitrix_sync) if bitrix_sync else LunchBot()
         
         await bot.run()
-    except KeyboardInterrupt:
-        logger.info("🛑 Получен сигнал KeyboardInterrupt")
-    except asyncio.CancelledError:
-        logger.info("🛑 Асинхронные задачи были отменены")
     except Exception as e:
-        logger.critical(f"⛔ Фатальная ошибка: {str(e)}", exc_info=True)
+        logger.critical(f"⛔ Фатальная ошибка: {e}", exc_info=True)
     finally:
-        logger.info("Начало завершения работы...")
-        try:
-            if 'bot' in locals():
-                await asyncio.wait_for(bot.stop(), timeout=5)
-        except asyncio.TimeoutError:
-            logger.error("⚠️ Превышено время ожидания остановки!")
-        except Exception as e:
-            logger.error(f"⚠️ Ошибка при остановке: {str(e)}")
-        finally:
-            await asyncio.sleep(0.1)
-            logger.info("✅ Работа бота полностью завершена")
+        logger.info("✅ Работа бота полностью завершена")
 
 if __name__ == "__main__":
     try:

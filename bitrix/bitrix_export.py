@@ -6,14 +6,12 @@ from dotenv import load_dotenv
 import pandas as pd
 import logging
 from datetime import datetime, timedelta
-from bitrix import BitrixSync
-from db import db  # Импортируем экземпляр базы данных
+from bitrix.bitrix import BitrixSync
+from db import db
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Загрузка настроек
 load_dotenv('data/configs/.env')
 WEBHOOK = os.getenv('BITRIX_WEBHOOK')
 
@@ -29,7 +27,7 @@ def map_quantity(quantity_id):
         '1743599471': 2,
         '1743599472': 3
     }
-    return quantity_map.get(str(quantity_id), 1)  # По умолчанию 1 обед
+    return quantity_map.get(str(quantity_id), 1)
 
 def map_location(location_id):
     """Преобразует ID локации в название"""
@@ -48,37 +46,32 @@ async def export_monthly_orders(year=None, month=None):
     :param month: Месяц (1-12, если None, будет использован текущий)
     """
     try:
-        # Инициализация подключения
         bx = Bitrix(WEBHOOK)
         logger.info("Подключение к Bitrix24 установлено")
 
-        # Определяем год и месяц
         now = datetime.now()
         year = year if year is not None else now.year
         month = month if month is not None else now.month
 
-        # Определяем даты начала и конца месяца
         start_date = datetime(year=year, month=month, day=1)
         if month == 12:
             end_date = datetime(year=year+1, month=1, day=1) - timedelta(days=1)
         else:
             end_date = datetime(year=year, month=month+1, day=1) - timedelta(days=1)
         
-        # Форматируем даты для Bitrix24 (учитываем часовой пояс)
         start_date_str = start_date.strftime('%Y-%m-%d')
         end_date_str = end_date.strftime('%Y-%m-%d')
 
         logger.info(f"Запрашиваю данные о заказах с {start_date_str} по {end_date_str}...")
         
-        # Параметры запроса с фильтром по месяцу
         params = {
             'entityTypeId': 1222,
             'select': [
                 'id', 
-                'ufCrm45_1743599470',  # ID сотрудника
-                'ufCrm45ObedyCount',   # Количество обедов (ID)
-                'ufCrm45ObedyFrom',    # Локация (ID)
-                'createdTime'          # Дата создания
+                'ufCrm45_1743599470',
+                'ufCrm45ObedyCount',
+                'ufCrm45ObedyFrom',
+                'createdTime'
             ],
             'filter': {
                 '>=createdTime': f'{start_date_str}T00:00:00+03:00',
@@ -86,11 +79,7 @@ async def export_monthly_orders(year=None, month=None):
             }
         }
 
-        # Получаем данные
         orders = await bx.get_all('crm.item.list', params)
-        
-        # Сортируем заказы по дате создания
-        orders.sort(key=lambda x: x.get('createdTime', ''))
         
         if not orders:
             logger.warning(f"Не найдено заказов за {year}-{month:02d}")
@@ -98,27 +87,23 @@ async def export_monthly_orders(year=None, month=None):
 
         logger.info(f"Всего получено {len(orders)} заказов за месяц")
 
-        # Инициализируем BitrixSync для работы с базой данных
-        bitrix_sync = BitrixSync()
+        # Сортируем заказы по ID перед обработкой
+        orders.sort(key=lambda x: int(x['id']))
         
-        # Синхронизируем сотрудников перед обработкой заказов
+        bitrix_sync = BitrixSync()
         await bitrix_sync.sync_employees()
 
-        # Обработка данных
         processed_data = []
         stats = {'total': 0, 'added': 0, 'updated': 0, 'errors': 0}
 
-        for order in sorted(orders, key=lambda x: x.get('createdTime', '')):  # Сортируем по дате создания
-            # Парсим заказ
+        for order in orders:
             parsed_order = bitrix_sync._parse_bitrix_order(order)
             if not parsed_order:
                 stats['errors'] += 1
                 continue
                 
-            # Обрабатываем заказ (добавляем/обновляем в базе)
             await bitrix_sync._process_single_order(parsed_order, stats)
             
-            # Также добавляем данные для Excel
             employee_bitrix_id = str(order.get('ufCrm45_1743599470', ''))
             employee_name = await get_employee_name(employee_bitrix_id)
             
@@ -128,7 +113,7 @@ async def export_monthly_orders(year=None, month=None):
             created_date = created_time.split('T')[0] if created_time else ''
 
             processed_data.append({
-                'ID_заказа_Bitrix': order.get('id'),  # Добавляем ID из Bitrix
+                'ID_заказа_Bitrix': order.get('id'),
                 'ID_сотрудника': employee_bitrix_id,
                 'Сотрудник': employee_name,
                 'Количество_обедов': quantity,
@@ -137,22 +122,16 @@ async def export_monthly_orders(year=None, month=None):
                 'Время_заказа': created_time.split('T')[1][:8] if 'T' in created_time else ''
             })
 
-        # Сортируем данные для вывода
+        # Создаем DataFrame и сортируем по ID заказа
         df = pd.DataFrame(processed_data)
-        # Сортировка по дате и времени
-        df = df.sort_values(by=['Дата_заказа', 'Время_заказа'])
+        df = df.sort_values(by=['ID_заказа_Bitrix'])
 
         logger.info(f"Статистика обработки заказов: Добавлено: {stats['added']}, Обновлено: {stats['updated']}, Ошибок: {stats['errors']}")
 
-        # Создаем DataFrame
-        df = pd.DataFrame(processed_data)
-        
-        # Сохраняем в Excel
         filename = f"bitrix_orders_export_{year}-{month:02d}.xlsx"
         df.to_excel(filename, index=False)
         logger.info(f"Данные сохранены в файл: {filename}")
 
-        # Выводим пример данных
         print("\nПервые 5 заказов:")
         print(df.head().to_string(index=False))
 
@@ -175,15 +154,4 @@ async def get_employee_name(bitrix_id: str) -> str:
         return f"Неизвестный сотрудник (ID: {bitrix_id})"
 
 if __name__ == '__main__':
-    # Примеры использования:
-    # 1. Текущий месяц
-    # asyncio.run(export_monthly_orders())
-    
-    # 2. Конкретный месяц и год
     asyncio.run(export_monthly_orders(year=2025, month=7))
-    
-    # 3. Предыдущий месяц
-    # today = datetime.now()
-    # first_day_of_current_month = today.replace(day=1)
-    # last_month = first_day_of_current_month - timedelta(days=1)
-    # asyncio.run(export_monthly_orders(year=last_month.year, month=last_month.month))
