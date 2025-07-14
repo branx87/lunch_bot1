@@ -46,6 +46,7 @@ from handlers.message_handlers import (
 from handlers.order_callbacks import callback_handler, setup_order_callbacks
 from handlers.provider_handlers import setup_provider_handlers
 from handlers.registration_handlers import get_full_name, get_location, get_phone
+from handlers.admin_handlers import setup_admin_handlers
 
 def setup_handlers(application):
     """Настройка всех обработчиков в правильном порядке"""
@@ -78,6 +79,7 @@ def setup_handlers(application):
     # 3. Обработчики конфигурации
     setup_admin_config_handlers(application)
     setup_provider_handlers(application)
+    setup_admin_handlers(application)
     
     # 4. Обработчики заказов
     setup_order_callbacks(application)

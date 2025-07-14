@@ -7,6 +7,7 @@ from telegram.ext import ContextTypes
 from datetime import datetime, date, time, timedelta
 import logging
 
+from bitrix.sync import BitrixSync
 from db import CONFIG
 from db import db
 from handlers.common import show_main_menu
@@ -132,9 +133,14 @@ async def handle_order_callback(query, now, user, context):
                 now.strftime("%H:%M:%S"),
                 initial_quantity,
                 bitrix_quantity_id,
-                day_offset > 0,  # Это предзаказ?
+                day_offset > 0,
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ))
+
+        # Если время после 9:29 - немедленная синхронизация
+        if now.time() >= time(9, 29):
+            sync = BitrixSync()
+            await sync._push_to_bitrix()  # Немедленная синхронизация
 
         # Обновляем интерфейс
         await refresh_day_view(query, day_offset, user_db_id, now, is_order=True)

@@ -1,7 +1,7 @@
 # ##handlers/admin_handlers.py
 import logging
 from telegram import Update
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, CommandHandler
 from bot_keyboards import create_admin_keyboard
 from db import CONFIG
 
@@ -34,6 +34,22 @@ async def handle_admin_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=create_admin_keyboard()
         )
 
+async def manual_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ручная синхронизация с Bitrix24"""
+    if update.effective_user.id not in CONFIG.admin_ids:
+        await update.message.reply_text("⛔ У вас нет прав для этой команды")
+        return
+    
+    try:
+        from bitrix.sync import BitrixSync  # Импортируем здесь, чтобы избежать циклических импортов
+        sync = BitrixSync()
+        await update.message.reply_text("🔄 Начата синхронизация с Bitrix24...")
+        await sync._push_to_bitrix()
+        await update.message.reply_text("✅ Синхронизация завершена")
+    except Exception as e:
+        logger.error(f"Ошибка ручной синхронизации: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Ошибка синхронизации. Проверьте логи.")
+
 async def toggle_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in CONFIG.admin_ids:
@@ -53,3 +69,7 @@ async def toggle_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # После изменения статуса обновляем все активные меню
     from handlers.menu_handlers import refresh_all_active_menus
     await refresh_all_active_menus(context.bot, not new_status)
+
+# В конец файла добавьте регистрацию команды:
+def setup_admin_handlers(application):
+    application.add_handler(CommandHandler("sync_bitrix", manual_sync))
