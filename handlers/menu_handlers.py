@@ -63,8 +63,13 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += "\n\n⚠️ Приём заказов временно приостановлен"
         keyboard.append([InlineKeyboardButton("⏳ Заказы принимаются через Битрикс", callback_data="noop")])
     elif has_active_order:
-        # Есть активный заказ
-        message += f"\n\n✅ Заказ: {db.cursor.fetchone()[0]} порции"
+        # Замените строку с ошибкой на:
+        db.cursor.execute("""
+            SELECT quantity FROM orders 
+            WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
+        """, (user_id, today.isoformat()))
+        order = db.cursor.fetchone()
+        message += f"\n\n✅ Заказ: {order[0]} порции" if order else "\n\n🛒 Заказ: не оформлен"
         if can_modify:
             keyboard.append([InlineKeyboardButton("✏️ Изменить количество", callback_data="change_0")])
             keyboard.append([InlineKeyboardButton("❌ Отменить заказ", callback_data="cancel_0")])

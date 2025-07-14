@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import pandas as pd
 import logging
 from datetime import datetime, timedelta
-from bitrix.bitrix import BitrixSync
+from bitrix.sync import BitrixSync
 from db import db
 
 logging.basicConfig(level=logging.INFO)
@@ -40,11 +40,7 @@ def map_location(location_id):
     return location_map.get(str(location_id), 'Неизвестно')
 
 async def export_monthly_orders(year=None, month=None):
-    """
-    Экспорт заказов обедов из Bitrix24 за указанный месяц
-    :param year: Год (если None, будет использован текущий)
-    :param month: Месяц (1-12, если None, будет использован текущий)
-    """
+    """Экспорт заказов обедов из Bitrix24 за указанный месяц"""
     try:
         bx = Bitrix(WEBHOOK)
         logger.info("Подключение к Bitrix24 установлено")
@@ -71,6 +67,7 @@ async def export_monthly_orders(year=None, month=None):
                 'ufCrm45_1743599470',
                 'ufCrm45ObedyCount',
                 'ufCrm45ObedyFrom',
+                'ufCrm45_1744188327370',
                 'createdTime'
             ],
             'filter': {
@@ -86,8 +83,6 @@ async def export_monthly_orders(year=None, month=None):
             return None
 
         logger.info(f"Всего получено {len(orders)} заказов за месяц")
-
-        # Сортируем заказы по ID перед обработкой
         orders.sort(key=lambda x: int(x['id']))
         
         bitrix_sync = BitrixSync()
@@ -122,7 +117,6 @@ async def export_monthly_orders(year=None, month=None):
                 'Время_заказа': created_time.split('T')[1][:8] if 'T' in created_time else ''
             })
 
-        # Создаем DataFrame и сортируем по ID заказа
         df = pd.DataFrame(processed_data)
         df = df.sort_values(by=['ID_заказа_Bitrix'])
 

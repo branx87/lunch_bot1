@@ -16,6 +16,24 @@ from view_utils import refresh_day_view
 from notifications import show_access_denied
 
 logger = logging.getLogger(__name__)
+
+# В начале файла добавьте:
+QUANTITY_MAP = {
+    1: '821',
+    2: '822',
+    3: '823',
+    4: '824',
+    5: '825'
+}
+
+# И обратное преобразование (если нужно):
+BITRIX_QUANTITY_MAP = {
+    '821': 1,
+    '822': 2,
+    '823': 3,
+    '824': 4,
+    '825': 5
+}
     
 async def handle_order_callback(query, now, user, context):
     """Обработчик оформления заказа с проверкой доступности заказов"""
@@ -89,24 +107,33 @@ async def handle_order_callback(query, now, user, context):
             await query.answer(f"ℹ️ У вас уже заказано {existing_order[0]} порций", show_alert=True)
             return
 
+        # Маппинг количества порций на bitrix_quantity_id
+        quantity_map = {
+            1: '821',
+            2: '822',
+            3: '823',
+            4: '824',
+            5: '825'
+        }
+        initial_quantity = 1  # По умолчанию 1 порция
+        bitrix_quantity_id = quantity_map[initial_quantity]
+
         # Создаём новый заказ
         with db.conn:
             db.cursor.execute("""
                 INSERT INTO orders (
-                    user_id,
-                    target_date,
-                    order_time,
-                    quantity,
-                    is_preliminary,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    user_id, target_date, order_time, 
+                    quantity, bitrix_quantity_id, is_active,
+                    is_preliminary, created_at
+                ) VALUES (?, ?, ?, ?, ?, TRUE, ?, ?)
             """, (
                 user_db_id,
                 target_date.isoformat(),
-                now.strftime("%H:%M:%S"),  # Только время
-                1,  # Количество порций
+                now.strftime("%H:%M:%S"),
+                initial_quantity,
+                bitrix_quantity_id,
                 day_offset > 0,  # Это предзаказ?
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # Полная дата-время
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ))
 
         # Обновляем интерфейс
@@ -168,7 +195,7 @@ async def handle_change_callback(query, now, user, context):
         # Получаем текущий заказ
         try:
             db.cursor.execute("""
-                SELECT quantity FROM orders 
+                SELECT quantity, bitrix_quantity_id FROM orders 
                 WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
             """, (user_db_id, target_date.isoformat()))
             order_record = db.cursor.fetchone()
@@ -177,6 +204,8 @@ async def handle_change_callback(query, now, user, context):
                 return
             
             current_qty = order_record[0]
+            bitrix_quantity_id = order_record[1]
+            
         except sqlite3.Error as e:
             logger.error(f"Ошибка БД при получении заказа: {e}", exc_info=True)
             await query.answer("⚠️ Ошибка базы данных", show_alert=True)
@@ -353,9 +382,8 @@ async def modify_portion_count(query, now, user, context, delta):
     """
     Изменяет количество порций в заказе:
     - Обрабатывает увеличение/уменьшение количества
-    - Проверяет граничные значения (1-3 порции)
-    - При уменьшении до 0 автоматически отменяет заказ
-    - Обновляет интерфейс через handle_change_callback
+    - Проверяет граничные значения (1-5 порций)
+    - Обновляет bitrix_quantity_id в соответствии с количеством
     """
     if not await check_user_access(user.id, context.application):
         await show_access_denied(update)
@@ -366,29 +394,48 @@ async def modify_portion_count(query, now, user, context, delta):
         target_date = (now + timedelta(days=day_offset)).date()
         user_db_id = context.user_data['user_db_id']
         
-        # Получаем текущее количество
+        # Получаем текущий заказ
         db.cursor.execute("""
-            SELECT quantity FROM orders 
+            SELECT quantity, bitrix_quantity_id FROM orders 
             WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
         """, (user_db_id, target_date.isoformat()))
-        current_qty = db.cursor.fetchone()[0]
+        current_order = db.cursor.fetchone()
+        
+        if not current_order:
+            await query.answer("ℹ️ Заказ не найден")
+            return
+            
+        current_qty = current_order[0]
         new_qty = current_qty + delta
 
         # Проверка границ
         if new_qty < 1:
             return await handle_cancel_callback(query, now, user, context)
-        if new_qty > 3:
-            await query.answer("ℹ️ Максимум 3 порции")
+        if new_qty > 5:  # Максимум 5 порций
+            await query.answer("ℹ️ Максимум 5 порций")
             return
 
-        # Обновляем количество
+        # Маппинг количества порций на bitrix_quantity_id
+        quantity_map = {
+            1: '821',
+            2: '822',
+            3: '823',
+            4: '824',
+            5: '825'
+        }
+        new_bitrix_quantity_id = quantity_map.get(new_qty, '821')
+
+        # Обновляем заказ
         with db.conn:
             db.cursor.execute("""
-                UPDATE orders SET quantity = ? 
+                UPDATE orders 
+                SET quantity = ?,
+                    bitrix_quantity_id = ?,
+                    updated_at = datetime('now')
                 WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
-            """, (new_qty, user_db_id, target_date.isoformat()))
+            """, (new_qty, new_bitrix_quantity_id, user_db_id, target_date.isoformat()))
 
-        # Обновляем интерфейс без возврата в меню
+        # Обновляем интерфейс
         await handle_change_callback(query, now, user, context)
         await query.answer(f"Установлено: {new_qty} порции")
 
