@@ -138,6 +138,7 @@ class Database:
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bitrix_id INTEGER,
                     telegram_id INTEGER UNIQUE,
                     full_name TEXT NOT NULL,
                     phone TEXT,
@@ -147,7 +148,6 @@ class Database:
                     username TEXT,
                     is_deleted BOOLEAN DEFAULT FALSE,
                     notifications_enabled BOOLEAN DEFAULT TRUE,
-                    bitrix_id INTEGER,
                     bitrix_entity_type TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
