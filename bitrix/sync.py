@@ -69,6 +69,15 @@ class BitrixSync:
             day_of_week='mon-fri'
         )
         
+        # # Тестовая синхронизация в удобное время
+        # self.scheduler.add_job(
+        #     self._push_to_bitrix,
+        #     'cron',
+        #     minute=2,
+        #     hour=10,
+        #     day_of_week='mon-fri'
+        # )
+
         # Основная синхронизация в 9:29
         self.scheduler.add_job(
             self._push_to_bitrix,
@@ -549,96 +558,125 @@ class BitrixSync:
         )
     
     async def _push_to_bitrix(self):
-        """Отправка локальных заказов в Bitrix24 с проверкой времени"""
+        """Отправляет в Bitrix только локальные заказы на сегодня"""
         try:
-            now = datetime.now()
-            today = now.date()
+            today = datetime.now().date().isoformat()
             
-            # Если время после 9:30, берем заказы только за сегодня
-            if now.time() > time(9, 30):
-                date_filter = today.isoformat()
-            else:
-                date_filter = None  # Берем все неотправленные заказы
-
-            query = '''
-                SELECT o.*, u.bitrix_id 
+            # Получаем данные и преобразуем в словари вручную
+            result = db.execute('''
+                SELECT 
+                    o.id, o.target_date, o.order_time, o.quantity,
+                    o.bitrix_quantity_id, u.location, o.is_from_bitrix,
+                    o.is_sent_to_bitrix, o.is_cancelled,
+                    u.bitrix_id, u.full_name
                 FROM orders o
                 JOIN users u ON o.user_id = u.id
-                WHERE o.is_sent_to_bitrix = FALSE
+                WHERE o.target_date = ?
+                AND o.is_from_bitrix = FALSE
+                AND o.is_sent_to_bitrix = FALSE
                 AND o.is_cancelled = FALSE
                 AND u.bitrix_id IS NOT NULL
-            '''
-            params = ()
+            ''', (today,))
             
-            if date_filter:
-                query += ' AND o.target_date = ?'
-                params = (date_filter,)
-            
-            pending_orders = db.execute(query, params)
-            
-            if not pending_orders:
-                logger.info("Нет заказов для отправки в Bitrix24")
+            if not result:
+                logger.info("Нет заказов для отправки на сегодня")
                 return
+
+            # Ручное преобразование результатов в словари
+            columns = [
+                'id', 'target_date', 'order_time', 'quantity',
+                'bitrix_quantity_id', 'location', 'is_from_bitrix',
+                'is_sent_to_bitrix', 'is_cancelled',
+                'bitrix_id', 'full_name'
+            ]
+            pending_orders = [dict(zip(columns, row)) for row in result]
 
             success_count = 0
             for order in pending_orders:
-                bitrix_id = await self._create_bitrix_order(order)
-                if bitrix_id:
-                    db.execute('''
-                        UPDATE orders 
-                        SET is_sent_to_bitrix = TRUE,
-                            bitrix_order_id = ? 
-                        WHERE id = ?
-                    ''', (bitrix_id, order['id']))
-                    success_count += 1
+                try:
+                    # Проверка данных перед отправкой
+                    if not all(key in order for key in ['bitrix_id', 'quantity', 'target_date', 'order_time']):
+                        logger.error(f"Неполные данные в заказе ID {order.get('id')}")
+                        continue
 
-            logger.info(f"Успешно отправлено {success_count}/{len(pending_orders)} заказов в Bitrix24")
+                    bitrix_id = await self._create_bitrix_order({
+                        'bitrix_id': order['bitrix_id'],
+                        'quantity': order['quantity'],
+                        'target_date': order['target_date'],
+                        'order_time': order['order_time'],
+                        'location': order.get('location', 'Офис')
+                    })
+                    
+                    if bitrix_id:
+                        db.execute('''
+                            UPDATE orders 
+                            SET is_sent_to_bitrix = TRUE,
+                                bitrix_order_id = ?
+                            WHERE id = ?
+                        ''', (bitrix_id, order['id']))
+                        success_count += 1
+                        logger.debug(f"Заказ ID {order['id']} успешно отправлен в Bitrix")
+                        
+                except Exception as e:
+                    logger.error(f"Ошибка обработки заказа ID {order.get('id')}: {str(e)}")
+
+            logger.info(f"Итог: отправлено {success_count}/{len(pending_orders)} заказов")
             
         except Exception as e:
-            logger.error(f"Ошибка отправки в Bitrix24: {e}", exc_info=True)
+            logger.error(f"Критическая ошибка в _push_to_bitrix: {str(e)}", exc_info=True)
+            raise
 
     async def _create_bitrix_order(self, order_data: dict) -> Optional[str]:
-        """Создает заказ в Bitrix24 и возвращает ID созданного заказа"""
+        """Создает заказ в Bitrix24 с улучшенной обработкой ошибок"""
         try:
-            # Маппинг количества порций на ID в Bitrix
-            quantity_map = {
-                1: '821',
-                2: '822',
-                3: '823',
-                4: '824',
-                5: '825'
+            # Проверка обязательных полей
+            required_fields = {
+                'bitrix_id': (str, int),  # Может быть как строкой, так и числом
+                'quantity': int,
+                'target_date': str,
+                'order_time': str
             }
             
-            # Маппинг локаций (если у вас есть поле location в заказе)
+            for field, field_types in required_fields.items():
+                if field not in order_data:
+                    raise ValueError(f"Отсутствует обязательное поле: {field}")
+                
+                if not isinstance(order_data[field], field_types if isinstance(field_types, tuple) else (field_types,)):
+                    raise ValueError(f"Поле {field} должно быть типа {field_types.__name__ if not isinstance(field_types, tuple) else ' или '.join(t.__name__ for t in field_types)}")
+
+            # Преобразуем bitrix_id в строку, если это число
+            bitrix_id = str(order_data['bitrix_id']) if isinstance(order_data['bitrix_id'], int) else order_data['bitrix_id']
+
+            # Маппинг значений
+            quantity_map = {1: '821', 2: '822', 3: '823', 4: '824', 5: '825'}
             location_map = {
                 'Офис': '826',
                 'ПЦ 1': '827',
                 'ПЦ 2': '828',
                 'Склад': '1063'
             }
-            
+
             params = {
-                'entityTypeId': 1222,  # ID сущности "Обеды" в Bitrix
+                'entityTypeId': 1222,
                 'fields': {
-                    'ufCrm45_1743599470': order_data['bitrix_id'],  # ID сотрудника в Bitrix
+                    'ufCrm45_1743599470': bitrix_id,  # Используем преобразованный bitrix_id
                     'ufCrm45ObedyCount': quantity_map.get(order_data['quantity'], '821'),
                     'ufCrm45ObedyFrom': location_map.get(order_data.get('location', 'Офис'), '826'),
                     'createdTime': f"{order_data['target_date']}T{order_data['order_time']}+03:00"
                 }
             }
-            
-            # Создаем заказ в Bitrix
+
+            logger.debug(f"Отправка заказа в Bitrix: {params}")
             result = await self.bx.call('crm.item.add', params)
             
-            if result and 'item' in result:
-                logger.info(f"Создан заказ в Bitrix24: ID {result['item']['id']}")
-                return str(result['item']['id'])
-            
-            logger.error(f"Не удалось создать заказ в Bitrix24: {result}")
-            return None
+            if not result or 'item' not in result:
+                logger.error(f"Неверный ответ от Bitrix: {result}")
+                return None
+                
+            return str(result['item']['id'])
             
         except Exception as e:
-            logger.error(f"Ошибка создания заказа в Bitrix24: {e}")
+            logger.error(f"Ошибка создания заказа: {str(e)}")
             return None
         
     async def close_orders_at_930(self):
