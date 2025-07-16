@@ -258,38 +258,55 @@ class BitrixSync:
             return None
 
     async def _process_single_order(self, order: Dict, stats: Dict):
-        """Обрабатывает один заказ"""
+        """Обрабатывает один заказ с проверкой дубликатов и улучшенным логированием"""
         try:
+            # 1. Валидация входящего заказа
             if not order or not isinstance(order, dict):
                 logger.error("Некорректный формат заказа")
                 stats['errors'] += 1
                 return
                 
-            if not order.get('bitrix_id'):
+            bitrix_id = order.get('bitrix_id')
+            if not bitrix_id:
                 logger.error("Заказ без ID из Bitrix")
                 stats['errors'] += 1
                 return
-            
+
+            # 2. Поиск пользователя в локальной БД
             user_id = await self._get_local_user_id(order['employee_id'])
             if not user_id:
                 logger.warning(f"Пользователь с Bitrix ID {order['employee_id']} не найден")
                 stats['errors'] += 1
                 return
-                
+
+            # 3. Обновление локации пользователя
             await self._update_user_location(user_id, order['location'])
-                
-            existing_order = self._find_local_order(order['bitrix_id'])
+
+            # 4. Проверка на существующий заказ
+            existing_order = self._find_local_order(bitrix_id)
             
             if existing_order:
+                # 4.1. Проверка на полный дубликат (такой же пользователь и дата)
+                if (existing_order['user_id'] == user_id and 
+                    existing_order['target_date'] == order['date']):
+                    logger.debug(f"Полный дубликат заказа Bitrix ID {bitrix_id} (локальный ID {existing_order['id']})")
+                    stats['duplicates'] = stats.get('duplicates', 0) + 1
+                    return
+                    
+                # 4.2. Обновление существующего заказа
                 if self._update_local_order(existing_order['id'], order):
+                    logger.debug(f"Обновлен заказ Bitrix ID {bitrix_id} (локальный ID {existing_order['id']})")
                     stats['updated'] += 1
             else:
+                # 4.3. Создание нового заказа
                 if self._add_local_order(user_id, order):
+                    logger.debug(f"Добавлен новый заказ Bitrix ID {bitrix_id}")
                     stats['added'] += 1
-                    
+
             stats['total'] += 1
+
         except Exception as e:
-            logger.error(f"Ошибка обработки заказа: {e}")
+            logger.error(f"Ошибка обработки заказа {order.get('bitrix_id', 'unknown')}: {str(e)}", exc_info=True)
             stats['errors'] += 1
 
     async def _get_local_user_id(self, bitrix_id: str) -> Optional[int]:
@@ -666,14 +683,17 @@ class BitrixSync:
                 }
             }
 
+             # Отправка запроса
             logger.debug(f"Отправка заказа в Bitrix: {params}")
             result = await self.bx.call('crm.item.add', params)
             
-            if not result or 'item' not in result:
+            # Упрощенная проверка ответа
+            if not result or 'id' not in result:
                 logger.error(f"Неверный ответ от Bitrix: {result}")
                 return None
                 
-            return str(result['item']['id'])
+            # Возвращаем ID созданного заказа    
+            return str(result['id'])  # Bitrix всегда возвращает ID в корне объекта
             
         except Exception as e:
             logger.error(f"Ошибка создания заказа: {str(e)}")

@@ -4,7 +4,7 @@ import sqlite3
 import pandas as pd
 
 # Подключение к базе данных
-conn = sqlite3.connect(r"C:\projects\lunch_bot\lunch_bot.db")
+conn = sqlite3.connect(r"D:\lunch_bot1\lunch_bot.db")
 
 # Загрузка users
 users_df = pd.read_excel("db_export.xlsx", sheet_name="users", dtype={
