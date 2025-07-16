@@ -2,7 +2,7 @@
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes
-from datetime import datetime, timedelta, date
+from datetime import datetime, time, timedelta, date
 
 from bot_keyboards import create_main_menu_keyboard
 from db import CONFIG
@@ -392,13 +392,16 @@ async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_T
     """
     Показывает статистику с разделением на:
     - ✅ Выполненные (заказы, дата которых уже прошла)
+    - 🍽 Сегодня (заказы на сегодня, если время > 9:30)
     - ⏳ Предстоящие (будущие заказы, которые можно отменить)
     - ❌ Отмененные (по желанию)
     """
     try:
         user = update.effective_user
         text = update.message.text.strip()
-        today = datetime.now(CONFIG.timezone).date()
+        now = datetime.now(CONFIG.timezone)
+        today = now.date()
+        current_time = now.time()
 
         if text == "Вернуться в главное меню":
             return await show_main_menu(update, user.id)
@@ -431,30 +434,39 @@ async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_T
                 -- Выполненные заказы (дата прошла + не отменены)
                 SUM(CASE WHEN target_date < ? AND is_cancelled = FALSE THEN quantity ELSE 0 END) as completed,
                 
+                -- Заказы на сегодня (если время > 9:30)
+                SUM(CASE WHEN target_date = ? AND is_cancelled = FALSE THEN quantity ELSE 0 END) as today,
+                
                 -- Предстоящие заказы (дата в будущем + не отменены)
-                SUM(CASE WHEN target_date >= ? AND is_cancelled = FALSE THEN quantity ELSE 0 END) as upcoming,
+                SUM(CASE WHEN target_date > ? AND is_cancelled = FALSE THEN quantity ELSE 0 END) as upcoming,
                 
                 -- Отмененные заказы
                 SUM(CASE WHEN is_cancelled = TRUE THEN quantity ELSE 0 END) as cancelled
             FROM orders
             WHERE user_id = ?
               AND target_date BETWEEN ? AND ?
-        """, (today, today, user_db_id, start_date.isoformat(), end_date.isoformat()))
+        """, (today, today, today, user_db_id, start_date.isoformat(), end_date.isoformat()))
 
         stats = db.cursor.fetchone()
         completed = stats[0] or 0
-        upcoming = stats[1] or 0
-        cancelled = stats[2] or 0
+        today_orders = stats[1] or 0
+        upcoming = stats[2] or 0
+        cancelled = stats[3] or 0
 
         # Формируем сообщение
         message_lines = [
             f"📊 Статистика за {month_name}:",
             f"━━━━━━━━━━━━━━━━━━━━",
-            f"🍽 Всего порций: *{completed + upcoming}*",
+            f"🍽 Всего порций: *{completed + today_orders + upcoming}*",
             "",
             f"✅ Выполненные: *{completed}*",
-            f"⏳ Предстоящие: *{upcoming}*"
         ]
+
+        # Добавляем строку про сегодняшние заказы, если время > 9:30 и есть заказы
+        if current_time > time(9, 30) and today_orders > 0:
+            message_lines.append(f"🍽 Сегодня: *{today_orders}*")
+
+        message_lines.append(f"⏳ Предстоящие: *{upcoming}*")
 
         if cancelled > 0:
             message_lines.append(f"❌ Отмененные: *{cancelled}*")
@@ -465,7 +477,7 @@ async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_T
                 SELECT COUNT(*) 
                 FROM orders 
                 WHERE user_id = ? 
-                  AND target_date >= ? 
+                  AND target_date > ?
                   AND is_cancelled = FALSE
             """, (user_db_id, today))
             order_count = db.cursor.fetchone()[0]
@@ -475,7 +487,7 @@ async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_T
                 SELECT MIN(target_date)
                 FROM orders
                 WHERE user_id = ?
-                  AND target_date >= ?
+                  AND target_date > ?
                   AND is_cancelled = FALSE
             """, (user_db_id, today))
             next_date = db.cursor.fetchone()[0]
