@@ -74,7 +74,7 @@ class BitrixSync:
         #     self._push_to_bitrix,
         #     'cron',
         #     minute=2,
-        #     hour=10,
+        #     hour=8,
         #     day_of_week='mon-fri'
         # )
 
@@ -157,7 +157,14 @@ class BitrixSync:
 
     async def sync_orders(self, start_date: str, end_date: str) -> Dict[str, int]:
         """Синхронизирует заказы из Bitrix в локальную базу"""
-        stats = {'total': 0, 'added': 0, 'updated': 0, 'errors': 0}
+        stats = {
+            'processed': 0,
+            'added': 0,
+            'updated': 0,
+            'exists': 0,
+            'skipped': 0,
+            'errors': 0
+        }
         
         try:
             bitrix_orders = await self._get_bitrix_orders(start_date, end_date)
@@ -165,8 +172,6 @@ class BitrixSync:
                 logger.warning(f"Не найдено заказов за период {start_date} - {end_date}")
                 return stats
                 
-            logger.info(f"Получено {len(bitrix_orders)} заказов из Bitrix")
-            
             # Сортируем заказы по ID перед обработкой
             bitrix_orders.sort(key=lambda x: int(x['id']))
             
@@ -178,7 +183,13 @@ class BitrixSync:
                     
                 await self._process_single_order(parsed_order, stats)
                 
-            logger.info(f"Синхронизация заказов завершена. Добавлено: {stats['added']}, Обновлено: {stats['updated']}, Ошибок: {stats['errors']}")
+            logger.info(
+                f"Синхронизация заказов завершена. "
+                f"Обработано: {stats['processed']}, "
+                f"Добавлено: {stats['added']}, "
+                f"Обновлено: {stats['updated']}, "
+                f"Ошибок: {stats['errors']}"
+            )
             return stats
             
         except Exception as e:
@@ -201,11 +212,9 @@ class BitrixSync:
             orders = await self.bx.get_all('crm.item.list', params)
             
             if orders:
-                logger.info(f"Получено {len(orders)} заказов")
-                # Сортируем заказы по ID сразу после получения
-                orders.sort(key=lambda x: int(x['id']))
+                logger.info(f"Получено {len(orders)} заказов из Bitrix")
             else:
-                logger.warning("Не получено ни одного заказа")
+                logger.warning("Не получено ни одного заказа за указанный период")
                 
             return orders
         except Exception as e:
@@ -258,38 +267,67 @@ class BitrixSync:
             return None
 
     async def _process_single_order(self, order: Dict, stats: Dict):
-        """Обрабатывает один заказ"""
+        """Обрабатывает один заказ с полной защитой от неопределённых переменных"""
+        # Инициализируем переменные
+        bitrix_id = None
+        user_id = None
+        target_date = None
+        
         try:
+            # 1. Валидация входящего заказа
             if not order or not isinstance(order, dict):
                 logger.error("Некорректный формат заказа")
                 stats['errors'] += 1
                 return
-                
-            if not order.get('bitrix_id'):
-                logger.error("Заказ без ID из Bitrix")
-                stats['errors'] += 1
+
+            # 2. Извлечение обязательных полей с защитой
+            bitrix_id = str(order.get('bitrix_id', ''))
+            employee_id = str(order.get('employee_id', ''))
+            target_date = order.get('date') or order.get('target_date')
+            location = order.get('location', 'Офис')
+
+            if not bitrix_id:
+                logger.debug("Пропуск заказа без Bitrix ID")
+                stats['skipped'] += 1
                 return
-            
-            user_id = await self._get_local_user_id(order['employee_id'])
+
+            # 3. Получаем user_id
+            user_id = await self._get_local_user_id(employee_id) if employee_id else None
             if not user_id:
-                logger.warning(f"Пользователь с Bitrix ID {order['employee_id']} не найден")
-                stats['errors'] += 1
+                logger.warning(f"Сотрудник Bitrix ID {employee_id} не найден")
+                stats['skipped'] += 1
                 return
-                
-            await self._update_user_location(user_id, order['location'])
-                
-            existing_order = self._find_local_order(order['bitrix_id'])
-            
+
+            # 4. Обновление локации
+            try:
+                await self._update_user_location(user_id, location)
+            except Exception as e:
+                logger.warning(f"Ошибка обновления локации: {str(e)}")
+
+            # 5. Проверка существующего заказа
+            existing_order = self._find_local_order(bitrix_id)
             if existing_order:
+                # Логируем только первые 3 обновления для примера
+                if stats.get('updated', 0) < 3:
+                    logger.debug(f"Обновлен заказ {bitrix_id} (пример)")
+                
                 if self._update_local_order(existing_order['id'], order):
-                    stats['updated'] += 1
+                    stats['updated'] = stats.get('updated', 0) + 1
             else:
-                if self._add_local_order(user_id, order):
-                    stats['added'] += 1
-                    
-            stats['total'] += 1
+                # Создание нового заказа
+                if self._add_local_order(user_id, {**order, 'target_date': target_date}):
+                    logger.info(f"Добавлен новый заказ {bitrix_id}")
+                    stats['added'] = stats.get('added', 0) + 1
+
+            stats['processed'] = stats.get('processed', 0) + 1
+
         except Exception as e:
-            logger.error(f"Ошибка обработки заказа: {e}")
+            error_details = {
+                'bitrix_id': bitrix_id,
+                'user_id': user_id,
+                'error': str(e)
+            }
+            logger.error(f"Ошибка обработки заказа: {error_details}")
             stats['errors'] += 1
 
     async def _get_local_user_id(self, bitrix_id: str) -> Optional[int]:
@@ -308,17 +346,38 @@ class BitrixSync:
         """Ищет заказ в локальной базе по ID из Bitrix"""
         try:
             db.cursor.execute("""
-                SELECT id, quantity FROM orders 
+                SELECT id, user_id FROM orders 
                 WHERE bitrix_order_id = ? 
                 LIMIT 1
             """, (bitrix_order_id,))
-            
             result = db.cursor.fetchone()
             if result:
-                return {'id': result[0], 'quantity': result[1]}
+                return {'id': result[0], 'user_id': result[1]}
             return None
         except Exception as e:
             logger.error(f"Ошибка поиска заказа: {e}")
+            return None
+        
+    def _get_full_order(self, order_id: int) -> Optional[Dict]:
+        """Возвращает полные данные заказа по ID, включая user_id и target_date"""
+        try:
+            db.cursor.execute("""
+                SELECT id, user_id, target_date 
+                FROM orders 
+                WHERE id = ?
+                LIMIT 1
+            """, (order_id,))
+            
+            result = db.cursor.fetchone()
+            if result:
+                return {
+                    'id': result[0],
+                    'user_id': result[1], 
+                    'target_date': result[2]
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка получения полных данных заказа {order_id}: {e}")
             return None
 
     def _update_local_order(self, order_id: int, order: Dict) -> bool:
@@ -666,14 +725,17 @@ class BitrixSync:
                 }
             }
 
+             # Отправка запроса
             logger.debug(f"Отправка заказа в Bitrix: {params}")
             result = await self.bx.call('crm.item.add', params)
             
-            if not result or 'item' not in result:
+            # Упрощенная проверка ответа
+            if not result or 'id' not in result:
                 logger.error(f"Неверный ответ от Bitrix: {result}")
                 return None
                 
-            return str(result['item']['id'])
+            # Возвращаем ID созданного заказа    
+            return str(result['id'])  # Bitrix всегда возвращает ID в корне объекта
             
         except Exception as e:
             logger.error(f"Ошибка создания заказа: {str(e)}")
