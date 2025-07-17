@@ -4,7 +4,7 @@ import sqlite3
 import pandas as pd
 
 # Подключение к базе данных
-conn = sqlite3.connect(r"D:\lunch_bot1\lunch_bot.db")
+conn = sqlite3.connect(r"C:\projects\lunch_bot\lunch_bot.db")
 
 # Загрузка users
 users_df = pd.read_excel("db_export.xlsx", sheet_name="users", dtype={
@@ -16,8 +16,13 @@ users_df = pd.read_excel("db_export.xlsx", sheet_name="users", dtype={
 conn.execute("DELETE FROM users;")
 users_df.to_sql("users", conn, if_exists="append", index=False)
 
-# Загрузка orders
-orders_df = pd.read_excel("db_export.xlsx", sheet_name="orders")
+# Загрузка orders с указанием типа для bitrix_order_id
+orders_df = pd.read_excel("db_export.xlsx", sheet_name="orders", dtype={
+    'bitrix_order_id': 'Int64'  # Используем Int64 для поддержки целых чисел
+})
+
+# Конвертируем float в int (на случай, если в данных уже есть значения с .0)
+orders_df['bitrix_order_id'] = orders_df['bitrix_order_id'].astype('Int64')
 
 # Очистка и загрузка таблицы orders
 conn.execute("DELETE FROM orders;")

@@ -4,10 +4,11 @@ import asyncio
 import logging
 from datetime import datetime, time, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from telegram.ext import ContextTypes
 import os
 from fast_bitrix24 import Bitrix
 from dotenv import load_dotenv
-from db import db
+from db import CONFIG, db
 import json
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ class BitrixSync:
             logger.error(f"Ошибка запуска задач синхронизации: {e}")
 
     def _setup_schedules(self):
-        """Настройка расписания синхронизации"""
+        """Настройка расписания синхронизации с улучшенной обработкой ошибок"""
         # Синхронизация из Bitrix каждые 5 минут (6:00-10:00)
         self.scheduler.add_job(
             self.sync_last_two_months_orders,
@@ -69,32 +70,71 @@ class BitrixSync:
             day_of_week='mon-fri'
         )
         
-        # # Тестовая синхронизация в удобное время
-        # self.scheduler.add_job(
-        #     self._push_to_bitrix,
-        #     'cron',
-        #     minute=2,
-        #     hour=8,
-        #     day_of_week='mon-fri'
-        # )
-
-        # Основная синхронизация в 9:29
+        # Основная синхронизация с 9:25:00 до 9:29:30 (каждые 30 сек)
         self.scheduler.add_job(
-            self._push_to_bitrix,
+            self._push_to_bitrix_with_retry,
+            'cron',
+            minute='25-29',
+            hour=9,
+            day_of_week='mon-fri',
+            second='*/30'
+        )
+
+        # Финальная попытка в 9:29:59 (за 1 сек до закрытия)
+        self.scheduler.add_job(
+            self._push_to_bitrix_with_retry,
             'cron',
             minute=29,
             hour=9,
-            day_of_week='mon-fri'
+            day_of_week='mon-fri',
+            second=59  # Критически важная секунда!
         )
-        
-        # Закрытие заказов в 9:30
+
+        # Жесткое закрытие в 9:30:00
         self.scheduler.add_job(
             self.close_orders_at_930,
             'cron',
             minute=30,
             hour=9,
-            day_of_week='mon-fri'
+            day_of_week='mon-fri',
+            second=0  # Точное время
         )
+
+    async def _push_to_bitrix_with_retry(self, context: ContextTypes.DEFAULT_TYPE = None):
+        """Отправка заказов в Bitrix с повторными попытками и уведомлениями"""
+        try:
+            success = await self._push_to_bitrix()
+            if not success:
+                await self._notify_admin("⚠️ Не удалось отправить заказы в Bitrix", context)
+        except Exception as e:
+            error_msg = f"❌ Критическая ошибка при отправке в Bitrix: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            await self._notify_admin(error_msg, context)
+
+    async def _notify_admin(self, message: str, context: ContextTypes.DEFAULT_TYPE = None):
+        """Улучшенная версия уведомления администраторов с использованием существующей логики"""
+        try:
+            if not hasattr(CONFIG, 'admin_ids') or not CONFIG.admin_ids:
+                logger.warning("ADMIN_IDS не установлены в конфиге")
+                return
+            
+            # Если передан context (для отправки через бота)
+            if context and hasattr(context, 'bot'):
+                for admin_id in CONFIG.admin_ids:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=admin_id,
+                            text=message
+                        )
+                        logger.info(f"Уведомление отправлено администратору {admin_id}")
+                    except Exception as e:
+                        logger.error(f"Не удалось отправить сообщение админу {admin_id}: {e}")
+            else:
+                # Логируем, если нет возможности отправить через бота
+                logger.info(f"Уведомление для администраторов (нет context.bot): {message}")
+                
+        except Exception as e:
+            logger.error(f"Ошибка в _notify_admin: {e}")
 
     # Все остальные методы из bitrix.py (sync_employees, sync_orders и т.д.)
     # должны быть перенесены сюда без изменений
@@ -406,14 +446,41 @@ class BitrixSync:
             return False
 
     def _add_local_order(self, user_id: int, order: Dict) -> bool:
-        """Добавляет новый заказ"""
+        """Добавляет новый заказ с проверкой на дубликаты и улучшенной обработкой ошибок"""
         try:
-            # Очищаем все строковые значения перед вставкой
+            # 1. Подготовка данных
             bitrix_id = self._clean_string(str(order.get('bitrix_id', '')))
-            bitrix_quantity = self._clean_string(str(order.get('bitrix_quantity', '')))
-            target_date = self._clean_string(order.get('date', datetime.now().strftime('%Y-%m-%d')))
-            created_time = self._clean_string(order.get('created_time', ''))
+            if not bitrix_id:
+                logger.error("Не указан bitrix_id для заказа")
+                return False
+
+            # 2. Проверка на существующий заказ
+            existing_order = db.execute(
+                "SELECT 1 FROM orders WHERE bitrix_order_id = ? LIMIT 1",
+                (bitrix_id,)
+            )
+            if existing_order:
+                logger.warning(f"Заказ с Bitrix ID {bitrix_id} уже существует")
+                return False
+
+            # 3. Подготовка остальных полей
+            quantity = int(order.get('quantity', 1))
+            bitrix_quantity = self._clean_string(str(order.get('bitrix_quantity', '821')))
+            is_cancelled = bool(order.get('is_cancelled', False))
             
+            # 4. Определение даты и времени
+            target_date = self._clean_string(
+                order.get('date', datetime.now().strftime('%Y-%m-%d'))
+            )
+            
+            created_time = self._clean_string(order.get('created_time', ''))
+            order_time = (
+                created_time.split('T')[1][:8] 
+                if 'T' in created_time 
+                else datetime.now().strftime('%H:%M')
+            )
+
+            # 5. Вставка в базу данных
             db.cursor.execute("""
                 INSERT INTO orders (
                     user_id, target_date, order_time, 
@@ -424,17 +491,27 @@ class BitrixSync:
             """, (
                 user_id,
                 target_date,
-                created_time.split('T')[1][:8] if 'T' in created_time else datetime.now().strftime('%H:%M'),
-                order['quantity'],
+                order_time,
+                quantity,
                 bitrix_quantity,
-                order['is_cancelled'],
+                is_cancelled,
                 True,  # is_from_bitrix
                 bitrix_id
             ))
+            
             db.conn.commit()
-            return True
+            
+            # 6. Проверка успешности вставки
+            if db.cursor.rowcount == 1:
+                logger.info(f"Успешно добавлен заказ Bitrix ID: {bitrix_id}")
+                return True
+                
+            logger.error("Не удалось добавить заказ (rowcount = 0)")
+            return False
+            
         except Exception as e:
-            logger.error(f"Ошибка добавления заказа: {e}")
+            logger.error(f"Критическая ошибка добавления заказа: {e}", exc_info=True)
+            db.conn.rollback()
             return False
     
     async def _update_user_location(self, user_id: int, location: str) -> bool:
@@ -634,6 +711,7 @@ class BitrixSync:
                 AND o.is_from_bitrix = FALSE
                 AND o.is_sent_to_bitrix = FALSE
                 AND o.is_cancelled = FALSE
+                AND bitrix_order_id IS NULL
                 AND u.bitrix_id IS NOT NULL
             ''', (today,))
             
@@ -742,11 +820,19 @@ class BitrixSync:
             return None
         
     async def close_orders_at_930(self):
-        """Закрывает прием заказов в 9:30"""
-        now = datetime.now()
-        if now.time() >= time(9, 30) and now.time() < time(9, 31):
-            # Обновляем настройки бота
-            db.execute("UPDATE bot_settings SET setting_value = 'False' WHERE setting_name = 'orders_enabled'")
-            
-            # Отправляем все оставшиеся заказы
-            await self._push_to_bitrix()
+        """Финальное закрытие с гарантированной проверкой и детальным логированием"""
+        current_time = datetime.now(CONFIG.timezone).strftime('%H:%M:%S')
+        
+        # Последняя попытка синхронизации
+        logger.info(f"🔄 [{current_time}] Запуск финальной синхронизации перед закрытием")
+        sync_result = await self._push_to_bitrix_with_retry()
+        
+        if not sync_result:
+            logger.critical(f"⚠️ [{current_time}] Последняя синхронизация провалилась!")
+        else:
+            logger.info(f"✅ [{current_time}] Все актуальные заказы синхронизированы")
+        
+        # Основная логика закрытия
+        await self._disable_ordering()
+        closure_time = datetime.now(CONFIG.timezone).strftime('%H:%M:%S.%f')[:-3]
+        logger.info(f"⏹ [{closure_time}] Прием заказов официально закрыт")

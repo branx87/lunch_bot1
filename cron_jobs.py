@@ -34,9 +34,9 @@ class CronManager:
             tz=CONFIG.timezone
         ))
         
-        # Утренние отчеты в 9:30
+        # Утренние отчеты в 9:31
         self.jobs.append(aiocron.crontab(
-            '30 9 * * 1-5',
+            '31 9 * * 1-5',
             func=self._morning_reports,
             tz=CONFIG.timezone
         ))
