@@ -58,13 +58,16 @@ class CronManager:
                 SELECT telegram_id 
                 FROM users 
                 WHERE is_verified = TRUE 
+                AND is_deleted = FALSE
                 AND notifications_enabled = TRUE
+                AND is_employee = TRUE  -- Если нужно только сотрудникам
                 AND telegram_id NOT IN (
                     SELECT u.telegram_id 
                     FROM users u 
                     JOIN orders o ON u.id = o.user_id 
-                    WHERE o.target_date = ? 
+                    WHERE date(o.target_date) = date(?)
                     AND o.is_cancelled = FALSE
+                    AND o.is_active = TRUE
                     AND o.quantity > 0
                 )
             """, (now.date().isoformat(),))
