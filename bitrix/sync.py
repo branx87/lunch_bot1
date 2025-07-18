@@ -308,11 +308,6 @@ class BitrixSync:
 
     async def _process_single_order(self, order: Dict, stats: Dict):
         """Обрабатывает один заказ с полной защитой от неопределённых переменных"""
-        # Инициализируем переменные
-        bitrix_id = None
-        user_id = None
-        target_date = None
-        
         try:
             # 1. Валидация входящего заказа
             if not order or not isinstance(order, dict):
@@ -338,20 +333,31 @@ class BitrixSync:
                 stats['skipped'] += 1
                 return
 
-            # 4. Обновление локации
+            # 4. Проверяем, существует ли уже такой заказ (по bitrix_order_id И user_id И target_date)
+            existing_order = db.execute(
+                """SELECT id FROM orders 
+                WHERE bitrix_order_id = ? 
+                AND user_id = ? 
+                AND target_date = ? 
+                LIMIT 1""",
+                (bitrix_id, user_id, target_date)
+            )
+            
+            if existing_order:
+                logger.debug(f"Заказ уже существует (Bitrix ID: {bitrix_id}, User ID: {user_id}, Date: {target_date})")
+                stats['exists'] += 1
+                return
+
+            # 5. Обновление локации
             try:
                 await self._update_user_location(user_id, location)
             except Exception as e:
                 logger.warning(f"Ошибка обновления локации: {str(e)}")
 
-            # 5. Проверка существующего заказа
-            existing_order = self._find_local_order(bitrix_id)
-            if existing_order:
-                # Логируем только первые 3 обновления для примера
-                if stats.get('updated', 0) < 3:
-                    logger.debug(f"Обновлен заказ {bitrix_id} (пример)")
-                
-                if self._update_local_order(existing_order['id'], order):
+            # 6. Проверка существующего заказа по ID Bitrix
+            existing_order_by_id = self._find_local_order(bitrix_id)
+            if existing_order_by_id:
+                if self._update_local_order(existing_order_by_id['id'], order):
                     stats['updated'] = stats.get('updated', 0) + 1
             else:
                 # Создание нового заказа
@@ -364,7 +370,6 @@ class BitrixSync:
         except Exception as e:
             error_details = {
                 'bitrix_id': bitrix_id,
-                'user_id': user_id,
                 'error': str(e)
             }
             logger.error(f"Ошибка обработки заказа: {error_details}")
@@ -454,13 +459,21 @@ class BitrixSync:
                 logger.error("Не указан bitrix_id для заказа")
                 return False
 
-            # 2. Проверка на существующий заказ
+            target_date = self._clean_string(
+                order.get('date', datetime.now().strftime('%Y-%m-%d'))
+            )
+
+            # 2. Проверка на существующий заказ (по всем ключевым полям)
             existing_order = db.execute(
-                "SELECT 1 FROM orders WHERE bitrix_order_id = ? LIMIT 1",
-                (bitrix_id,)
+                """SELECT 1 FROM orders 
+                WHERE bitrix_order_id = ? 
+                AND user_id = ? 
+                AND target_date = ?
+                LIMIT 1""",
+                (bitrix_id, user_id, target_date)
             )
             if existing_order:
-                logger.warning(f"Заказ с Bitrix ID {bitrix_id} уже существует")
+                logger.warning(f"Заказ уже существует (Bitrix ID: {bitrix_id}, User: {user_id}, Date: {target_date})")
                 return False
 
             # 3. Подготовка остальных полей
