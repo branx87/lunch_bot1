@@ -100,9 +100,7 @@ def update_env_file(key: str, value: str):
     CONFIG.reload()
 
 async def config_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("⚙️ Обработчик config_menu вызван!")
     """Главное меню управления конфигурацией"""
-    # print(f"User {update.effective_user.id} entered config menu")
     user_id = update.effective_user.id
     current_pages[user_id] = {'page': 0}  # Сброс страниц
     
@@ -1097,7 +1095,6 @@ def setup_admin_config_handlers(application):
             MessageHandler(filters.Regex("^Отмена$"), cancel_config),
             CallbackQueryHandler(handle_deletion, pattern=r'^cancel_delete$')
         ],
-        per_message=True,
         allow_reentry=True
     )
     application.add_handler(conv_handler)
@@ -1139,51 +1136,3 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка пагинации: {e}")
         await query.answer("Ошибка при переключении страницы", show_alert=True)
         return CONFIG_MENU
-    
-async def handle_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды '⚙️ Управление конфигурацией'"""
-    if update.effective_user.id not in CONFIG.admin_ids:
-        await update.message.reply_text("❌ У вас нет прав доступа")
-        return
-    
-    await update.message.reply_text(
-        "⚙️ Управление конфигурацией:",
-        reply_markup=create_admin_config_keyboard()
-    )
-    return CONFIG_MENU
-
-async def handle_config_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик всех команд конфигурации"""
-    user = update.effective_user
-    text = update.message.text
-    
-    if user.id not in CONFIG.admin_ids:
-        await update.message.reply_text("❌ У вас нет прав доступа")
-        return ConversationHandler.END
-    
-    # Основные команды конфигурации
-    if text == "⚙️ Управление конфигурацией":
-        return await config_menu(update, context)
-    elif text in ["➕ Добавить администратора", "Добавить администратора"]:
-        return await start_add_admin(update, context)
-    elif text in ["➖ Удалить администратора", "Удалить администратора"]:
-        return await start_delete_admin(update, context)
-    elif text in ["➕ Добавить поставщика", "Добавить поставщика"]:
-        return await start_add_provider(update, context)
-    elif text in ["➖ Удалить поставщика", "Удалить поставщика"]:
-        return await start_delete_provider(update, context)
-    elif text in ["➕ Добавить бухгалтера", "Добавить бухгалтера"]:
-        return await start_add_accountant(update, context)
-    elif text in ["➖ Удалить бухгалтера", "Удалить бухгалтера"]:
-        return await start_delete_accountant(update, context)
-    elif text in ["➕ Добавить сотрудника", "Добавить сотрудника"]:
-        return await start_add_staff(update, context)
-    elif text in ["➖ Удалить сотрудника", "Удалить сотрудника"]:
-        return await start_delete_staff(update, context)
-    elif text in ["➕ Добавить праздник", "Добавить праздник"]:
-        return await start_add_holiday(update, context)
-    elif text in ["➖ Удалить праздник", "Удалить праздник"]:
-        return await start_delete_holiday(update, context)
-    
-    # Если команда не распознана, возвращаем в меню конфигурации
-    return await config_menu(update, context)

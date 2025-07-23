@@ -18,17 +18,19 @@ from constants import (
     ORDER_ACTION, ORDER_CONFIRMATION, PHONE, 
     SELECT_MONTH_RANGE, SELECT_MONTH_RANGE_STATS, SELECT_REPORT_TYPE
 )
-from handlers.admin_config_handlers import setup_admin_config_handlers
+from handlers.admin_config_handlers import handle_deletion, setup_admin_config_handlers
 from handlers.admin_handlers import handle_admin_choice
 from handlers.base_handlers import (
     admin_reports_menu, error_handler, handle_admin_reports_menu, 
     handle_registered_user, handle_report_type_selection, handle_text_message, 
     main_menu, start, test_connection
 )
+from handlers.callback_handlers import handle_cancel_order
 from handlers.common import show_main_menu
 from handlers.common_handlers import view_orders
 from handlers.common_report_handlers import select_month_range
-from handlers.menu_handlers import ( 
+from handlers.menu_handlers import (
+    handle_cancel_from_view, 
     handle_order_confirmation, 
     monthly_stats, 
     monthly_stats_selected,
@@ -44,7 +46,6 @@ from handlers.message_handlers import (
 from handlers.order_callbacks import callback_handler, setup_order_callbacks
 from handlers.provider_handlers import setup_provider_handlers
 from handlers.registration_handlers import get_full_name, get_location, get_phone
-from handlers.admin_handlers import setup_admin_handlers
 
 def setup_handlers(application):
     """Настройка всех обработчиков в правильном порядке"""
@@ -74,19 +75,9 @@ def setup_handlers(application):
     )
     application.add_handler(broadcast_handler)
     
-    # 2.1 Обработчики конфигурации (добавляем ПЕРЕД основными обработчиками)
-    from handlers.admin_config_handlers import handle_config_commands
-    application.add_handler(MessageHandler(
-        filters.Regex(r'^(⚙️ Управление конфигурацией|'
-                     r'[➕➖] (Добавить|Удалить) (администратора|поставщика|бухгалтера|сотрудника|праздника))$') & 
-        filters.User(user_id=CONFIG.admin_ids),
-        handle_config_commands
-    ))
-
     # 3. Обработчики конфигурации
     setup_admin_config_handlers(application)
     setup_provider_handlers(application)
-    setup_admin_handlers(application)
     
     # 4. Обработчики заказов
     setup_order_callbacks(application)
