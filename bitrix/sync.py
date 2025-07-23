@@ -459,21 +459,13 @@ class BitrixSync:
                 logger.error("Не указан bitrix_id для заказа")
                 return False
 
-            target_date = self._clean_string(
-                order.get('date', datetime.now().strftime('%Y-%m-%d'))
-            )
-
-            # 2. Проверка на существующий заказ (по всем ключевым полям)
+            # 2. Проверка на существующий заказ
             existing_order = db.execute(
-                """SELECT 1 FROM orders 
-                WHERE bitrix_order_id = ? 
-                AND user_id = ? 
-                AND target_date = ?
-                LIMIT 1""",
-                (bitrix_id, user_id, target_date)
+                "SELECT 1 FROM orders WHERE bitrix_order_id = ? LIMIT 1",
+                (bitrix_id,)
             )
             if existing_order:
-                logger.warning(f"Заказ уже существует (Bitrix ID: {bitrix_id}, User: {user_id}, Date: {target_date})")
+                logger.warning(f"Заказ с Bitrix ID {bitrix_id} уже существует")
                 return False
 
             # 3. Подготовка остальных полей
