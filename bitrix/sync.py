@@ -333,19 +333,21 @@ class BitrixSync:
                 stats['skipped'] += 1
                 return
 
-            # 4. Проверяем, существует ли уже такой заказ (по bitrix_order_id И user_id И target_date)
+            # 4. Проверяем, существует ли уже такой заказ (по user_id И target_date)
             existing_order = db.execute(
                 """SELECT id FROM orders 
-                WHERE bitrix_order_id = ? 
-                AND user_id = ? 
+                WHERE user_id = ? 
                 AND target_date = ? 
                 LIMIT 1""",
-                (bitrix_id, user_id, target_date)
+                (user_id, target_date)
             )
             
             if existing_order:
-                logger.debug(f"Заказ уже существует (Bitrix ID: {bitrix_id}, User ID: {user_id}, Date: {target_date})")
-                stats['exists'] += 1
+                # Обновляем существующий заказ
+                if self._update_local_order(existing_order[0][0], order):
+                    stats['updated'] += 1
+                else:
+                    stats['errors'] += 1
                 return
 
             # 5. Обновление локации
@@ -354,18 +356,12 @@ class BitrixSync:
             except Exception as e:
                 logger.warning(f"Ошибка обновления локации: {str(e)}")
 
-            # 6. Проверка существующего заказа по ID Bitrix
-            existing_order_by_id = self._find_local_order(bitrix_id)
-            if existing_order_by_id:
-                if self._update_local_order(existing_order_by_id['id'], order):
-                    stats['updated'] = stats.get('updated', 0) + 1
-            else:
-                # Создание нового заказа
-                if self._add_local_order(user_id, {**order, 'target_date': target_date}):
-                    logger.info(f"Добавлен новый заказ {bitrix_id}")
-                    stats['added'] = stats.get('added', 0) + 1
+            # 6. Создание нового заказа
+            if self._add_local_order(user_id, {**order, 'target_date': target_date}):
+                logger.info(f"Добавлен новый заказ Bitrix ID: {bitrix_id}")
+                stats['added'] += 1
 
-            stats['processed'] = stats.get('processed', 0) + 1
+            stats['processed'] += 1
 
         except Exception as e:
             error_details = {
@@ -718,6 +714,12 @@ class BitrixSync:
                 AND o.is_cancelled = FALSE
                 AND bitrix_order_id IS NULL
                 AND u.bitrix_id IS NOT NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM orders o2 
+                    WHERE o2.user_id = o.user_id 
+                    AND o2.target_date = o.target_date
+                    AND o2.is_from_bitrix = TRUE
+                )
             ''', (today,))
             
             if not result:
