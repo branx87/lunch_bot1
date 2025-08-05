@@ -324,7 +324,7 @@ async def export_monthly_report(
         
         # Создаем лист "Все заказы" (первым в книге)
         ws_all = wb.create_sheet("Все заказы", 0)
-        all_headers = ["Дата обеда", "Сотрудник", "Локация", "Подпись", "Кол-во обедов", "Тип заказа"]
+        all_headers = ["Дата обеда", "Сотрудник", "Локация", "Подпись", "Кол-во обедов", "Источник заказа"]  # Изменено название колонки
         ws_all.append(all_headers)
         ws_all.auto_filter.ref = "A1:F1"
         
@@ -336,7 +336,7 @@ async def export_monthly_report(
                     u.full_name,
                     COALESCE(u.location, 'Не указано'),
                     o.quantity,
-                    CASE WHEN o.is_preliminary THEN 'Предзаказ' ELSE 'Обычный' END,
+                    o.is_from_bitrix,
                     o.created_at,
                     o.bitrix_order_id
                 FROM orders o
@@ -356,7 +356,7 @@ async def export_monthly_report(
                     u.full_name,
                     COALESCE(u.location, 'Не указано'),
                     o.quantity,
-                    CASE WHEN o.is_preliminary THEN 'Предзаказ' ELSE 'Обычный' END,
+                    o.is_from_bitrix,
                     o.created_at,
                     o.bitrix_order_id
                 FROM orders o
@@ -384,12 +384,13 @@ async def export_monthly_report(
         for date_key in sorted(orders_by_date.keys()):
             for row in orders_by_date[date_key]:
                 target_date = datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
-                ws_all.append([target_date, row[1], row[2], "", row[3], row[4]])
+                source = "Битрикс" if row[4] else "Бот"  # Определяем источник заказа
+                ws_all.append([target_date, row[1], row[2], "", row[3], source])  # Используем source вместо типа заказа
         
         # Создаем листы для каждой локации
         for location in CONFIG.locations:
             ws = wb.create_sheet(location)
-            headers = ["Дата обеда", "Сотрудник", "Территориальный признак", "Подпись", "Кол-во обедов", "Тип заказа"]
+            headers = ["Дата обеда", "Сотрудник", "Территориальный признак", "Подпись", "Кол-во обедов", "Источник заказа"]  # Изменено название колонки
             ws.append(headers)
             ws.auto_filter.ref = "A1:F1"
             
@@ -408,7 +409,8 @@ async def export_monthly_report(
             for date_key in sorted(loc_orders_by_date.keys()):
                 for row in loc_orders_by_date[date_key]:
                     target_date = datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
-                    ws.append([target_date, row[1], row[2], "", row[3], row[4]])
+                    source = "Битрикс" if row[4] else "Бот"  # Определяем источник заказа
+                    ws.append([target_date, row[1], row[2], "", row[3], source])  # Используем source вместо типа заказа
         
         # Лист "Итоги"
         ws_summary = wb.create_sheet("Итоги")
