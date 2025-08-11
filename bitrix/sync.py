@@ -105,7 +105,9 @@ class BitrixSync:
         try:
             success = await self._push_to_bitrix()
             if not success:
-                await self._notify_admin("⚠️ Не удалось отправить заказы в Bitrix", context)
+                error_msg = "⚠️ Не удалось отправить некоторые заказы в Bitrix"
+                logger.warning(error_msg)
+                await self._notify_admin(error_msg, context)
         except Exception as e:
             error_msg = f"❌ Критическая ошибка при отправке в Bitrix: {str(e)}"
             logger.error(error_msg, exc_info=True)
@@ -694,7 +696,7 @@ class BitrixSync:
             .translate(str.maketrans("", "", ".,-"))
         )
     
-    async def _push_to_bitrix(self):
+    async def _push_to_bitrix(self) -> bool:
         """Отправляет в Bitrix только локальные заказы на сегодня"""
         try:
             today = datetime.now().date().isoformat()
@@ -724,9 +726,8 @@ class BitrixSync:
             
             if not result:
                 logger.info("Нет заказов для отправки на сегодня")
-                return
+                return True  # Успех, так как нечего отправлять
 
-            # Ручное преобразование результатов в словари
             columns = [
                 'id', 'target_date', 'order_time', 'quantity',
                 'bitrix_quantity_id', 'location', 'is_from_bitrix',
@@ -738,7 +739,6 @@ class BitrixSync:
             success_count = 0
             for order in pending_orders:
                 try:
-                    # Проверка данных перед отправкой
                     if not all(key in order for key in ['bitrix_id', 'quantity', 'target_date', 'order_time']):
                         logger.error(f"Неполные данные в заказе ID {order.get('id')}")
                         continue
@@ -759,16 +759,16 @@ class BitrixSync:
                             WHERE id = ?
                         ''', (bitrix_id, order['id']))
                         success_count += 1
-                        logger.debug(f"Заказ ID {order['id']} успешно отправлен в Bitrix")
                         
                 except Exception as e:
                     logger.error(f"Ошибка обработки заказа ID {order.get('id')}: {str(e)}")
 
             logger.info(f"Итог: отправлено {success_count}/{len(pending_orders)} заказов")
+            return success_count == len(pending_orders)  # True если все успешно
             
         except Exception as e:
             logger.error(f"Критическая ошибка в _push_to_bitrix: {str(e)}", exc_info=True)
-            raise
+            return False
 
     async def _create_bitrix_order(self, order_data: dict) -> Optional[str]:
         """Создает заказ в Bitrix24 с улучшенной обработкой ошибок"""
