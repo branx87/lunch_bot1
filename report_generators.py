@@ -324,7 +324,7 @@ async def export_monthly_report(
         
         # Создаем лист "Все заказы" (первым в книге)
         ws_all = wb.create_sheet("Все заказы", 0)
-        all_headers = ["Дата обеда", "Сотрудник", "Локация", "Подпись", "Кол-во обедов", "Источник заказа"]  # Изменено название колонки
+        all_headers = ["Дата обеда", "Сотрудник", "Локация", "Подпись", "Кол-во обедов", "Источник заказа"]
         ws_all.append(all_headers)
         ws_all.auto_filter.ref = "A1:F1"
         
@@ -384,18 +384,25 @@ async def export_monthly_report(
         for date_key in sorted(orders_by_date.keys()):
             for row in orders_by_date[date_key]:
                 target_date = datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
-                source = "Битрикс" if row[4] else "Бот"  # Определяем источник заказа
-                ws_all.append([target_date, row[1], row[2], "", row[3], source])  # Используем source вместо типа заказа
+                source = "Битрикс" if row[4] else "Бот"
+                ws_all.append([target_date, row[1], row[2], "", row[3], source])
         
-        # Создаем листы для каждой локации
+        # Создаем листы для каждой локации (объединяем "Офис" и "ПЦ 2")
         for location in CONFIG.locations:
+            # Пропускаем создание отдельного листа для "ПЦ 2"
+            if location == "ПЦ 2":
+                continue
+                
             ws = wb.create_sheet(location)
-            headers = ["Дата обеда", "Сотрудник", "Территориальный признак", "Подпись", "Кол-во обедов", "Источник заказа"]  # Изменено название колонки
+            headers = ["Дата обеда", "Сотрудник", "Территориальный признак", "Подпись", "Кол-во обедов", "Источник заказа"]
             ws.append(headers)
             ws.auto_filter.ref = "A1:F1"
             
-            # Фильтруем общие данные по локации
-            location_orders = [row for row in all_orders if row[2] == location]
+            # Для листа "Офис" включаем также заказы из "ПЦ 2"
+            if location == "Офис":
+                location_orders = [row for row in all_orders if row[2] in ["Офис", "ПЦ 2"]]
+            else:
+                location_orders = [row for row in all_orders if row[2] == location]
             
             # Группируем по дате для текущей локации
             loc_orders_by_date = {}
@@ -409,8 +416,8 @@ async def export_monthly_report(
             for date_key in sorted(loc_orders_by_date.keys()):
                 for row in loc_orders_by_date[date_key]:
                     target_date = datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
-                    source = "Битрикс" if row[4] else "Бот"  # Определяем источник заказа
-                    ws.append([target_date, row[1], row[2], "", row[3], source])  # Используем source вместо типа заказа
+                    source = "Битрикс" if row[4] else "Бот"
+                    ws.append([target_date, row[1], row[2], "", row[3], source])
         
         # Лист "Итоги"
         ws_summary = wb.create_sheet("Итоги")
@@ -418,10 +425,13 @@ async def export_monthly_report(
         ws_summary.append(summary_headers)
         ws_summary.auto_filter.ref = "A1:B1"
         
-        # Подсчет итогов
+        # Подсчет итогов (объединяем "Офис" и "ПЦ 2")
         location_totals = {}
         for row in all_orders:
             location = row[2]
+            # Объединяем "Офис" и "ПЦ 2" в одну категорию
+            if location == "ПЦ 2":
+                location = "Офис"
             quantity = row[3]
             if location not in location_totals:
                 location_totals[location] = 0
