@@ -272,7 +272,8 @@ async def handle_cancel_callback(query, now, user, context):
     """
     Обработчик отмены заказа с улучшенной безопасностью:
     - Проверка формата и валидности callback-данных
-    - Проверка временных ограничений на отмену
+    - Проверка временных ограничений на отмену (до 9:20)
+    - Проверка, что заказ не создан в Битрикс (is_from_bitrix != 1)
     - Надежное обновление статуса в базе данных
     - Логирование действий и обработка ошибок интерфейса
     """
@@ -319,15 +320,30 @@ async def handle_cancel_callback(query, now, user, context):
             await query.answer("⚠️ Ошибка в запросе")
             return
 
-        # Проверяем можно ли отменять заказ
-        if not can_modify_order(target_date):
-            await query.answer("ℹ️ Отмена невозможна после 9:30", show_alert=True)
-            return
-
         # Получаем ID пользователя в БД
         user_db_id = await get_user_db_id(user.id)
         if not user_db_id:
             await query.answer("❌ Пользователь не найден", show_alert=True)
+            return
+
+        # Проверяем можно ли отменять заказ
+        if not can_modify_order(target_date):
+            await query.answer("ℹ️ Отмена невозможна после 9:20", show_alert=True)
+            return
+
+        # Проверяем, не создан ли заказ в Битрикс
+        db.cursor.execute("""
+            SELECT is_from_bitrix FROM orders 
+            WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
+        """, (user_db_id, target_date.isoformat()))
+        order_record = db.cursor.fetchone()
+        
+        if not order_record:
+            await query.answer("❌ Заказ не найден", show_alert=True)
+            return
+            
+        if order_record[0] == 1:  # is_from_bitrix = 1
+            await query.answer("❌ Заказ создан в Битрикс, отмена невозможна", show_alert=True)
             return
 
         # Отменяем заказ
@@ -364,6 +380,22 @@ async def handle_cancel_callback(query, now, user, context):
     except Exception as e:
         logger.error(f"Критическая ошибка в handle_cancel_callback: {e}", exc_info=True)
         await query.answer("⚠️ Произошла ошибка. Попробуйте снова.", show_alert=True)
+
+def can_modify_order(target_date):
+    """
+    Проверяет возможность изменения/отмены заказа:
+    - Для сегодняшней даты: до 9:20
+    - Для будущих дат: всегда можно
+    - Для заказов из Битрикс: нельзя
+    """
+    now = datetime.now(CONFIG.timezone)
+    
+    # Если заказ на сегодня
+    if target_date == now.date():
+        return now.time() < time(9, 20)
+    
+    # Если заказ на будущее
+    return True
         
 async def handle_confirm_callback(query, now, user, context):
     """
@@ -389,6 +421,7 @@ async def modify_portion_count(query, now, user, context, delta):
     Изменяет количество порций в заказе:
     - Обрабатывает увеличение/уменьшение количества
     - Проверяет граничные значения (1-5 порций)
+    - Проверяет возможность изменения (до 9:20 и не из Битрикс)
     - Обновляет bitrix_quantity_id в соответствии с количеством
     """
     if not await check_user_access(user.id, context.application):
@@ -400,15 +433,25 @@ async def modify_portion_count(query, now, user, context, delta):
         target_date = (now + timedelta(days=day_offset)).date()
         user_db_id = context.user_data['user_db_id']
         
+        # Проверяем можно ли изменять заказ
+        if not can_modify_order(target_date):
+            await query.answer("ℹ️ Изменение невозможно после 9:20", show_alert=True)
+            return
+
         # Получаем текущий заказ
         db.cursor.execute("""
-            SELECT quantity, bitrix_quantity_id FROM orders 
+            SELECT quantity, bitrix_quantity_id, is_from_bitrix FROM orders 
             WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
         """, (user_db_id, target_date.isoformat()))
         current_order = db.cursor.fetchone()
         
         if not current_order:
             await query.answer("ℹ️ Заказ не найден")
+            return
+            
+        # Проверяем, не создан ли заказ в Битрикс
+        if current_order[2] == 1:  # is_from_bitrix = 1
+            await query.answer("❌ Заказ создан в Битрикс, изменение невозможно", show_alert=True)
             return
             
         current_qty = current_order[0]
@@ -422,14 +465,7 @@ async def modify_portion_count(query, now, user, context, delta):
             return
 
         # Маппинг количества порций на bitrix_quantity_id
-        quantity_map = {
-            1: '821',
-            2: '822',
-            3: '823',
-            4: '824',
-            5: '825'
-        }
-        new_bitrix_quantity_id = quantity_map.get(new_qty, '821')
+        new_bitrix_quantity_id = QUANTITY_MAP.get(new_qty, '821')
 
         # Обновляем заказ
         with db.conn:
