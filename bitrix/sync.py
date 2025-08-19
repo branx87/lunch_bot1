@@ -352,11 +352,20 @@ class BitrixSync:
                     stats['errors'] += 1
                 return
 
-            # 5. Обновление локации
+            # 5. Обновление локации - ТОЛЬКО для НЕ верифицированных пользователей
             try:
-                await self._update_user_location(user_id, location)
+                # Проверяем, верифицирован ли пользователь
+                is_verified = db.execute(
+                    "SELECT is_verified FROM users WHERE id = ? LIMIT 1",
+                    (user_id,)
+                )
+                
+                if not is_verified or not is_verified[0][0]:  # Если не верифицирован
+                    await self._update_user_location(user_id, location)
+                else:
+                    logger.debug(f"Пользователь {user_id} верифицирован - локация не обновляется из Bitrix")
             except Exception as e:
-                logger.warning(f"Ошибка обновления локации: {str(e)}")
+                logger.warning(f"Ошибка проверки верификации/обновления локации: {str(e)}")
 
             # 6. Создание нового заказа
             if self._add_local_order(user_id, {**order, 'target_date': target_date}):
@@ -714,13 +723,14 @@ class BitrixSync:
                 AND o.is_from_bitrix = FALSE
                 AND o.is_sent_to_bitrix = FALSE
                 AND o.is_cancelled = FALSE
-                AND bitrix_order_id IS NULL
+                AND o.bitrix_order_id IS NULL
                 AND u.bitrix_id IS NOT NULL
                 AND NOT EXISTS (
                     SELECT 1 FROM orders o2 
                     WHERE o2.user_id = o.user_id 
                     AND o2.target_date = o.target_date
                     AND o2.is_from_bitrix = TRUE
+                    AND o2.is_cancelled = FALSE
                 )
             ''', (today,))
             

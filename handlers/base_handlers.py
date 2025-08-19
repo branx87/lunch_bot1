@@ -135,19 +135,19 @@ async def test_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Получаем данные пользователя из БД
         db.cursor.execute("""
-            SELECT full_name, phone, is_deleted, is_verified 
+            SELECT full_name, phone, is_deleted, is_verified, location 
             FROM users 
             WHERE telegram_id = ?
         """, (user.id,))
         user_data = db.cursor.fetchone()
         
         if user_data:
-            full_name, phone, is_deleted, is_verified = user_data
+            full_name, phone, is_deleted, is_verified, location = user_data
             user_status = "❌ Удален/заблокирован" if is_deleted else (
                 "🟡 Ожидает верификации" if not is_verified else "✅ Активен"
             )
         else:
-            full_name = phone = "не указано"
+            full_name = phone = location = "не указано"
             user_status = "❌ Не зарегистрирован"
         
         response = (
@@ -156,13 +156,14 @@ async def test_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Имя: {full_name}\n"
             f"Телефон: {phone if phone else 'не указан'}\n"
             f"ID: {user.id}\n"
-            f"Роль: {get_user_role(user.id)}\n"  # Новая строка с определением роли
+            f"Роль: {get_user_role(user.id)}\n"
             f"Логин: @{user.username if user.username else 'не установлен'}\n"
+            f"Локация: {location if location else 'не указана'}\n"  # ← ДОБАВЛЕНО ОТОБРАЖЕНИЕ ЛОКАЦИИ
             f"Статус: {user_status}\n\n"
             f"🤖 Бот:\n"
             f"ID: {bot_info.id}\n"
             f"Имя: @{bot_info.username}\n"
-            f"Версия: 2.3.9\n"
+            f"Версия: 2.4.0\n"
             f"Статус: активен"
         )
         

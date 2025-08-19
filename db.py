@@ -1,4 +1,6 @@
 # ##db.py
+from datetime import datetime
+import shutil
 import sqlite3
 import logging
 import pandas as pd
@@ -13,6 +15,20 @@ class Database:
         # Создаем путь к базе данных в папке data
         db_path = Path('data') / 'lunch_bot.db'
         db_path.parent.mkdir(parents=True, exist_ok=True)  # Создаем папку если ее нет
+        
+        # Создаем папку для бэкапов
+        backup_dir = Path('data/backups')
+        backup_dir.mkdir(exist_ok=True)
+        
+        # Делаем бэкап при каждом запуске (если БД существует)
+        if db_path.exists():
+            backup_name = f"lunch_bot_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+            shutil.copy2(db_path, backup_dir / backup_name)
+            logger.info(f"Создан бэкап базы данных: {backup_name}")
+        
+        self.conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        self.cursor = self.conn.cursor()
+        self._init_db()
         
         self.conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
         self.cursor = self.conn.cursor()
@@ -537,6 +553,13 @@ class Database:
 # Создаем глобальный экземпляр базы данных
 db = Database()
 
-# Инициализируем CONFIG после создания db
-from config import BotConfig
-CONFIG = BotConfig(db)  # Передаем экземпляр базы данных
+# Безопасная инициализация CONFIG с обработкой ошибок
+try:
+    from config import BotConfig
+    CONFIG = BotConfig(db)
+except ImportError as e:
+    logging.error(f"Ошибка импорта BotConfig: {e}")
+    CONFIG = None
+except Exception as e:
+    logging.error(f"Ошибка создания CONFIG: {e}")
+    CONFIG = None

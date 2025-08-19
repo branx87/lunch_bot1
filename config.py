@@ -62,31 +62,55 @@ class BotConfig:
         return [int(x) for x in ids_str.split(",") if x.strip()]
 
     def _load_db_data(self):
-        """Загружает данные из базы данных"""
+        """Загружает данные из базы данных с защитой от ошибок"""
         try:
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
+            # Если БД не инициализирована, используем значения по умолчанию
+            if not hasattr(self._db, 'conn'):
+                logger.warning("База данных не инициализирована, используем значения по умолчанию")
+                self._staff_names = set()
+                self._holidays = {}
+                self._menu = {}
+                return
+                
+            # Проверяем существование таблиц
+            self._db.cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [row[0] for row in self._db.cursor.fetchall()]
             
-            # Загрузка сотрудников
-            cursor.execute("SELECT full_name FROM users WHERE is_employee = 1")
-            self._staff_names = {row[0].lower() for row in cursor.fetchall()}
+            if 'users' in tables:
+                self._db.cursor.execute("SELECT full_name FROM users WHERE is_employee = 1")
+                self._staff_names = {row[0].lower() for row in self._db.cursor.fetchall()}
+            else:
+                self._staff_names = set()
+                logger.warning("Таблица users не существует")
             
-            # Загрузка праздников
-            cursor.execute("SELECT date, name FROM holidays")
-            self._holidays = {row[0]: row[1] for row in cursor.fetchall()}
+            if 'holidays' in tables:
+                self._db.cursor.execute("SELECT date, name FROM holidays")
+                self._holidays = {row[0]: row[1] for row in self._db.cursor.fetchall()}
+            else:
+                self._holidays = {}
+                logger.warning("Таблица holidays не существует")
             
-            # Загрузка меню
-            cursor.execute("SELECT day, first_course, main_course, salad FROM menu")
-            self._menu = {
-                row[0]: {"first": row[1], "main": row[2], "salad": row[3]}
-                for row in cursor.fetchall()
-            }
-            
-            conn.close()
-            
+            if 'menu' in tables:
+                self._db.cursor.execute("SELECT day, first_course, main_course, salad FROM menu")
+                self._menu = {
+                    row[0]: {"first": row[1], "main": row[2], "salad": row[3]}
+                    for row in self._db.cursor.fetchall()
+                }
+            else:
+                self._menu = {}
+                logger.warning("Таблица menu не существует")
+                
+        except sqlite3.Error as e:
+            logger.error(f"Ошибка SQLite при загрузке данных: {e}")
+            # Используем значения по умолчанию вместо прерывания работы
+            self._staff_names = set()
+            self._holidays = {}
+            self._menu = {}
         except Exception as e:
-            logger.error(f"Ошибка загрузки данных из БД: {e}")
-            raise
+            logger.error(f"Неожиданная ошибка при загрузке данных: {e}")
+            self._staff_names = set()
+            self._holidays = {}
+            self._menu = {}
 
     def _load_orders_status(self):
         """Загружает статус заказов из БД"""

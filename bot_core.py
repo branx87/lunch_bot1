@@ -5,7 +5,7 @@ from telegram.ext import ApplicationBuilder
 from middleware import AccessControlHandler
 import logging
 import asyncio
-from db import CONFIG
+from db import CONFIG, db  # Импортируем db напрямую
 from cron_jobs import CronManager
 
 logger = logging.getLogger(__name__)
@@ -13,19 +13,27 @@ logger = logging.getLogger(__name__)
 class LunchBot:
     def __init__(self, bitrix_sync=None):
         self.bitrix_sync = bitrix_sync
-        # Исправляем подключение к базе данных
-        self.conn = sqlite3.connect('data/lunch_bot.db', 
-                                   check_same_thread=False,
-                                   timeout=10,
-                                   isolation_level=None)
+        
+        # Используем глобальную базу данных из db.py
+        self.conn = db.conn
+        self.cursor = db.cursor
+        
         self.application = None
         self._running = False
         self.cron_manager = None
 
     async def run(self):
         try:
+            # Проверяем, что CONFIG загружен
+            if CONFIG is None:
+                logger.error("CONFIG не загружен! Проверьте настройки.")
+                return
+                
             self.application = ApplicationBuilder().token(CONFIG.token).build()
-            self.application.bot_data['admin_ids'] = CONFIG.admin_ids
+            
+            # Безопасное получение admin_ids
+            admin_ids = getattr(CONFIG, 'admin_ids', [])
+            self.application.bot_data['admin_ids'] = admin_ids
             
             # Инициализируем CronManager
             self.cron_manager = CronManager(self.application)

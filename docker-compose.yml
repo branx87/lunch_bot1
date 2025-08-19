@@ -4,11 +4,27 @@ services:
   bot:
     build: .
     container_name: lunch_bot
+    network_mode: host
+    privileged: true
     restart: unless-stopped
+    working_dir: /app
     volumes:
-      - ./data:/app/data  # Для сохранения БД при перезапусках
-      - .:/app            # Монтируем весь проект в контейнер
+      - /mnt/bot:/app
     environment:
-      - TZ=Europe/Moscow  # Ваша временная зона
-    command: >
-      watchmedo auto-restart --patterns="*.py" --recursive -- python main.py
+      - TZ=Europe/Moscow
+      # Явное удаление переменных прокси
+      - http_proxy
+      - https_proxy
+      - HTTP_PROXY
+      - HTTPS_PROXY
+      # no_proxy — исключения
+      - no_proxy=b24.epc.su,192.168.10.138,localhost,127.0.0.1
+      - NO_PROXY=b24.epc.su,192.168.10.138,localhost,127.0.0.1
+    extra_hosts:
+      - "b24.epc.su:192.168.10.138"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: python main.py

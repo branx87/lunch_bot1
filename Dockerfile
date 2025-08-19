@@ -1,28 +1,39 @@
-﻿# Используем официальный образ Python с поддержкой графики
-FROM python:3.9-slim
+FROM python:3.9
 
-# Устанавливаем системные зависимости
+# Установка root-прав
+USER root
+
+# Установка утилит и библиотеки tk для matplotlib
 RUN apt-get update && \
-    apt-get install -y \
-    libtk8.6 \
-    python3-tk \
-    libpng-dev \
+    apt-get install -y --no-install-recommends \
+        curl \
+        netcat-openbsd \
+        iputils-ping \
+        dnsutils \
+        net-tools \
+        ca-certificates \
+        tk-dev \
+        tcl-dev \
+        libtk8.6 \
+        libtcl8.6 \
     && rm -rf /var/lib/apt/lists/*
 
-# Рабочая директория
+# Настройка времени
+RUN ln -fs /usr/share/zoneinfo/Europe/Moscow /etc/localtime
+
+# Создаем пользователя
+RUN useradd -m botuser && mkdir /app && chown -R botuser:botuser /app
 WORKDIR /app
 
-# Копируем зависимости
-COPY requirements.txt .
+# Установка зависимостей
+COPY --chown=botuser:botuser requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Устанавливаем Python-зависимости
-RUN pip install --no-cache-dir -r requirements.txt
+# Копирование кода
+COPY --chown=botuser:botuser . .
 
-# Копируем проект
-COPY . .
+# Переключаемся на botuser
+USER botuser
 
-# Том для данных
-VOLUME /app/data
-
-# Команда запуска
 CMD ["python", "main.py"]
