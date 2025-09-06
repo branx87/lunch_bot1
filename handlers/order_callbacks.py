@@ -38,8 +38,12 @@ BITRIX_QUANTITY_MAP = {
     
 async def handle_order_callback(query, now, user, context):
     """Обработчик оформления заказа с проверкой доступности заказов"""
+    user_id = user.id
+    logger.info(f"USER {user_id}: начинает оформление заказа: {query.data}")
+    
     # Проверяем, разрешены ли заказы
     if not CONFIG.orders_enabled:
+        logger.warning(f"USER {user_id}: попытка заказа при отключенных заказах")
         await query.answer("❌ Приём заказов временно приостановлен", show_alert=True)
         await query.edit_message_reply_markup(reply_markup=None)  # Убираем кнопки
         return
@@ -49,6 +53,7 @@ async def handle_order_callback(query, now, user, context):
         _, day_offset_str, timestamp_str = query.data.split("_", 2)
         request_time = datetime.fromtimestamp(int(timestamp_str))
         if (now - request_time) > timedelta(minutes=30):  # Кнопка "просрочена"
+            logger.warning(f"USER {user_id}: просроченная кнопка заказа")
             await query.answer("⏳ Время действия кнопки истекло", show_alert=True)
             await query.edit_message_reply_markup(reply_markup=None)
             return
@@ -61,29 +66,35 @@ async def handle_order_callback(query, now, user, context):
     
     # Добавляем проверку доступа в начале функции
     if not await check_user_access(user.id, context.application):
+        logger.warning(f"USER {user_id}: доступ запрещен")
         await show_access_denied(update)
         return
 
-    logger.info(f"Получен callback: {query.data}")
+    logger.info(f"USER {user_id}: обрабатывает callback: {query.data}")
     try:
         # Парсим параметры из callback
         _, day_offset_str = query.data.split("_", 1)
         day_offset = int(day_offset_str)
         target_date = (now + timedelta(days=day_offset)).date()
         
+        logger.info(f"USER {user_id}: оформляет заказ на {target_date}")
+        
         # Ручная проверка 1: Заказы на выходные не принимаются
         if target_date.weekday() >= 5:  # 5-6 = суббота-воскресенье
+            logger.warning(f"USER {user_id}: попытка заказа на выходной {target_date}")
             await query.answer("ℹ️ Заказы на выходные не принимаются", show_alert=True)
             return
 
         # Ручная проверка 2: Предзаказы только на будущие даты
         if day_offset > 0 and target_date <= now.date():
+            logger.warning(f"USER {user_id}: попытка предзаказа на прошедшую дату {target_date}")
             await query.answer("❌ Предзаказ можно сделать только на будущие даты", show_alert=True)
             return
 
         # Ручная проверка 3: Обычные заказы только на сегодня и до 9:30
         if day_offset == 0:
             if now.time() >= time(9, 30):
+                logger.warning(f"USER {user_id}: попытка заказа на сегодня после 9:30")
                 await query.answer("ℹ️ Приём заказов на сегодня завершён в 9:30", show_alert=True)
                 return
 
@@ -91,6 +102,7 @@ async def handle_order_callback(query, now, user, context):
         db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user.id,))
         user_record = db.cursor.fetchone()
         if not user_record:
+            logger.error(f"USER {user_id}: не найден в базе данных")
             await query.answer("❌ Пользователь не найден", show_alert=True)
             return
         user_db_id = user_record[0]
@@ -105,6 +117,7 @@ async def handle_order_callback(query, now, user, context):
         existing_order = db.cursor.fetchone()
 
         if existing_order:
+            logger.info(f"USER {user_id}: уже имеет заказ на {target_date} - {existing_order[0]} порций")
             await query.answer(f"ℹ️ У вас уже заказано {existing_order[0]} порций", show_alert=True)
             return
 
@@ -137,8 +150,11 @@ async def handle_order_callback(query, now, user, context):
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ))
 
+        logger.info(f"USER {user_id}: успешно создал заказ на {target_date}, {initial_quantity} порция(й)")
+
         # Если время после 9:29 - немедленная синхронизация
         if now.time() >= time(9, 29):
+            logger.info(f"USER {user_id}: выполняется немедленная синхронизация с Битрикс")
             sync = BitrixSync()
             await sync._push_to_bitrix()  # Немедленная синхронизация
 
@@ -147,7 +163,7 @@ async def handle_order_callback(query, now, user, context):
         await query.answer("✅ Заказ успешно оформлен")
 
     except Exception as e:
-        logger.error(f"Ошибка при оформлении заказа: {e}", exc_info=True)
+        logger.error(f"USER {user_id}: ошибка при оформлении заказа: {e}", exc_info=True)
         await query.answer("⚠️ Произошла ошибка. Попробуйте позже", show_alert=True)
         
 async def handle_change_callback(query, now, user, context):
@@ -277,12 +293,16 @@ async def handle_cancel_callback(query, now, user, context):
     - Надежное обновление статуса в базе данных
     - Логирование действий и обработка ошибок интерфейса
     """
+    user_id = user.id
+    logger.info(f"USER {user_id}: вызывает отмену заказа: {query.data}")
+    
     if not await check_user_access(user.id, context.application):
+        logger.warning(f"USER {user_id}: доступ запрещен")
         await show_access_denied(update)
         return
     
     try:
-        logger.info(f"Получен callback: {query.data}")
+        logger.info(f"USER {user_id}: получен callback: {query.data}")
         
         # Проверяем наличие пользователя
         if not user:
@@ -316,18 +336,22 @@ async def handle_cancel_callback(query, now, user, context):
                 raise ValueError("Неизвестный формат даты")
                 
         except Exception as e:
-            logger.error(f"Ошибка парсинга callback: {query.data}. Ошибка: {str(e)}")
+            logger.error(f"USER {user_id}: ошибка парсинга callback: {query.data}. Ошибка: {str(e)}")
             await query.answer("⚠️ Ошибка в запросе")
             return
+
+        logger.info(f"USER {user_id}: пытается отменить заказ на {target_date}")
 
         # Получаем ID пользователя в БД
         user_db_id = await get_user_db_id(user.id)
         if not user_db_id:
+            logger.error(f"USER {user_id}: не найден в базе данных")
             await query.answer("❌ Пользователь не найден", show_alert=True)
             return
 
         # Проверяем можно ли отменять заказ
         if not can_modify_order(target_date):
+            logger.warning(f"USER {user_id}: отмена невозможна для {target_date} (время истекло)")
             await query.answer("ℹ️ Отмена невозможна после 9:20", show_alert=True)
             return
 
@@ -339,10 +363,12 @@ async def handle_cancel_callback(query, now, user, context):
         order_record = db.cursor.fetchone()
         
         if not order_record:
+            logger.warning(f"USER {user_id}: заказ на {target_date} не найден")
             await query.answer("❌ Заказ не найден", show_alert=True)
             return
             
         if order_record[0] == 1:  # is_from_bitrix = 1
+            logger.warning(f"USER {user_id}: попытка отменить заказ из Битрикс на {target_date}")
             await query.answer("❌ Заказ создан в Битрикс, отмена невозможна", show_alert=True)
             return
 
@@ -358,11 +384,12 @@ async def handle_cancel_callback(query, now, user, context):
             """, (now.strftime("%H:%M:%S"), user_db_id, target_date.isoformat()))
             
             if db.cursor.rowcount == 0:
+                logger.warning(f"USER {user_id}: заказ на {target_date} не найден для отмены")
                 await query.answer("❌ Заказ не найден", show_alert=True)
                 return
 
         # Логируем успешную отмену
-        logger.info(f"Пользователь {user.id} отменил заказ на {target_date}")
+        logger.info(f"USER {user_id}: успешно отменил заказ на {target_date}")
 
         # Разное поведение после отмены
         if is_from_orders:
@@ -378,7 +405,7 @@ async def handle_cancel_callback(query, now, user, context):
         await query.answer("✅ Заказ отменён")
 
     except Exception as e:
-        logger.error(f"Критическая ошибка в handle_cancel_callback: {e}", exc_info=True)
+        logger.error(f"USER {user_id}: критическая ошибка в handle_cancel_callback: {e}", exc_info=True)
         await query.answer("⚠️ Произошла ошибка. Попробуйте снова.", show_alert=True)
 
 def can_modify_order(target_date):

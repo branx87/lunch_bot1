@@ -4,8 +4,9 @@ from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKey
 from telegram.ext import CallbackContext
 from telegram.ext import ContextTypes
 import logging
-import matplotlib
-matplotlib.use('Agg')
+# import matplotlib
+# matplotlib.use('Agg')  # Используем non-GUI бэкенд
+# import matplotlib.pyplot as plt
 
 from db import CONFIG
 from constants import ADMIN_MESSAGE, MAIN_MENU, SELECT_MONTH_RANGE

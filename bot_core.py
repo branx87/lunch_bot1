@@ -58,7 +58,7 @@ class LunchBot:
             # Добавьте синхронизацию при старте
             from bitrix import BitrixSync
             bitrix_sync = BitrixSync()
-            asyncio.create_task(bitrix_sync.sync_employees())  # Запуск в фоне
+            # asyncio.create_task(bitrix_sync.sync_employees())  # Запуск в фоне
             asyncio.create_task(self._initial_sync(bitrix_sync))
             
             await self.application.updater.start_polling()
@@ -83,14 +83,31 @@ class LunchBot:
         try:
             logger.info("Запуск начальной синхронизации с Bitrix...")
             
-            # 1. Синхронизируем сотрудников
+            # 1. Синхронизируем сотрудников (ОДИН РАЗ)
             emp_stats = await sync.sync_employees()
             logger.info(f"Сотрудники синхронизированы: {emp_stats}")
             
-            # 2. Синхронизируем заказы за последние 30 дней
+            # 2. Синхронизируем заказы БЕЗ повторной синхронизации сотрудников
             end_date = datetime.now().strftime('%Y-%m-%d')
             start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-            order_stats = await sync.sync_orders(start_date, end_date)
+            
+            # Временное отключение sync_employees внутри sync_orders
+            original_sync_orders = sync.sync_orders
+            
+            async def sync_orders_without_employees(*args, **kwargs):
+                # Сохраняем оригинальный метод
+                original_sync_employees = sync.sync_employees
+                
+                # Подменяем на пустую функцию
+                sync.sync_employees = lambda: {'total': 0, 'updated': 0, 'added': 0, 'errors': 0}
+                
+                try:
+                    return await original_sync_orders(*args, **kwargs)
+                finally:
+                    # Восстанавливаем оригинальный метод
+                    sync.sync_employees = original_sync_employees
+            
+            order_stats = await sync_orders_without_employees(start_date, end_date)
             logger.info(f"Заказы синхронизированы: {order_stats}")
             
         except Exception as e:

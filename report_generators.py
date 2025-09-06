@@ -7,17 +7,17 @@ from telegram import Update
 from telegram.ext import ContextTypes
 import os
 import logging
-import matplotlib
 
 from db import CONFIG
-matplotlib.use('Agg')  # Устанавливаем бэкенд, не требующий GUI
-import matplotlib.pyplot as plt
-try:
-    from openpyxl.styles import Font
-except RuntimeError:  # Для окружений без GUI
-    class Font:
-        def __init__(self, bold=False):
-            self.bold = bold
+# import matplotlib
+# matplotlib.use('Agg')  # Используем non-GUI бэкенд
+# import matplotlib.pyplot as plt
+# try:
+#     from openpyxl.styles import Font
+# except RuntimeError:  # Для окружений без GUI
+#     class Font:
+#         def __init__(self, bold=False):
+#             self.bold = bold
 
 from admin import ensure_reports_dir
 from settings import SETTINGS_CONFIG
@@ -163,21 +163,21 @@ async def export_accounting_report(
         ws.append(headers)
         ws.auto_filter.ref = f"A{ws.max_row}:H{ws.max_row}"
 
-        # Запрос с заглушками для всех недостающих полей
+        # ОБНОВЛЕННЫЙ ЗАПРОС - подтягиваем данные из таблицы users
         query = '''
             SELECT 
-                'Основной офис' as department,
+                COALESCE(u.department, 'Не указано') as department,
                 u.full_name,
                 SUM(o.quantity) as portions,
-                'Сотрудник' as position,
-                'Не указана' as location,
-                'Не указана' as hire_date
+                COALESCE(u.position, 'Не указана') as position,
+                COALESCE(u.city, 'Не указана') as city,
+                COALESCE(DATE(u.created_at), 'Не указана') as hire_date
             FROM orders o
             JOIN users u ON o.user_id = u.id
             WHERE o.target_date BETWEEN ? AND ?
               AND o.is_cancelled = FALSE
             GROUP BY u.id
-            ORDER BY u.full_name
+            ORDER BY u.department, u.full_name
         '''
 
         # Инициализация переменных
@@ -198,12 +198,12 @@ async def export_accounting_report(
                 amount_with_ndfl = round(amount_without_ndfl / 0.87, 2)
                 
                 ws.append([
-                    row[0],  # department
-                    row[1],  # full_name
-                    portions,
-                    row[3],  # position
-                    row[4],  # location
-                    row[5],  # hire_date
+                    row[0],  # department - подразделение
+                    row[1],  # full_name - ФИО
+                    portions,  # количество обедов
+                    row[3],  # position - должность
+                    row[4],  # city - территория (город)
+                    row[5],  # hire_date - дата приема (created_at)
                     amount_without_ndfl,  # числовое значение
                     amount_with_ndfl      # числовое значение
                 ])
@@ -324,9 +324,10 @@ async def export_monthly_report(
         
         # Создаем лист "Все заказы" (первым в книге)
         ws_all = wb.create_sheet("Все заказы", 0)
-        all_headers = ["Дата обеда", "Сотрудник", "Локация", "Подпись", "Кол-во обедов", "Источник заказа"]
+        # Добавляем колонку "Номер заказа" после даты
+        all_headers = ["Дата обеда", "Номер заказа", "Сотрудник", "Локация", "Подпись", "Кол-во обедов", "Источник заказа"]
         ws_all.append(all_headers)
-        ws_all.auto_filter.ref = "A1:F1"
+        ws_all.auto_filter.ref = "A1:G1"  # Обновляем диапазон фильтра
         
         # Сначала получаем ВСЕ заказы для общего листа
         if is_daily:
@@ -380,12 +381,14 @@ async def export_monthly_report(
                 orders_by_date[date_key] = []
             orders_by_date[date_key].append(row)
         
-        # Заполняем лист "Все заказы"
+        # Заполняем лист "Все заказы" с номером заказа
         for date_key in sorted(orders_by_date.keys()):
             for row in orders_by_date[date_key]:
                 target_date = datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
                 source = "Битрикс" if row[4] else "Бот"
-                ws_all.append([target_date, row[1], row[2], "", row[3], source])
+                # Добавляем номер заказа (bitrix_order_id) или пустую строку если NULL
+                order_number = row[6] if row[6] is not None else ""
+                ws_all.append([target_date, order_number, row[1], row[2], "", row[3], source])
         
         # Создаем листы для каждой локации (объединяем "Офис" и "ПЦ 2")
         for location in CONFIG.locations:
@@ -394,9 +397,10 @@ async def export_monthly_report(
                 continue
                 
             ws = wb.create_sheet(location)
-            headers = ["Дата обеда", "Сотрудник", "Территориальный признак", "Подпись", "Кол-во обедов", "Источник заказа"]
+            # Добавляем колонку "Номер заказа" в заголовки для листов локаций
+            headers = ["Дата обеда", "Номер заказа", "Сотрудник", "Территориальный признак", "Подпись", "Кол-во обедов", "Источник заказа"]
             ws.append(headers)
-            ws.auto_filter.ref = "A1:F1"
+            ws.auto_filter.ref = "A1:G1"  # Обновляем диапазон фильтра
             
             # Для листа "Офис" включаем также заказы из "ПЦ 2"
             if location == "Офис":
@@ -412,12 +416,14 @@ async def export_monthly_report(
                     loc_orders_by_date[date_key] = []
                 loc_orders_by_date[date_key].append(row)
             
-            # Заполняем лист локации
+            # Заполняем лист локации с номером заказа
             for date_key in sorted(loc_orders_by_date.keys()):
                 for row in loc_orders_by_date[date_key]:
                     target_date = datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
                     source = "Битрикс" if row[4] else "Бот"
-                    ws.append([target_date, row[1], row[2], "", row[3], source])
+                    # Добавляем номер заказа (bitrix_order_id) или пустую строку если NULL
+                    order_number = row[6] if row[6] is not None else ""
+                    ws.append([target_date, order_number, row[1], row[2], "", row[3], source])
         
         # Лист "Итоги"
         ws_summary = wb.create_sheet("Итоги")

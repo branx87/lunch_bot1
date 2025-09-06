@@ -6,11 +6,13 @@ from dotenv import load_dotenv
 import pytz
 import sqlite3
 
-# Настройка путей
+# Настройка путей - ОСТАВЛЯЕМ относительные
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / 'data'
 CONFIGS_DIR = BASE_DIR / 'data' / 'configs'
-DB_PATH = DATA_DIR / 'lunch_bot.db'
+DB_PATH = DATA_DIR / 'db' / 'lunch_bot.db'
+LOGS_DIR = DATA_DIR / 'logs'
+REPORTS_DIR = DATA_DIR / 'reports'
 
 # Создаем папки если их нет
 DATA_DIR.mkdir(parents=True, exist_ok=True)

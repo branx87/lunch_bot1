@@ -22,10 +22,7 @@ def map_quantity(quantity_id):
         '822': 2,
         '823': 3,
         '824': 4,
-        '825': 5,
-        '1743599470': 1,
-        '1743599471': 2,
-        '1743599472': 3
+        '825': 5
     }
     return quantity_map.get(str(quantity_id), 1)
 
@@ -64,7 +61,7 @@ async def export_monthly_orders(year=None, month=None):
             'entityTypeId': 1222,
             'select': [
                 'id', 
-                'ufCrm45_1743599470',
+                'ufCrm45_1751956286',
                 'ufCrm45ObedyCount',
                 'ufCrm45ObedyFrom',
                 'ufCrm45_1744188327370',
@@ -99,7 +96,7 @@ async def export_monthly_orders(year=None, month=None):
                 
             await bitrix_sync._process_single_order(parsed_order, stats)
             
-            employee_bitrix_id = str(order.get('ufCrm45_1743599470', ''))
+            employee_bitrix_id = str(order.get('ufCrm45_1751956286', ''))
             employee_name = await get_employee_name(employee_bitrix_id)
             
             quantity = map_quantity(order.get('ufCrm45ObedyCount'))
@@ -107,6 +104,7 @@ async def export_monthly_orders(year=None, month=None):
             created_time = order.get('createdTime', '')
             created_date = created_time.split('T')[0] if created_time else ''
 
+            # Обновить processed_data в export_monthly_orders
             processed_data.append({
                 'ID_заказа_Bitrix': order.get('id'),
                 'ID_сотрудника': employee_bitrix_id,
@@ -135,17 +133,55 @@ async def export_monthly_orders(year=None, month=None):
         logger.error(f"Ошибка при экспорте: {str(e)}", exc_info=True)
         raise
 
-async def get_employee_name(bitrix_id: str) -> str:
-    """Получаем имя сотрудника по его Bitrix ID"""
+# Временное решение для старых заказов
+# В bitrix_export.py обновите функцию get_employee_name
+async def get_employee_name(search_value: str, search_by: str = 'crm_employee_id') -> str:
+    """Получаем имя сотрудника с приоритетом для CRM ID"""
     try:
+        # Сначала ищем по CRM ID
+        if search_by == 'crm_employee_id':
+            result = db.execute(
+                "SELECT full_name, position, department FROM users WHERE crm_employee_id = ? LIMIT 1",
+                (search_value,)
+            )
+            if result:
+                full_name = result[0][0]
+                position = result[0][1] if len(result[0]) > 1 else None
+                department = result[0][2] if len(result[0]) > 2 else None
+                
+                info_parts = []
+                if position:
+                    info_parts.append(position)
+                if department:
+                    info_parts.append(department)
+                
+                info_str = f" ({', '.join(info_parts)})" if info_parts else ""
+                return f"{full_name}{info_str}"
+        
+        # Если не нашли по CRM ID, ищем по Bitrix ID
         result = db.execute(
-            "SELECT full_name FROM users WHERE bitrix_id = ? LIMIT 1",
-            (bitrix_id,)
+            "SELECT full_name, position, department FROM users WHERE bitrix_id = ? LIMIT 1",
+            (search_value,)
         )
-        return result[0][0] if result else f"Неизвестный сотрудник (ID: {bitrix_id})"
+        
+        if result:
+            full_name = result[0][0]
+            position = result[0][1] if len(result[0]) > 1 else None
+            department = result[0][2] if len(result[0]) > 2 else None
+            
+            info_parts = []
+            if position:
+                info_parts.append(position)
+            if department:
+                info_parts.append(department)
+            
+            info_str = f" ({', '.join(info_parts)})" if info_parts else ""
+            return f"{full_name}{info_str} (по Bitrix ID)"
+        else:
+            return f"Неизвестный сотрудник (ID: {search_value})"
     except Exception as e:
         logger.error(f"Ошибка получения имени сотрудника: {e}")
-        return f"Неизвестный сотрудник (ID: {bitrix_id})"
+        return f"Неизвестный сотрудник (ID: {search_value})"
 
 if __name__ == '__main__':
     asyncio.run(export_monthly_orders(year=2025, month=7))

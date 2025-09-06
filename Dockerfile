@@ -1,39 +1,20 @@
-FROM python:3.9
+﻿FROM python:3.9-slim
 
-# Установка root-прав
-USER root
-
-# Установка утилит и библиотеки tk для matplotlib
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        curl \
-        netcat-openbsd \
-        iputils-ping \
-        dnsutils \
-        net-tools \
-        ca-certificates \
-        tk-dev \
-        tcl-dev \
-        libtk8.6 \
-        libtcl8.6 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Настройка времени
-RUN ln -fs /usr/share/zoneinfo/Europe/Moscow /etc/localtime
-
-# Создаем пользователя
-RUN useradd -m botuser && mkdir /app && chown -R botuser:botuser /app
 WORKDIR /app
 
-# Установка зависимостей
-COPY --chown=botuser:botuser requirements.txt .
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# УСТАНАВЛИВАЕМ tkinter вместо блокировки
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        python3-tk \
+        tk-dev \
+        && \
+    rm -rf /var/lib/apt/lists/*
 
-# Копирование кода
-COPY --chown=botuser:botuser . .
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Переключаемся на botuser
-USER botuser
+COPY . .
+
+RUN mkdir -p /app/data/configs /app/data/logs /app/data/reports /app/data/db
 
 CMD ["python", "main.py"]

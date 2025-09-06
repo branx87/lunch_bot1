@@ -7,7 +7,7 @@ pytz==2023.3
 python-dotenv==1.1.0
 httpx==0.24.1
 filelock==3.16.1  # Для блокировок при работе с файлами
-matplotlib==3.7.1; python_version < '3.12'  # Версия без жестких зависимостей
+# matplotlib==3.7.1; python_version < '3.12'  # Версия без жестких зависимостей
 fast_bitrix24
 apscheduler
 
@@ -18,4 +18,5 @@ colorlog==6.7.0
 watchdog==3.0.0
 
 # Ensure pip version (optional)
-pip>=25.0.1
+pip>=25.0.1requests>=2.25.0
+requests>=2.25.0

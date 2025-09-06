@@ -272,17 +272,19 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         
+        user_id = query.from_user.id
+        logger.info(f"USER {user_id}: вызвал действие {query.data}")
+        
         # Добавляем глобальную проверку
         if not CONFIG.orders_enabled and query.data.startswith(('order_', 'change_', 'confirm_')):
+            logger.warning(f"USER {user_id}: попытка заказа при отключенных заказах")
             await query.answer("❌ Приём заказов временно приостановлен", show_alert=True)
             return
 
-        logger.info(f"Получен callback: {query.data} от пользователя {query.from_user.id}")
-
         if query.data.startswith("cancel_"):
-            # Извлекаем дату из callback_data
             try:
                 _, date_part = query.data.split("_", 1)
+                user_id = query.from_user.id
 
                 # Определяем дату
                 now = datetime.now(CONFIG.timezone)
@@ -294,15 +296,19 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     raise ValueError(f"Неверный формат даты: {date_part}")
 
+                logger.info(f"USER {user_id}: пытается отменить заказ на {target_date}")
+
                 # Проверяем возможность отмены
                 if not can_modify_order(target_date):
+                    logger.warning(f"USER {user_id}: отмена невозможна для {target_date} (время истекло)")
                     await query.answer("ℹ️ Отмена невозможна после 9:30", show_alert=True)
                     return
 
                 # Получаем ID пользователя из БД
-                db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (query.from_user.id,))
+                db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user_id,))
                 user_record = db.cursor.fetchone()
                 if not user_record:
+                    logger.error(f"USER {user_id}: не найден в базе данных")
                     await query.answer("❌ Пользователь не найден", show_alert=True)
                     return
 
@@ -320,13 +326,15 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     """, (now.strftime("%H:%M:%S"), user_db_id, target_date.isoformat()))
 
                     if db.cursor.rowcount == 0:
+                        logger.warning(f"USER {user_id}: заказ на {target_date} не найден для отмены")
                         await query.answer("❌ Заказ не найден", show_alert=True)
                         return
+
+                logger.info(f"USER {user_id}: успешно отменил заказ на {target_date}")
 
                 # Обновляем интерфейс
                 days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
                 if "Меню на" in query.message.text:
-                    # Отмена из меню дня
                     day_name = days_ru[target_date.weekday()]
                     menu = CONFIG.menu.get(day_name)
                     await query.edit_message_text(
@@ -337,32 +345,28 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode="Markdown"
                     )
                 else:
-                    # Отмена из списка заказов
-                    await refresh_orders_view(query, context, query.from_user.id, now, days_ru)
+                    await refresh_orders_view(query, context, user_id, now, days_ru)
 
                 await query.answer("✅ Заказ отменён")
 
             except Exception as e:
-                logger.error(f"Ошибка при отмене заказа: {e}")
+                logger.error(f"USER {user_id}: ошибка при отмене заказа: {e}")
                 await query.answer("⚠️ Ошибка отмены", show_alert=True)
 
         elif query.data.startswith("change_"):
-            # Логика изменения количества порций (заглушка)
             await query.answer("🔄 Изменение количества порций временно недоступно")
             return
 
         elif query.data.startswith("confirm_"):
-            # Логика подтверждения заказа (заглушка)
             await query.answer("✅ Заказ подтверждён")
             return
 
         else:
-            # Неизвестное действие
-            logger.warning(f"Неизвестный callback: {query.data}")
+            logger.warning(f"USER {user_id}: неизвестный callback: {query.data}")
             await query.answer("⚠️ Неизвестное действие", show_alert=True)
 
     except Exception as e:
-        logger.error(f"Критическая ошибка в order_action: {e}", exc_info=True)
+        logger.error(f"USER {user_id}: критическая ошибка в order_action: {e}", exc_info=True)
         await query.answer("⚠️ Серверная ошибка", show_alert=True)
 
 async def monthly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):

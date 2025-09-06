@@ -20,12 +20,16 @@ class BitrixSync:
         try:
             load_dotenv('data/configs/.env')
             self.webhook = os.getenv('BITRIX_WEBHOOK')
-            if not self.webhook:
-                raise ValueError("BITRIX_WEBHOOK не найден в .env")
+            self.rest_webhook = os.getenv('BITRIX_REST_WEBHOOK')
+            if not self.webhook or not self.rest_webhook:
+                raise ValueError("BITRIX_WEBHOOK или BITRIX_REST_WEBHOOK не найден в .env")
+            
+            # ID пользователей для определения источника заказа
+            self.BOT_USER_IDS = ['1']  # Бот
+            self.BITRIX_USER_IDS = ['24']   # Обычные пользователи Bitrix
             
             self._quantity_map = {
-                '821': 1, '822': 2, '823': 3, '824': 4, '825': 5,
-                '1743599470': 1, '1743599471': 2, '1743599472': 3
+                '821': 1, '822': 2, '823': 3, '824': 4, '825': 5
             }
             
             self._location_map = {
@@ -39,6 +43,7 @@ class BitrixSync:
             
             logger.info("Подключение к Bitrix24 инициализировано")
             self.bx = Bitrix(self.webhook)
+            # Для REST API будем использовать обычные requests
             self.scheduler = AsyncIOScheduler()
             self.is_running = False
             
@@ -63,11 +68,12 @@ class BitrixSync:
         """Настройка расписания синхронизации с улучшенной обработкой ошибок"""
         # Синхронизация из Bitrix каждые 5 минут (6:00-10:00)
         self.scheduler.add_job(
-            self.sync_last_two_months_orders,
+            self.sync_recent_orders,
             'cron',
             minute='*/5',
             hour='6-10',
-            day_of_week='mon-fri'
+            day_of_week='mon-fri',
+            kwargs={'hours': 24}  # Синхронизируем только последние 24 часа
         )
         
         # Основная синхронизация с 9:25:00 до 9:29:30 (каждые 30 сек)
@@ -160,7 +166,8 @@ class BitrixSync:
         
         logger.info(f"Синхронизация заказов с {start_date.date()} по {end_date.date()}")
         
-        await self.sync_employees()
+        # ЗАКОММЕНТИРУЙТЕ ЭТУ СТРОКУ ↓
+        # await self.sync_employees()  # УБРАТЬ ДУБЛИРОВАНИЕ
         
         return await self.sync_orders(
             start_date.strftime('%Y-%m-%d'),
@@ -168,28 +175,63 @@ class BitrixSync:
         )
 
     async def sync_employees(self) -> Dict[str, int]:
-        """Синхронизация сотрудников"""
+        """Синхронизация всех сотрудников из Bitrix REST API"""
         stats = {
             'total': 0, 'updated': 0, 'added': 0,
             'errors': 0, 'no_match': 0, 'merged': 0
         }
         
         try:
-            crm_employees = await self._get_crm_employees()
-            if not crm_employees:
-                logger.error("Не удалось получить сотрудников из Bitrix")
+            # 1. Получаем всех сотрудников из REST API
+            rest_employees = await self._get_rest_employees()
+            if not rest_employees:
+                logger.error("Не удалось получить сотрудников из Bitrix REST API")
                 return stats
 
-            bitrix_employees = self._create_employee_search_structure(crm_employees)
-            
-            local_employees = db.get_employees(active_only=False)
-            stats['total'] = len(local_employees)
-            
-            for employee in local_employees:
-                await self._sync_single_employee(employee, bitrix_employees, stats)
+            # Логируем пример данных с отчеством
+            if rest_employees:
+                sample_emp = rest_employees[0]
+                logger.info(f"Пример данных сотрудника: {sample_emp['ФИО']} (Отчество: {sample_emp.get('Отчество', 'нет')})")
 
-            await self._add_new_employees(bitrix_employees, stats)
+            # 2. Получаем старых сотрудников из CRM для сопоставления
+            crm_employees = await self._get_crm_employees()
+            crm_employee_map = {self._normalize_name(emp['VALUE']): emp['ID'] for emp in crm_employees}
+            
+            # 3. Создаем mapping между REST сотрудниками и CRM ID по имени
+            rest_to_crm_mapping = {}
+            for rest_emp in rest_employees:
+                rest_name_normalized = self._normalize_name(rest_emp['ФИО'])
+                crm_id = crm_employee_map.get(rest_name_normalized)
+                if crm_id:
+                    rest_to_crm_mapping[rest_emp['ID']] = crm_id
 
+            # 4. Получаем всех существующих сотрудников из базы
+            existing_employees = db.get_employees(active_only=False)
+            existing_bitrix_ids = {str(e.get('bitrix_id')) for e in existing_employees if e.get('bitrix_id')}
+            existing_names = {self._normalize_name(e['full_name']) for e in existing_employees}
+            
+            # 5. Обновляем существующих и добавляем новых сотрудников
+            for rest_emp in rest_employees:
+                bitrix_id = rest_emp['ID']
+                rest_name = rest_emp['ФИО']
+                rest_name_normalized = self._normalize_name(rest_name)
+                
+                # Ищем существующего сотрудника по bitrix_id
+                existing_by_id = next((e for e in existing_employees if str(e.get('bitrix_id')) == bitrix_id), None)
+                
+                # Ищем существующего сотрудника по имени
+                existing_by_name = next((e for e in existing_employees if self._normalize_name(e['full_name']) == rest_name_normalized), None)
+                
+                if existing_by_id:
+                    # Обновляем существующего сотрудника по bitrix_id
+                    await self._update_existing_employee(existing_by_id, rest_emp, rest_to_crm_mapping, stats)
+                elif existing_by_name:
+                    # Обновляем существующего сотрудника по имени
+                    await self._update_existing_employee(existing_by_name, rest_emp, rest_to_crm_mapping, stats)
+                else:
+                    # Добавляем совершенно нового сотрудника
+                    await self._add_new_employee(rest_emp, rest_to_crm_mapping, stats)
+            
             logger.info(f"Синхронизация сотрудников завершена. Статистика: {stats}")
             return stats
 
@@ -197,15 +239,11 @@ class BitrixSync:
             logger.error(f"Ошибка синхронизации сотрудников: {e}", exc_info=True)
             return stats
 
-    async def sync_orders(self, start_date: str, end_date: str) -> Dict[str, int]:
+    async def sync_orders(self, start_date: str, end_date: str, incremental: bool = True) -> Dict[str, int]:
         """Синхронизирует заказы из Bitrix в локальную базу"""
         stats = {
-            'processed': 0,
-            'added': 0,
-            'updated': 0,
-            'exists': 0,
-            'skipped': 0,
-            'errors': 0
+            'processed': 0, 'added': 0, 'updated': 0,
+            'exists': 0, 'skipped': 0, 'errors': 0
         }
         
         try:
@@ -223,14 +261,17 @@ class BitrixSync:
                     stats['errors'] += 1
                     continue
                     
+                # 🔥 ИНКРЕМЕНТАЛЬНАЯ ПРОВЕРКА
+                if incremental and not self._need_order_update(parsed_order):
+                    stats['skipped'] += 1
+                    continue
+                    
                 await self._process_single_order(parsed_order, stats)
                 
             logger.info(
-                f"Синхронизация заказов завершена. "
-                f"Обработано: {stats['processed']}, "
-                f"Добавлено: {stats['added']}, "
-                f"Обновлено: {stats['updated']}, "
-                f"Ошибок: {stats['errors']}"
+                f"Синхронизация завершена. Обработано: {stats['processed']}, "
+                f"Добавлено: {stats['added']}, Обновлено: {stats['updated']}, "
+                f"Пропущено: {stats['skipped']}, Ошибок: {stats['errors']}"
             )
             return stats
             
@@ -241,8 +282,18 @@ class BitrixSync:
     async def _get_bitrix_orders(self, start_date: str, end_date: str) -> List[Dict]:
         params = {
             'entityTypeId': 1222,
-            'select': ['id', 'ufCrm45_1743599470', 'ufCrm45ObedyCount', 
-                    'ufCrm45ObedyFrom', 'ufCrm45_1744188327370', 'createdTime'],
+            'select': [
+                'id', 
+                'ufCrm45_1751956286',  # 🔥 Новое поле (bitrix_id)
+                'ufCrm45_1743599470',  # 🔥 Старое поле (crm_employee_id)
+                'ufCrm45ObedyCount', 
+                'ufCrm45ObedyFrom', 
+                'ufCrm45_1744188327370', 
+                'createdTime', 
+                'createdBy', 
+                'updatedBy', 
+                'assignedById'
+            ],
             'filter': {
                 '>=createdTime': f'{start_date}T00:00:00+03:00',
                 '<=createdTime': f'{end_date}T23:59:59+03:00'
@@ -264,13 +315,34 @@ class BitrixSync:
             return []
 
     def _parse_bitrix_order(self, order: Dict) -> Optional[Dict]:
-        """Парсит данные заказа из Bitrix"""
+        """Парсит данные заказа из Bitrix с приоритетом для CRM employee_id"""
         try:
-            employee_id = self._clean_string(str(order.get('ufCrm45_1743599470', '')))
-            if not employee_id:
-                logger.warning(f"Заказ {order.get('id')} без ID сотрудника")
+            bitrix_order_id = str(order.get('id', ''))
+            
+            # 🔥 ПРИОРИТЕТ: сначала проверяем старое поле (CRM employee_id)
+            employee_crm_id = order.get('ufCrm45_1743599470')    # Старое поле - ПРИОРИТЕТ
+            employee_bitrix_id = order.get('ufCrm45_1751956286')  # Новое поле - резерв
+            
+            # Определяем какое ID использовать (приоритет для CRM ID)
+            search_field = None
+            search_value = None
+            
+            if employee_crm_id is not None:
+                search_field = 'crm_employee_id'
+                search_value = str(employee_crm_id)
+                logger.debug(f"Используем CRM ID: {search_value} для заказа {bitrix_order_id}")
+            elif employee_bitrix_id is not None:
+                search_field = 'bitrix_id'
+                search_value = str(employee_bitrix_id)
+                logger.debug(f"Используем Bitrix ID: {search_value} для заказа {bitrix_order_id} (CRM ID отсутствует)")
+            else:
+                logger.warning(f"Заказ {bitrix_order_id} без ID сотрудника (оба поля пустые)")
                 return None
                 
+            # Определяем источник заказа
+            is_from_bitrix = self._determine_order_source(order)
+            
+            # Остальная логика остается той же
             status_value = order.get('ufCrm45_1744188327370')
             is_cancelled = False
             
@@ -294,92 +366,99 @@ class BitrixSync:
             date = created_time.split('T')[0] if created_time else datetime.now().strftime('%Y-%m-%d')
                 
             return {
-                'bitrix_id': self._clean_string(str(order.get('id'))),
-                'employee_id': employee_id,
+                'bitrix_order_id': bitrix_order_id,
+                'search_field': search_field,        # Поле для поиска
+                'search_value': search_value,        # Значение для поиска
                 'quantity': quantity,
                 'bitrix_quantity': bitrix_quantity,
                 'location': location,
                 'date': date,
                 'created_time': created_time,
                 'is_cancelled': is_cancelled,
-                'is_from_bitrix': True
+                'is_from_bitrix': is_from_bitrix
             }
         except Exception as e:
             logger.error(f"Ошибка парсинга заказа {order.get('id', 'unknown')}: {e}")
             return None
-
+    
     async def _process_single_order(self, order: Dict, stats: Dict):
-        """Обрабатывает один заказ с полной защитой от неопределённых переменных"""
+        """Обрабатывает один заказ с приоритетом для CRM employee_id"""
         try:
-            # 1. Валидация входящего заказа
-            if not order or not isinstance(order, dict):
-                logger.error("Некорректный формат заказа")
-                stats['errors'] += 1
-                return
-
-            # 2. Извлечение обязательных полей с защитой
-            bitrix_id = str(order.get('bitrix_id', ''))
-            employee_id = str(order.get('employee_id', ''))
-            target_date = order.get('date') or order.get('target_date')
-            location = order.get('location', 'Офис')
-
-            if not bitrix_id:
-                logger.debug("Пропуск заказа без Bitrix ID")
+            search_field = order.get('search_field')
+            search_value = order.get('search_value')
+            bitrix_order_id = order.get('bitrix_order_id')
+            
+            if not search_field or not search_value:
+                logger.warning(f"Заказ {bitrix_order_id} без данных сотрудника")
                 stats['skipped'] += 1
                 return
 
-            # 3. Получаем user_id
-            user_id = await self._get_local_user_id(employee_id) if employee_id else None
+            # 🔥 Правильный поиск в зависимости от типа ID
+            user_id = None
+            if search_field == 'crm_employee_id':
+                user_id = await self._get_local_user_id_by_crm_id(search_value)
+                if not user_id:
+                    logger.debug(f"Пользователь с CRM ID {search_value} не найден, пробуем Bitrix ID...")
+                    # Если не нашли по CRM ID, пробуем найти сотрудника и получить его Bitrix ID
+                    employee = await self._find_employee_by_crm_id(search_value)
+                    if employee and employee.get('bitrix_id'):
+                        user_id = await self._get_local_user_id(employee['bitrix_id'])
+                        
+            elif search_field == 'bitrix_id':
+                user_id = await self._get_local_user_id(search_value)
+                
             if not user_id:
-                logger.warning(f"Сотрудник Bitrix ID {employee_id} не найден")
+                logger.warning(f"Сотрудник {search_field}={search_value} не найден для заказа {bitrix_order_id}")
                 stats['skipped'] += 1
                 return
 
-            # 4. Проверяем, существует ли уже такой заказ (по user_id И target_date)
-            existing_order = db.execute(
-                """SELECT id FROM orders 
-                WHERE user_id = ? 
-                AND target_date = ? 
-                LIMIT 1""",
-                (user_id, target_date)
-            )
+            # 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: сначала проверяем существование заказа по bitrix_order_id
+            existing_order = None
+            if bitrix_order_id:
+                existing_order = self._find_local_order(bitrix_order_id)
+            
+            # Если заказ не найден по bitrix_order_id, проверяем по user_id и дате
+            if not existing_order:
+                existing_order = self._find_local_order_by_user_and_date(user_id, order['date'])
+            
+            order_id = None
+            success = False
             
             if existing_order:
-                # Обновляем существующий заказ
-                if self._update_local_order(existing_order[0][0], order):
+                order_id = existing_order['id']
+                logger.debug(f"Обновление существующего заказа {bitrix_order_id or order_id}")
+                success = self._update_local_order(order_id, order)
+                if success:
                     stats['updated'] += 1
+                    logger.info(f"✅ Обновлен заказ {bitrix_order_id or order_id} (источник: {'Bitrix' if order.get('is_from_bitrix') else 'Бот'})")
                 else:
                     stats['errors'] += 1
-                return
-
-            # 5. Обновление локации - ТОЛЬКО для НЕ верифицированных пользователей
-            try:
-                # Проверяем, верифицирован ли пользователь
-                is_verified = db.execute(
-                    "SELECT is_verified FROM users WHERE id = ? LIMIT 1",
-                    (user_id,)
-                )
+                    logger.error(f"❌ Ошибка обновления заказа {bitrix_order_id or order_id}")
+            else:
+                success = self._add_local_order(user_id, order)
                 
-                if not is_verified or not is_verified[0][0]:  # Если не верифицирован
-                    await self._update_user_location(user_id, location)
+                if success:
+                    stats['added'] += 1
+                    logger.info(f"✅ Добавлен заказ {bitrix_order_id} (источник: {'Bitrix' if order.get('is_from_bitrix') else 'Бот'})")
                 else:
-                    logger.debug(f"Пользователь {user_id} верифицирован - локация не обновляется из Bitrix")
-            except Exception as e:
-                logger.warning(f"Ошибка проверки верификации/обновления локации: {str(e)}")
+                    stats['errors'] += 1
+                    logger.error(f"❌ Ошибка добавления заказа {bitrix_order_id}")
 
-            # 6. Создание нового заказа
-            if self._add_local_order(user_id, {**order, 'target_date': target_date}):
-                logger.info(f"Добавлен новый заказ Bitrix ID: {bitrix_id}")
-                stats['added'] += 1
+            # Обновляем локацию пользователя
+            if order.get('location') and order['location'] != 'Неизвестно':
+                await self._update_user_location(user_id, order['location'])
+
+            # 🔥 Обновляем метку времени синхронизации
+            if success and order_id:
+                db.execute(
+                    "UPDATE orders SET last_synced_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (order_id,)
+                )
 
             stats['processed'] += 1
 
         except Exception as e:
-            error_details = {
-                'bitrix_id': bitrix_id,
-                'error': str(e)
-            }
-            logger.error(f"Ошибка обработки заказа: {error_details}")
+            logger.error(f"❌ Критическая ошибка обработки заказа {order.get('bitrix_order_id', 'unknown')}: {str(e)}")
             stats['errors'] += 1
 
     async def _get_local_user_id(self, bitrix_id: str) -> Optional[int]:
@@ -443,56 +522,62 @@ class BitrixSync:
                     quantity = ?,
                     bitrix_quantity_id = ?,
                     is_cancelled = ?,
+                    is_from_bitrix = ?,
                     updated_at = datetime('now')
                 WHERE id = ?
             """, (
                 order['quantity'],
                 bitrix_quantity,
                 order['is_cancelled'],
+                order.get('is_from_bitrix', True),
                 order_id
             ))
             db.conn.commit()
-            return db.cursor.rowcount > 0
+            
+            success = db.cursor.rowcount > 0
+            if success:
+                logger.debug(f"Заказ {order_id} успешно обновлен")
+            else:
+                logger.warning(f"Заказ {order_id} не был обновлен (rowcount: {db.cursor.rowcount})")
+                
+            return success
         except Exception as e:
-            logger.error(f"Ошибка обновления заказа: {e}")
+            logger.error(f"Ошибка обновления заказа {order_id}: {e}")
             return False
 
     def _add_local_order(self, user_id: int, order: Dict) -> bool:
-        """Добавляет новый заказ с проверкой на дубликаты и улучшенной обработкой ошибок"""
+        """Добавляет новый заказ с проверкой на дубликаты"""
         try:
-            # 1. Подготовка данных
-            bitrix_id = self._clean_string(str(order.get('bitrix_id', '')))
-            if not bitrix_id:
-                logger.error("Не указан bitrix_id для заказа")
-                return False
-
-            # 2. Проверка на существующий заказ
+            bitrix_order_id = str(order.get('bitrix_order_id', ''))
+            target_date = str(order.get('date', datetime.now().strftime('%Y-%m-%d')))
+            
+            # 🔥 ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: убедимся что заказа для этого пользователя на эту дату нет
             existing_order = db.execute(
-                "SELECT 1 FROM orders WHERE bitrix_order_id = ? LIMIT 1",
-                (bitrix_id,)
+                "SELECT 1 FROM orders WHERE user_id = ? AND target_date = ? LIMIT 1",
+                (user_id, target_date)
             )
             if existing_order:
-                logger.warning(f"Заказ с Bitrix ID {bitrix_id} уже существует")
+                logger.warning(f"⚠️ Заказ для пользователя {user_id} на дату {target_date} уже существует! Пропускаем дубликат.")
+                return False  # Не добавляем дубликат
+
+            if not bitrix_order_id:
+                logger.error("Не указан bitrix_order_id для заказа")
                 return False
 
-            # 3. Подготовка остальных полей
+            # Подготовка остальных полей из order
             quantity = int(order.get('quantity', 1))
-            bitrix_quantity = self._clean_string(str(order.get('bitrix_quantity', '821')))
+            bitrix_quantity = str(order.get('bitrix_quantity', '821'))
             is_cancelled = bool(order.get('is_cancelled', False))
+            target_date = str(order.get('date', datetime.now().strftime('%Y-%m-%d')))
             
-            # 4. Определение даты и времени
-            target_date = self._clean_string(
-                order.get('date', datetime.now().strftime('%Y-%m-%d'))
-            )
-            
-            created_time = self._clean_string(order.get('created_time', ''))
+            created_time = str(order.get('created_time', ''))
             order_time = (
                 created_time.split('T')[1][:8] 
                 if 'T' in created_time 
                 else datetime.now().strftime('%H:%M')
             )
 
-            # 5. Вставка в базу данных
+            # Вставка в базу данных
             db.cursor.execute("""
                 INSERT INTO orders (
                     user_id, target_date, order_time, 
@@ -507,22 +592,20 @@ class BitrixSync:
                 quantity,
                 bitrix_quantity,
                 is_cancelled,
-                True,  # is_from_bitrix
-                bitrix_id
+                order.get('is_from_bitrix', True),
+                bitrix_order_id
             ))
             
             db.conn.commit()
             
-            # 6. Проверка успешности вставки
             if db.cursor.rowcount == 1:
-                logger.info(f"Успешно добавлен заказ Bitrix ID: {bitrix_id}")
+                logger.info(f"✅ Успешно добавлен заказ Bitrix ID: {bitrix_order_id}")
                 return True
                 
-            logger.error("Не удалось добавить заказ (rowcount = 0)")
             return False
             
         except Exception as e:
-            logger.error(f"Критическая ошибка добавления заказа: {e}", exc_info=True)
+            logger.error(f"❌ Ошибка добавления заказа: {e}", exc_info=True)
             db.conn.rollback()
             return False
     
@@ -585,56 +668,75 @@ class BitrixSync:
         
         return bitrix_employees
 
-    async def _sync_single_employee(self, employee: Dict, bitrix_employees: Dict, stats: Dict):
+    async def _sync_single_employee(self, employee: Dict, rest_employees: List[Dict], rest_to_crm_mapping: Dict, stats: Dict):
         """Синхронизирует одного сотрудника"""
         try:
             local_name = self._normalize_name(employee['full_name'])
-            bitrix_emp = self._find_bitrix_employee(local_name, bitrix_employees)
-
-            if bitrix_emp:
-                if employee.get('bitrix_id') != bitrix_emp['id']:
-                    success = db.update_user_bitrix_data(
+            
+            # Ищем сотрудника в REST данных по имени
+            rest_emp = None
+            for emp in rest_employees:
+                if self._normalize_name(emp['ФИО']) == local_name:
+                    rest_emp = emp
+                    break
+            
+            if rest_emp:
+                update_needed = False
+                update_data = {}
+                
+                # Получаем текущие значения из базы данных
+                current_bitrix_id = employee.get('bitrix_id')
+                current_position = employee.get('position', '')
+                current_department = employee.get('department', '')
+                current_is_deleted = employee.get('is_deleted', False)
+                
+                # Сравниваем с данными из Bitrix
+                new_bitrix_id = rest_emp['ID']
+                if current_bitrix_id != new_bitrix_id:
+                    update_data['bitrix_id'] = new_bitrix_id
+                    update_needed = True
+                
+                new_position = rest_emp.get('Должность', '')
+                if current_position != new_position:
+                    update_data['position'] = new_position
+                    update_needed = True
+                
+                new_department = rest_emp.get('Подразделение', '')
+                if current_department != new_department:
+                    update_data['department'] = new_department
+                    update_needed = True
+                
+                # Обновляем статус активности
+                is_active = rest_emp.get('Активен', True)
+                new_is_deleted = not is_active
+                if current_is_deleted != new_is_deleted:
+                    update_data['is_deleted'] = new_is_deleted
+                    update_needed = True
+                
+                # Обновляем CRM ID если есть соответствие
+                crm_info = rest_to_crm_mapping.get(new_bitrix_id)
+                if crm_info and employee.get('crm_employee_id') != crm_info['crm_id']:
+                    update_data['crm_employee_id'] = crm_info['crm_id']
+                    update_needed = True
+                
+                if update_needed:
+                    success = db.update_user_data(
                         user_id=employee['id'],
-                        bitrix_id=bitrix_emp['id'],
-                        entity_type='crm_employee'
+                        **update_data
                     )
                     if success:
                         stats['updated'] += 1
+                        logger.info(f"Обновлены данные сотрудника {employee['full_name']}")
                     else:
                         stats['errors'] += 1
             else:
                 stats['no_match'] += 1
+                logger.warning(f"Сотрудник {employee['full_name']} не найден в Bitrix")
+                
         except Exception as e:
             stats['errors'] += 1
             logger.error(f"Ошибка обработки {employee}: {e}")
-
-    async def _add_new_employees(self, bitrix_employees: Dict, stats: Dict):
-        """Добавляет новых сотрудников из Bitrix"""
-        existing_names = {
-            self._normalize_name(e['full_name']) 
-            for e in db.get_employees(active_only=False)
-        }
-        
-        for bitrix_emp in bitrix_employees.values():
-            bitrix_name = bitrix_emp['name']
-            normalized = bitrix_name
-            parts = normalized.split()
-            simple_name = ' '.join(parts[:2]) if len(parts) >= 2 else bitrix_name
             
-            if not self._user_exists(bitrix_emp['id'], simple_name):
-                try:
-                    db.execute(
-                        """INSERT INTO users 
-                        (full_name, is_employee, is_verified, bitrix_id, bitrix_entity_type)
-                        VALUES (?, ?, ?, ?, ?)""",
-                        (bitrix_name, True, False, bitrix_emp['id'], 'crm_employee')
-                    )
-                    stats['added'] += 1
-                    logger.info(f"Добавлен новый сотрудник: {bitrix_name}")
-                except Exception as e:
-                    stats['errors'] += 1
-                    logger.error(f"Ошибка добавления сотрудника: {e}")
-
     def _find_bitrix_employee(self, local_name: str, bitrix_employees: Dict[str, dict]) -> Optional[dict]:
         """Ищем соответствие сотрудника с учетом возможного отчества в Bitrix"""
         if local_name in bitrix_employees:
@@ -696,7 +798,7 @@ class BitrixSync:
 
     @staticmethod
     def _normalize_name(name: str) -> str:
-        """Нормализует имя для сравнения"""
+        """Нормализует имя для сравнения (учитывает ФИО)"""
         if not name:
             return ""
         return (
@@ -723,7 +825,7 @@ class BitrixSync:
                 AND o.is_from_bitrix = FALSE
                 AND o.is_sent_to_bitrix = FALSE
                 AND o.is_cancelled = FALSE
-                AND o.bitrix_order_id IS NULL
+                AND o.bitrix_order_id IS NULL  -- ⚠️ Важно: только заказы без bitrix_id
                 AND u.bitrix_id IS NOT NULL
                 AND NOT EXISTS (
                     SELECT 1 FROM orders o2 
@@ -781,11 +883,11 @@ class BitrixSync:
             return False
 
     async def _create_bitrix_order(self, order_data: dict) -> Optional[str]:
-        """Создает заказ в Bitrix24 с улучшенной обработкой ошибок"""
+        """Создает заказ в Bitrix24 с приоритетом для CRM employee_id"""
         try:
             # Проверка обязательных полей
             required_fields = {
-                'bitrix_id': (str, int),  # Может быть как строкой, так и числом
+                'bitrix_id': (str, int),
                 'quantity': int,
                 'target_date': str,
                 'order_time': str
@@ -794,18 +896,24 @@ class BitrixSync:
             for field, field_types in required_fields.items():
                 if field not in order_data:
                     raise ValueError(f"Отсутствует обязательное поле: {field}")
-                
-                if not isinstance(order_data[field], field_types if isinstance(field_types, tuple) else (field_types,)):
-                    raise ValueError(f"Поле {field} должно быть типа {field_types.__name__ if not isinstance(field_types, tuple) else ' или '.join(t.__name__ for t in field_types)}")
 
-            # Преобразуем bitrix_id в строку, если это число
-            bitrix_id = str(order_data['bitrix_id']) if isinstance(order_data['bitrix_id'], int) else order_data['bitrix_id']
+            # Получаем пользователя чтобы узнать его CRM ID
+            user_id = order_data.get('bitrix_id')
+            user_data = db.execute(
+                "SELECT crm_employee_id FROM users WHERE bitrix_id = ? LIMIT 1",
+                (user_id,)
+            )
+            
+            crm_employee_id = None
+            if user_data and user_data[0][0]:
+                crm_employee_id = user_data[0][0]
+                logger.debug(f"Найден CRM ID {crm_employee_id} для пользователя {user_id}")
 
             # Маппинг значений
             quantity_map = {1: '821', 2: '822', 3: '823', 4: '824', 5: '825'}
             location_map = {
                 'Офис': '826',
-                'ПЦ 1': '827',
+                'ПЦ 1': '827', 
                 'ПЦ 2': '828',
                 'Склад': '1063'
             }
@@ -813,27 +921,543 @@ class BitrixSync:
             params = {
                 'entityTypeId': 1222,
                 'fields': {
-                    'ufCrm45_1743599470': bitrix_id,  # Используем преобразованный bitrix_id
                     'ufCrm45ObedyCount': quantity_map.get(order_data['quantity'], '821'),
                     'ufCrm45ObedyFrom': location_map.get(order_data.get('location', 'Офис'), '826'),
                     'createdTime': f"{order_data['target_date']}T{order_data['order_time']}+03:00"
                 }
             }
 
-             # Отправка запроса
-            logger.debug(f"Отправка заказа в Bitrix: {params}")
+            # 🔥 ПРИОРИТЕТ: используем CRM employee_id если есть
+            if crm_employee_id:
+                params['fields']['ufCrm45_1743599470'] = crm_employee_id
+                logger.info(f"📤 Отправка заказа с CRM ID: {crm_employee_id}")
+            else:
+                params['fields']['ufCrm45_1751956286'] = user_id
+                logger.info(f"📤 Отправка заказа с Bitrix ID: {user_id} (CRM ID отсутствует)")
+
             result = await self.bx.call('crm.item.add', params)
             
-            # Упрощенная проверка ответа
             if not result or 'id' not in result:
                 logger.error(f"Неверный ответ от Bitrix: {result}")
                 return None
                 
-            # Возвращаем ID созданного заказа    
-            return str(result['id'])  # Bitrix всегда возвращает ID в корне объекта
+            return str(result['id'])
             
         except Exception as e:
             logger.error(f"Ошибка создания заказа: {str(e)}")
+            return None
+        
+    async def _get_user_name_by_bitrix_id(self, bitrix_id: str) -> Optional[str]:
+        """Получает имя пользователя по его Bitrix ID"""
+        try:
+            result = db.execute(
+                "SELECT full_name FROM users WHERE bitrix_id = ? LIMIT 1",
+                (bitrix_id,)
+            )
+            return result[0][0] if result else "Unknown"
+        except Exception as e:
+            logger.error(f"Ошибка получения имени пользователя: {e}")
+            return "Unknown"
+        
+    def _find_employee_by_name(self, crm_employees: List[Dict], user_name: str) -> Optional[Dict]:
+        """Ищет сотрудника в списке CRM по имени"""
+        if not user_name or user_name == "Unknown":
+            return None
+            
+        normalized_search = self._normalize_name(user_name)
+        
+        for employee in crm_employees:
+            normalized_employee = self._normalize_name(employee['VALUE'])
+            
+            # Простое сравнение
+            if normalized_search == normalized_employee:
+                return employee
+            
+            # Поиск по частичному совпадению (фамилия + имя)
+            search_parts = normalized_search.split()
+            employee_parts = normalized_employee.split()
+            
+            if len(search_parts) >= 2 and len(employee_parts) >= 2:
+                if search_parts[0] == employee_parts[0] and search_parts[1] == employee_parts[1]:
+                    return employee
+        
+        return None
+        
+    # Добавить новый метод для получения сотрудников через REST API
+    async def _get_rest_employees(self) -> List[Dict]:
+        """Получает сотрудников через REST API с полной информацией включая отчество"""
+        import requests
+        import json
+        
+        try:
+            # 1. Запрашиваем подразделения
+            logger.info("Запрашиваю подразделения через REST API...")
+            dep_response = requests.get(self.rest_webhook + 'department.get')
+            dep_data = dep_response.json()
+
+            dept_dict = {}
+            dept_parent_dict = {}
+
+            if 'result' in dep_data:
+                for dept in dep_data['result']:
+                    dept_id_key = str(dept['ID'])
+                    dept_dict[dept_id_key] = dept['NAME']
+                    dept_parent_dict[dept_id_key] = str(dept.get('PARENT', ''))
+                logger.info(f"Получено {len(dept_dict)} подразделений")
+            else:
+                logger.error("Ошибка при запросе отделов:", dep_data)
+                return []
+
+            # Функция для построения полного пути отдела
+            def get_full_department_name(dept_id):
+                if not dept_id or dept_id not in dept_dict:
+                    return 'Не указано'
+                
+                name_parts = [dept_dict[dept_id]]
+                parent_id = dept_parent_dict.get(dept_id)
+                
+                while parent_id and parent_id in dept_dict:
+                    name_parts.append(dept_dict[parent_id])
+                    parent_id = dept_parent_dict.get(parent_id)
+                
+                return ' -> '.join(reversed(name_parts))
+
+            # 2. Запрашиваем сотрудников с пагинацией
+            logger.info("Запрашиваю сотрудников через REST API...")
+            all_users = []
+            start = 0
+            batch_size = 50
+            
+            while True:
+                params = {
+                    'FILTER[USER_TYPE]': 'employee',
+                    'start': start
+                }
+                user_response = requests.get(self.rest_webhook + 'user.get', params=params)
+                user_data = user_response.json()
+
+                if 'result' not in user_data or not user_data['result']:
+                    break
+                    
+                all_users.extend(user_data['result'])
+                start += batch_size
+                
+                # Если получено меньше batch_size, значит это последняя страница
+                if len(user_data['result']) < batch_size:
+                    break
+
+            logger.info(f"Получено {len(all_users)} сотрудников")
+
+            result_list = []
+            for user in all_users:
+                dept_id_list = user.get('UF_DEPARTMENT', [])
+                dept_id = str(dept_id_list[0]) if dept_id_list else None
+
+                # Формируем полное ФИО с отчеством
+                last_name = user.get('LAST_NAME', '')
+                first_name = user.get('NAME', '')
+                second_name = user.get('SECOND_NAME', '')  # Добавляем отчество
+                
+                # Собираем полное имя с отчеством
+                full_name_parts = [last_name, first_name]
+                if second_name:
+                    full_name_parts.append(second_name)
+                full_name = ' '.join(filter(None, full_name_parts))
+
+                # В _get_rest_employees() после сбора городов добавьте:
+                city_fields = ['PERSONAL_CITY', 'WORK_CITY', 'UF_CITY', 'UF_LOCATION']
+                city = None
+                for field in city_fields:
+                    if user.get(field):
+                        city = user.get(field)
+                        break
+
+                # 🔥 Отладка: покажем что нашли
+                if city:
+                    logger.info(f"🏙️ Найден город для {full_name}: {city}")
+                else:
+                    logger.info(f"⚠️ Город не найден для {full_name}")
+
+                employee_info = {
+                    'ID': str(user['ID']),
+                    'ФИО': full_name,
+                    'Фамилия': last_name,
+                    'Имя': first_name,
+                    'Отчество': second_name,
+                    'Должность': user.get('WORK_POSITION', 'Не указана'),
+                    'Подразделение': dept_dict.get(dept_id, 'Не указано'),
+                    'Подразделение_полное': get_full_department_name(dept_id),
+                    'Активен': user.get('ACTIVE', False),
+                    'Город': city  # 🔥 Город добавлен
+                }
+                result_list.append(employee_info)
+
+            # Логирование после того как all_users определен
+            if all_users:
+                logger.debug(f"Пример данных сотрудника: {all_users[0]}")
+            else:
+                logger.debug("Нет данных сотрудников")
+
+            return result_list
+                
+        except Exception as e:
+            logger.error(f"Ошибка получения сотрудников через REST API: {e}")
+            return []
+        
+    def _user_exists_by_bitrix_id(self, bitrix_id: str) -> bool:
+        """Проверяет существование пользователя по Bitrix ID"""
+        try:
+            result = db.execute(
+                "SELECT 1 FROM users WHERE bitrix_id = ? LIMIT 1",
+                (bitrix_id,)
+            )
+            return bool(result)
+        except Exception as e:
+            logger.error(f"Ошибка проверки пользователя по Bitrix ID: {e}")
+            return False
+        
+    async def _get_local_user_id_by_crm_id(self, crm_employee_id: str) -> Optional[int]:
+        """Находит локальный ID пользователя по CRM employee_id"""
+        try:
+            result = db.execute(
+                "SELECT id FROM users WHERE crm_employee_id = ? LIMIT 1",
+                (crm_employee_id,)
+            )
+            return result[0][0] if result else None
+        except Exception as e:
+            logger.error(f"Ошибка поиска пользователя по CRM ID: {e}")
+            return None
+        
+    def remove_duplicate_employees(self):
+        """Удаляет дублирующихся сотрудников"""
+        try:
+            # Находим дубли по bitrix_id
+            duplicates = db.execute('''
+                SELECT bitrix_id, COUNT(*) as count 
+                FROM users 
+                WHERE bitrix_id IS NOT NULL 
+                GROUP BY bitrix_id 
+                HAVING COUNT(*) > 1
+            ''')
+            
+            for bitrix_id, count in duplicates:
+                # Оставляем первую запись, удаляем остальные
+                db.execute('''
+                    DELETE FROM users 
+                    WHERE id NOT IN (
+                        SELECT MIN(id) 
+                        FROM users 
+                        WHERE bitrix_id = ? 
+                        GROUP BY bitrix_id
+                    ) AND bitrix_id = ?
+                ''', (bitrix_id, bitrix_id))
+                logger.info(f"Удалено {count-1} дублей для bitrix_id {bitrix_id}")
+                
+            # Находим дубли по имени
+            name_duplicates = db.execute('''
+                SELECT full_name, COUNT(*) as count 
+                FROM users 
+                GROUP BY full_name 
+                HAVING COUNT(*) > 1
+            ''')
+            
+            for full_name, count in name_duplicates:
+                # Оставляем первую запись, удаляем остальные
+                db.execute('''
+                    DELETE FROM users 
+                    WHERE id NOT IN (
+                        SELECT MIN(id) 
+                        FROM users 
+                        WHERE full_name = ? 
+                        GROUP BY full_name
+                    ) AND full_name = ?
+                ''', (full_name, full_name))
+                logger.info(f"Удалено {count-1} дублей по имени: {full_name}")
+                
+        except Exception as e:
+            logger.error(f"Ошибка удаления дублей: {e}")
+
+    async def _update_existing_employee(self, existing_employee: Dict, rest_emp: Dict, rest_to_crm_mapping: Dict, stats: Dict):
+        """Обновляет данные существующего сотрудника"""
+        try:
+            # Маппинг подразделений на локации
+            location_map = {
+                'Производственный цех №1': 'ПЦ 1',
+                'Производственный цех №2': 'ПЦ 2',
+                'Офис': 'Офис',
+                'Склад': 'Склад',
+                'Отдел по работе с персоналом': 'Офис',
+                'IT отдел': 'Офис'
+            }
+            
+            update_data = {}
+            bitrix_id = rest_emp['ID']
+            
+            # Обновляем bitrix_id если отличается
+            if existing_employee.get('bitrix_id') != bitrix_id:
+                update_data['bitrix_id'] = bitrix_id
+            
+            # Обновляем должность если отличается
+            new_position = rest_emp.get('Должность', '')
+            if existing_employee.get('position') != new_position:
+                update_data['position'] = new_position
+            
+            # Обновляем подразделение если отличается
+            new_department = rest_emp.get('Подразделение', '')
+            if existing_employee.get('department') != new_department:
+                update_data['department'] = new_department
+            
+            # Обновляем локацию на основе подразделения
+            new_location = location_map.get(new_department, 'Офис')
+            if existing_employee.get('location') != new_location:
+                update_data['location'] = new_location
+            
+            # Обновляем статус активности
+            is_active = rest_emp.get('Активен', True)
+            new_is_deleted = not is_active
+            if existing_employee.get('is_deleted') != new_is_deleted:
+                update_data['is_deleted'] = new_is_deleted
+            
+            # Обновляем CRM ID если есть соответствие
+            crm_id = rest_to_crm_mapping.get(bitrix_id)
+            if crm_id and existing_employee.get('crm_employee_id') != crm_id:
+                update_data['crm_employee_id'] = crm_id
+
+            # Обновляем город если отличается
+            # В _update_existing_employee() добавьте:
+            new_city = rest_emp.get('Город', '')
+            if existing_employee.get('city') != new_city:
+                update_data['city'] = new_city
+                logger.info(f"🔄 Обновляем город для {rest_emp['ФИО']}: '{existing_employee.get('city')}' → '{new_city}'")
+
+            if update_data:
+                success = db.update_user_data(
+                    user_id=existing_employee['id'],
+                    **update_data
+                )
+                if success:
+                    stats['updated'] += 1
+                    logger.info(f"Обновлен сотрудник: {rest_emp['ФИО']} - локация: {new_location}")
+                else:
+                    stats['errors'] += 1
+                    
+        except Exception as e:
+            stats['errors'] += 1
+            logger.error(f"Ошибка обновления сотрудника {rest_emp['ФИО']}: {e}")
+
+    async def cleanup_inactive_employees(self):
+        """Помечает как удаленных сотрудников, которых нет в активных Bitrix"""
+        try:
+            # Получаем всех активных сотрудников из Bitrix
+            rest_employees = await self._get_rest_employees()
+            if not rest_employees:
+                return
+                
+            active_bitrix_ids = {emp['ID'] for emp in rest_employees if emp.get('Активен', True)}
+            
+            # Помечаем как удаленных тех, кого нет в активных
+            db.execute('''
+                UPDATE users 
+                SET is_deleted = TRUE, updated_at = CURRENT_TIMESTAMP
+                WHERE is_employee = TRUE 
+                AND bitrix_id IS NOT NULL 
+                AND bitrix_id NOT IN ({})
+            '''.format(','.join(['?' for _ in active_bitrix_ids])), list(active_bitrix_ids))
+            
+            logger.info(f"Обновлен статус неактивных сотрудников")
+            
+        except Exception as e:
+            logger.error(f"Ошибка очистки неактивных сотрудников: {e}")
+            
+    async def _add_new_employee(self, rest_emp: Dict, rest_to_crm_mapping: Dict, stats: Dict):
+        """Добавляет нового сотрудника из Bitrix"""
+        try:
+            bitrix_id = rest_emp['ID']
+            crm_id = rest_to_crm_mapping.get(bitrix_id)
+            
+            # 🔥 Отладка: покажем город
+            city = rest_emp.get('Город', '')
+            logger.info(f"💾 Сохраняем сотрудника {rest_emp['ФИО']} с городом: '{city}'")
+
+            # Маппинг подразделений на локации
+            location_map = {
+                'Производственный цех №1': 'ПЦ 1',
+                'Производственный цех №2': 'ПЦ 2',
+                'Офис': 'Офис',
+                'Склад': 'Склад',
+                'Отдел по работе с персоналом': 'Офис',
+                'IT отдел': 'Офис'
+            }
+
+            department = rest_emp.get('Подразделение', '')
+            location = location_map.get(department, 'Офис')
+
+            # В _add_new_employee() добавьте:
+            city = rest_emp.get('Город', '')
+            logger.info(f"💾 Сохраняем сотрудника {rest_emp['ФИО']} с городом: '{city}'")
+
+            db.execute(
+                """INSERT INTO users 
+                (full_name, is_employee, is_verified, bitrix_id, crm_employee_id,
+                position, department, location, city, is_deleted, bitrix_entity_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    rest_emp['ФИО'], 
+                    True, 
+                    False, 
+                    bitrix_id,
+                    crm_id,
+                    rest_emp.get('Должность', ''),
+                    department,
+                    location,
+                    city,  # 🔥 Город должен быть здесь
+                    not rest_emp.get('Активен', True),
+                    'rest_employee'
+                )
+            )
+            stats['added'] += 1
+            logger.info(f"✅ Добавлен новый сотрудник: {rest_emp['ФИО']} из города {city or 'не указан'}")
+            
+        except Exception as e:
+            stats['errors'] += 1
+            logger.error(f"Ошибка добавления сотрудника {rest_emp['ФИО']}: {e}")
+            
+    def _determine_order_source(self, order_data: Dict) -> bool:
+        """
+        Определяет источник заказа на основе данных из Bitrix.
+        Возвращает True если заказ создан в Bitrix, False если создан ботом.
+        """
+        try:
+            created_by = str(order_data.get('createdBy', ''))
+            updated_by = str(order_data.get('updatedBy', ''))
+            assigned_by = str(order_data.get('assignedById', ''))
+            
+            # Логика определения источника:
+            # Если любой из пользователей - обычный пользователь Bitrix, считаем заказ из Bitrix
+            if (created_by in self.BITRIX_USER_IDS or 
+                updated_by in self.BITRIX_USER_IDS or 
+                assigned_by in self.BITRIX_USER_IDS):
+                return True
+                
+            # Если все пользователи - бот/системные, считаем заказ из бота
+            if (created_by in self.BOT_USER_IDS and 
+                (not updated_by or updated_by in self.BOT_USER_IDS) and 
+                (not assigned_by or assigned_by in self.BOT_USER_IDS)):
+                return False
+                
+            # По умолчанию считаем заказ из Bitrix (более безопасный вариант)
+            return True
+            
+        except Exception as e:
+            logger.error(f"Ошибка определения источника заказа: {e}")
+            return True  # По умолчанию считаем из Bitrix
+        
+    async def update_existing_orders_sources(self):
+        """
+        Обновляет источник (is_from_bitrix) для уже существующих заказов
+        на основе данных из Bitrix.
+        """
+        try:
+            logger.info("Начинаем обновление источников существующих заказов...")
+            
+            # Получаем все заказы из Bitrix за последние 2 месяца
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
+            
+            bitrix_orders = await self._get_bitrix_orders(start_date, end_date)
+            if not bitrix_orders:
+                logger.warning("Не получено заказов для обновления")
+                return
+                
+            updated_count = 0
+            for order in bitrix_orders:
+                parsed_order = self._parse_bitrix_order(order)
+                if not parsed_order:
+                    continue
+                    
+                bitrix_id = parsed_order['bitrix_id']
+                is_from_bitrix = parsed_order['is_from_bitrix']
+                
+                # Обновляем заказ в базе
+                db.cursor.execute("""
+                    UPDATE orders 
+                    SET is_from_bitrix = ?
+                    WHERE bitrix_order_id = ?
+                """, (is_from_bitrix, bitrix_id))
+                
+                if db.cursor.rowcount > 0:
+                    updated_count += 1
+                    
+            db.conn.commit()
+            logger.info(f"Обновлено источников для {updated_count} заказов")
+            
+        except Exception as e:
+            logger.error(f"Ошибка обновления источников заказов: {e}")
+            db.conn.rollback()
+
+    async def _find_employee_by_crm_id(self, crm_id: str) -> Optional[Dict]:
+        """Находит сотрудника по CRM ID в базе данных"""
+        try:
+            result = db.execute(
+                "SELECT id, full_name, bitrix_id FROM users WHERE crm_employee_id = ? LIMIT 1",
+                (crm_id,)
+            )
+            if result:
+                return {
+                    'id': result[0][0],
+                    'full_name': result[0][1],
+                    'bitrix_id': result[0][2]
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка поиска сотрудника по CRM ID {crm_id}: {e}")
+            return None
+
+    def _need_order_update(self, order: Dict) -> bool:
+        """Проверяет нужно ли обновлять заказ (инкрементальная синхронизация)"""
+        bitrix_id = order.get('bitrix_id')
+        if not bitrix_id:
+            return True
+            
+        # Проверяем существование заказа
+        existing = db.execute(
+            "SELECT id, updated_at, last_synced_at FROM orders WHERE bitrix_order_id = ?",
+            (bitrix_id,)
+        )
+        
+        if not existing:
+            return True  # Новый заказ - нужно добавить
+        
+        order_id, db_updated, last_synced = existing[0]
+        
+        # Если заказ уже синхронизирован после своего обновления - пропускаем
+        if last_synced and db_updated and last_synced >= db_updated:
+            return False
+            
+        return True  # Нужно обновить
+    
+    async def sync_recent_orders(self, hours: int = 24):
+        """Синхронизирует только заказы за последние N часов"""
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(hours=hours)).strftime('%Y-%m-%d')
+        
+        logger.info(f"🔄 Инкрементальная синхронизация за {hours} часов...")
+        return await self.sync_orders(start_date, end_date, incremental=True)
+    
+    def _find_local_order_by_user_and_date(self, user_id: int, target_date: str) -> Optional[Dict]:
+        """Ищет заказ в локальной базе по user_id и дате"""
+        try:
+            db.cursor.execute("""
+                SELECT id, bitrix_order_id FROM orders 
+                WHERE user_id = ? AND target_date = ? 
+                LIMIT 1
+            """, (user_id, target_date))
+            result = db.cursor.fetchone()
+            if result:
+                return {'id': result[0], 'bitrix_order_id': result[1]}
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка поиска заказа по user_id и дате: {e}")
             return None
         
     async def close_orders_at_930(self):

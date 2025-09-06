@@ -7,14 +7,16 @@ import pandas as pd
 from typing import Optional, List, Dict, Any
 import os
 from pathlib import Path
+import atexit
 
 logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self):
-        # Создаем путь к базе данных в папке data
-        db_path = Path('data') / 'lunch_bot.db'
-        db_path.parent.mkdir(parents=True, exist_ok=True)  # Создаем папку если ее нет
+        # Используем относительные пути (как было изначально)
+        db_dir = Path('data/db')
+        db_dir.mkdir(parents=True, exist_ok=True)  # Создаем папку если ее нет
+        db_path = db_dir / 'lunch_bot.db'
         
         # Создаем папку для бэкапов
         backup_dir = Path('data/backups')
@@ -29,12 +31,31 @@ class Database:
         self.conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
         self.cursor = self.conn.cursor()
         self._init_db()
-        
-        self.conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
-        self.cursor = self.conn.cursor()
-        self._init_db()
         if not self._is_data_loaded():
             self._load_initial_data()
+        
+        # Регистрируем очистку при завершении работы
+        atexit.register(self.cleanup)
+
+    def cleanup(self):
+        """Корректно закрываем соединение с базой и очищаем WAL файлы"""
+        try:
+            logger.info("Очистка базы данных...")
+            
+            # Сначала выполняем checkpoint если соединение еще открыто
+            if hasattr(self, 'conn') and self.conn:
+                try:
+                    self.cursor.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except Exception as e:
+                    logger.warning(f"Не удалось выполнить checkpoint: {e}")
+            
+            # Затем закрываем соединение
+            if hasattr(self, 'conn') and self.conn:
+                self.conn.close()
+                logger.info("База данных корректно закрыта")
+                
+        except Exception as e:
+            logger.error(f"Ошибка при очистке базы: {e}")
 
     def _is_data_loaded(self):
         """Проверяет, были ли уже загружены основные данные"""
@@ -155,8 +176,11 @@ class Database:
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     bitrix_id INTEGER,
+                    crm_employee_id INTEGER,
                     telegram_id INTEGER UNIQUE,
                     full_name TEXT NOT NULL,
+                    position TEXT,
+                    department TEXT,
                     phone TEXT,
                     location TEXT,
                     is_verified BOOLEAN DEFAULT FALSE,
@@ -169,36 +193,37 @@ class Database:
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            
-            # # В методе _init_db() добавьте таблицу соответствий:
-            # self.cursor.execute('''
-            #     CREATE TABLE IF NOT EXISTS bitrix_mapping (
-            #         local_id INTEGER NOT NULL,
-            #         local_type TEXT NOT NULL,
-            #         bitrix_id INTEGER NOT NULL,
-            #         bitrix_entity_type TEXT NOT NULL,
-            #         last_sync TEXT DEFAULT CURRENT_TIMESTAMP,
-            #         PRIMARY KEY (local_id, local_type)
-            #     )
-            # ''')
 
-            # В методе _init_db() обновляем таблицу orders:
+            # Таблица соответствий Bitrix
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS bitrix_mapping (
+                    local_id INTEGER NOT NULL,
+                    local_type TEXT NOT NULL,
+                    bitrix_id INTEGER NOT NULL,
+                    bitrix_entity_type TEXT NOT NULL,
+                    last_sync TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (local_id, local_type)
+                )
+            ''')
+
+            # Таблица заказов
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS orders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    bitrix_order_id TEXT,  -- Может быть NULL для локальных заказов
+                    bitrix_order_id TEXT,
                     is_active BOOLEAN NOT NULL DEFAULT TRUE,
                     user_id INTEGER NOT NULL,
                     target_date TEXT NOT NULL,
                     order_time TEXT NOT NULL,
                     quantity INTEGER NOT NULL CHECK(quantity BETWEEN 1 AND 5),
-                    bitrix_quantity_id TEXT,  -- Может быть NULL для локальных заказов
+                    bitrix_quantity_id TEXT,
                     is_cancelled BOOLEAN DEFAULT FALSE,
                     is_from_bitrix BOOLEAN DEFAULT FALSE,
                     is_sent_to_bitrix BOOLEAN DEFAULT FALSE,
                     is_preliminary BOOLEAN DEFAULT FALSE,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    last_synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 )
             ''')
@@ -257,7 +282,7 @@ class Database:
                 )
             ''')
             
-            # Таблица запрета или разрешения на прием заказов
+            # Таблица настроек бота
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS bot_settings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -266,47 +291,94 @@ class Database:
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            
             # Добавим начальное значение, если таблица пустая
             self.cursor.execute('''
                 INSERT OR IGNORE INTO bot_settings (setting_name, setting_value)
                 VALUES ('orders_enabled', 'True')
             ''')
+
+            # === 1. Проверяем и добавляем недостающие столбцы ===
+            # Проверяем city в users
+            cursor = self.cursor.execute("PRAGMA table_info(users)")
+            user_cols = [row[1] for row in cursor.fetchall()]
+            if 'city' not in user_cols:
+                self.cursor.execute("ALTER TABLE users ADD COLUMN city TEXT")
+                logger.info("✅ Добавлен столбец 'city' в users")
+
+            # Проверяем last_synced_at в orders
+            cursor = self.cursor.execute("PRAGMA table_info(orders)")
+            order_cols = [row[1] for row in cursor.fetchall()]
+            if 'last_synced_at' not in order_cols:
+                self.cursor.execute("ALTER TABLE orders ADD COLUMN last_synced_at TEXT DEFAULT CURRENT_TIMESTAMP")
+                logger.info("✅ Добавлен столбец 'last_synced_at' в orders")
+
+            # === 2. Очищаем дубликаты перед созданием индекса ===
+            # Сначала удаляем дубликаты bitrix_order_id
+            try:
+                self.cursor.execute('''
+                    DELETE FROM orders 
+                    WHERE id NOT IN (
+                        SELECT MIN(id) 
+                        FROM orders 
+                        WHERE bitrix_order_id IS NOT NULL 
+                        GROUP BY bitrix_order_id
+                    ) AND bitrix_order_id IS NOT NULL
+                ''')
+                deleted_count = self.cursor.rowcount
+                if deleted_count > 0:
+                    logger.info(f"✅ Удалено {deleted_count} дубликатов заказов")
+            except Exception as e:
+                logger.warning(f"Не удалось очистить дубликаты: {e}")
+
+            # === 3. Создаем уникальный индекс если еще нет ===
+            try:
+                self.cursor.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_bitrix_order_id 
+                    ON orders(bitrix_order_id) 
+                    WHERE bitrix_order_id IS NOT NULL
+                """)
+                logger.info("✅ Уникальный индекс создан")
+            except sqlite3.OperationalError as e:
+                logger.warning(f"Не удалось создать уникальный индекс: {e}")
+                # Продолжаем работу без уникального индекса
+
+            # Создаем остальные индексы
+            # Для users
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id)")
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_verified ON users(is_verified)")
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_employee ON users(is_employee)")
+            
+            # Для orders
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)")
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_target_date ON orders(target_date)")
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_is_cancelled ON orders(is_cancelled)")
+            
+            # Для holidays
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_holidays_date ON holidays(date)")
+            
+            # Для menu
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_day ON menu(day)")
+            
+            # Для admin_messages
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_admin_messages_admin ON admin_messages(admin_id)")
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_admin_messages_user ON admin_messages(user_id)")
+            
+            # Для feedback_messages
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_feedback_user ON feedback_messages(user_id)")
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_feedback_provider ON feedback_messages(provider_id)")
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_feedback_processed ON feedback_messages(is_processed)")
+
             self.conn.commit()
-
-            # Создаем индексы
-            with self.conn:
-                # Для users
-                self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id)")
-                self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_verified ON users(is_verified)")
-                self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_employee ON users(is_employee)")
-                
-                # Для orders
-                self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)")
-                self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_target_date ON orders(target_date)")
-                
-                # Для holidays
-                self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_holidays_date ON holidays(date)")
-                
-                # Для menu
-                self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_day ON menu(day)")
-                
-                # Для admin_messages
-                self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_admin_messages_admin ON admin_messages(admin_id)")
-                self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_admin_messages_user ON admin_messages(user_id)")
-                
-                # Для feedback_messages
-                self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_feedback_user ON feedback_messages(user_id)")
-                self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_feedback_provider ON feedback_messages(provider_id)")
-                self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_feedback_processed ON feedback_messages(is_processed)")
-
             logger.info("✅ Все таблицы и индексы созданы или проверены успешно")
 
         except Exception as e:
             logger.critical(f"Ошибка инициализации БД: {e}")
+            self.conn.rollback()
             raise
 
     def execute(self, query, params=()):
-        """Безопасное выполнение SQL-запроса"""
+        """Безопасное выполнение SQL-запроса с принудительной синхронизацией"""
         try:
             self.cursor.execute("BEGIN")
             if not isinstance(params, (tuple, list, dict)):
@@ -315,6 +387,11 @@ class Database:
             self.cursor.execute(query, params)
             result = self.cursor.fetchall()
             self.conn.commit()
+            
+            # Принудительная синхронизация после commit
+            self.conn.execute("PRAGMA synchronous = NORMAL")
+            self.conn.execute("PRAGMA journal_mode = WAL")
+            
             return result
         except sqlite3.Error as e:
             self.conn.rollback()
@@ -341,10 +418,42 @@ class Database:
                 """,
                 (telegram_id, full_name.strip(), phone, location, is_employee, username)
             )
+            self.conn.commit()
             return self.cursor.lastrowid
         except sqlite3.Error as e:
             logger.error(f"Ошибка при добавлении пользователя: {e}")
             return -1
+        
+    def update_user_data(self, user_id: int, **kwargs) -> bool:
+        """Обновляет данные пользователя"""
+        try:
+            if not kwargs:
+                return False
+                
+            # Список допустимых полей для обновления
+            allowed_fields = ['bitrix_id', 'position', 'department', 'is_deleted', 
+                            'full_name', 'phone', 'location', 'is_verified', 
+                            'is_employee', 'username', 'notifications_enabled']
+            
+            # Фильтруем только допустимые поля
+            update_data = {k: v for k, v in kwargs.items() if k in allowed_fields}
+            
+            if not update_data:
+                return False
+                
+            set_clause = ', '.join([f"{key} = ?" for key in update_data.keys()])
+            values = list(update_data.values())
+            values.append(user_id)
+            
+            self.cursor.execute(
+                f"UPDATE users SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
+                values
+            )
+            self.conn.commit()
+            return self.cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Ошибка обновления данных пользователя: {e}")
+            return False
 
     def verify_user(self, telegram_id: int, full_name: str, phone: str, username: str) -> bool:
         """Подтверждает пользователя и заполняет его данные"""
@@ -361,13 +470,14 @@ class Database:
                 """,
                 (full_name.strip(), phone.strip(), username, telegram_id)
             )
+            self.conn.commit()
             return self.cursor.rowcount > 0
         except sqlite3.Error as e:
             logger.error(f"Ошибка при подтверждении пользователя: {e}")
             return False
 
     def get_user(self, telegram_id: int) -> Optional[dict]:
-        """Возвращает данные пользователя"""
+        """Возвращает данные пользователя со всеми полями"""
         row = self.cursor.execute(
             "SELECT * FROM users WHERE telegram_id = ? AND is_deleted = FALSE",
             (telegram_id,)
@@ -375,14 +485,17 @@ class Database:
         return self._row_to_dict(row) if row else None
 
     def get_employees(self, active_only: bool = True) -> List[Dict[str, Any]]:
-        """Получаем список сотрудников"""
+        """Получаем список всех сотрудников со всеми полями"""
         try:
             query = '''
-                SELECT id, full_name, bitrix_id 
+                SELECT id, full_name, bitrix_id, crm_employee_id, position, 
+                    department, is_deleted, is_verified, location, 
+                    is_employee, created_at, updated_at
                 FROM users 
-                WHERE is_employee = TRUE AND is_deleted = FALSE
+                WHERE is_employee = TRUE
                 {}
-            '''.format("AND is_verified = TRUE" if active_only else "")
+                ORDER BY full_name
+            '''.format("AND is_deleted = FALSE" if active_only else "")
             
             self.cursor.execute(query)
             columns = [col[0] for col in self.cursor.description]
@@ -407,9 +520,10 @@ class Database:
         
     def __del__(self):
         """Закрываем соединение при удалении объекта"""
-        self.conn.close()
+        if hasattr(self, 'conn') and self.conn:
+            self.conn.close()
     
-    # Добавьте методы для работы с Bitrix:
+    # Методы для работы с Bitrix:
     def get_bitrix_id(self, local_id: int, entity_type: str) -> Optional[int]:
         """Возвращает bitrix_id для локального объекта"""
         row = self.cursor.execute(
@@ -430,6 +544,7 @@ class Database:
             """,
             (local_id, local_type, bitrix_id, bitrix_entity_type)
         )
+        self.conn.commit()
 
     # ===== МЕТОДЫ ДЛЯ РАБОТЫ С ПРАЗДНИКАМИ =====
     def add_holiday(self, date: str, name: str, is_recurring: bool = False) -> int:
@@ -439,6 +554,7 @@ class Database:
                 "INSERT INTO holidays (date, name, is_recurring) VALUES (?, ?, ?)",
                 (date, name, is_recurring)
             )
+            self.conn.commit()
             return self.cursor.lastrowid
         except sqlite3.IntegrityError:
             logger.warning(f"Праздник {name} на {date} уже существует")
@@ -466,6 +582,7 @@ class Database:
                 """,
                 (day.strip(), first_course.strip(), main_course.strip(), salad.strip())
             )
+            self.conn.commit()
             return self.cursor.lastrowid
         except sqlite3.Error as e:
             logger.error(f"Ошибка при обновлении меню: {e}")
@@ -495,6 +612,7 @@ class Database:
                 "INSERT INTO admin_messages (admin_id, user_id, message_text, is_broadcast) VALUES (?, ?, ?, ?)",
                 (admin_id, user_id, message_text, is_broadcast)
             )
+            self.conn.commit()
             return self.cursor.lastrowid
         except sqlite3.Error as e:
             logger.error(f"Ошибка при добавлении сообщения админа: {e}")
@@ -504,9 +622,10 @@ class Database:
         """Добавляет сообщение обратной связи"""
         try:
             self.cursor.execute(
-                "INSERT INTO feedback_messages (user_id, provider_id, message_text) VALUES (?, ?, ?)",
+                "INSERT INTO feedback_messages (user_id, provider_id, message_text) VALUES (?, ?, ?, ?)",
                 (user_id, provider_id, message_text)
             )
+            self.conn.commit()
             return self.cursor.lastrowid
         except sqlite3.Error as e:
             logger.error(f"Ошибка при добавлении обратной связи: {e}")
@@ -526,6 +645,7 @@ class Database:
             "UPDATE feedback_messages SET is_processed = TRUE WHERE id = ?",
             (feedback_id,)
         )
+        self.conn.commit()
         return self.cursor.rowcount > 0
 
     # ===== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ =====
@@ -542,13 +662,16 @@ class Database:
         columns = [col[0] for col in self.cursor.description]
         return [dict(zip(columns, row)) for row in rows]
     
-        # Проверяем, нужно ли загружать данные
-        if not self._is_db_initialized():
-            self._load_initial_data()
-
     def _is_db_initialized(self):
         """Проверяет, есть ли уже данные в БД"""
         return self.cursor.execute("SELECT 1 FROM holidays LIMIT 1").fetchone() is not None
+    
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Автоматическая очистка при выходе из контекста"""
+        self.cleanup()
 
 # Создаем глобальный экземпляр базы данных
 db = Database()

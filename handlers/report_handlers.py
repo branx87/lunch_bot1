@@ -3,9 +3,10 @@ import logging
 from datetime import date, datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ContextTypes
-import matplotlib
 
-matplotlib.use('Agg')
+# import matplotlib
+# matplotlib.use('Agg')  # Используем non-GUI бэкенд
+# import matplotlib.pyplot as plt
 
 from db import CONFIG
 from constants import SELECT_MONTH_RANGE

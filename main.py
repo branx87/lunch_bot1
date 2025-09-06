@@ -1,14 +1,35 @@
 # ##main.py
+# # ПЕРВЫЕ СТРОКИ В main.py
+# import tkinter_blocker  # noqa: F401
 import asyncio
 import logging
 from pathlib import Path
 from bot_core import LunchBot
 from logging.handlers import RotatingFileHandler
-import matplotlib
 from datetime import datetime, time
+logger = logging.getLogger(__name__)
 
 from db import CONFIG
-matplotlib.use('Agg')
+# import matplotlib
+# matplotlib.use('Agg')  # Используем non-GUI бэкенд
+# import matplotlib.pyplot as plt
+
+import signal
+import atexit
+from db import db  # импортируйте ваш экземпляр базы данных
+
+
+def handle_shutdown(signum, frame):
+    """Обработчик graceful shutdown"""
+    logger.info("Получен сигнал завершения работы...")
+    # Вызываем очистку базы
+    if hasattr(db, 'cleanup'):
+        db.cleanup()
+    exit(0)
+
+# Регистрируем обработчики сигналов
+signal.signal(signal.SIGTERM, handle_shutdown)  # для docker stop
+signal.signal(signal.SIGINT, handle_shutdown)   # для Ctrl+C
 
 def setup_logging():
     # Создаем папку для логов, если ее нет
@@ -56,6 +77,12 @@ async def main():
         logger.critical(f"⛔ Фатальная ошибка: {e}", exc_info=True)
     finally:
         logger.info("✅ Работа бота полностью завершена")
+
+        # Затем очищаем базу ПОСЛЕДНЕЙ
+        if hasattr(db, 'cleanup'):
+            db.cleanup()
+        
+        exit(0)
 
 if __name__ == "__main__":
     try:

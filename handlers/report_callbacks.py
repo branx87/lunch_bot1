@@ -4,9 +4,10 @@ from telegram.ext import CallbackQueryHandler
 from telegram.ext import ContextTypes
 from datetime import date, datetime, timedelta
 import logging
-import matplotlib
 
-matplotlib.use('Agg')
+# import matplotlib
+# matplotlib.use('Agg')  # Используем non-GUI бэкенд
+# import matplotlib.pyplot as plt
 
 from db import CONFIG
 from constants import SELECT_MONTH_RANGE
