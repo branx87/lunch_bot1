@@ -48,12 +48,16 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message += f"3. 🥗 Салат: {menu['salad']}"
     
     # Проверяем есть ли активный заказ
-    db.cursor.execute(
-        "SELECT quantity FROM orders WHERE user_id = "
-        "(SELECT id FROM users WHERE telegram_id = ?) AND target_date = ? AND is_cancelled = FALSE",
-        (user_id, today.isoformat())
-    )
-    has_active_order = db.cursor.fetchone() is not None
+        # Получаем информацию о заказе
+    db.cursor.execute("""
+        SELECT quantity FROM orders 
+        WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?) 
+        AND target_date = ? AND is_cancelled = FALSE
+    """, (user_id, today.isoformat()))
+    
+    order = db.cursor.fetchone()
+    has_active_order = order is not None
+    order_quantity = order[0] if order else 0
 
     can_modify = can_modify_order(today)
     
@@ -63,13 +67,8 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += "\n\n⚠️ Приём заказов временно приостановлен"
         keyboard.append([InlineKeyboardButton("⏳ Заказы принимаются через Битрикс", callback_data="noop")])
     elif has_active_order:
-        # Замените строку с ошибкой на:
-        db.cursor.execute("""
-            SELECT quantity FROM orders 
-            WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
-        """, (user_id, today.isoformat()))
-        order = db.cursor.fetchone()
-        message += f"\n\n✅ Заказ: {order[0]} порции" if order else "\n\n🛒 Заказ: не оформлен"
+        # Есть активный заказ
+        message += f"\n\n✅ Заказ: {order_quantity} порции"
         if can_modify:
             keyboard.append([InlineKeyboardButton("✏️ Изменить количество", callback_data="change_0")])
             keyboard.append([InlineKeyboardButton("❌ Отменить заказ", callback_data="cancel_0")])
@@ -77,6 +76,7 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton("ℹ️ Заказ оформлен (изменение невозможно)", callback_data="noop")])
     else:
         # Нет активного заказа
+        message += "\n\n🛒 Заказ: не оформлен"
         if can_modify:
             keyboard.append([InlineKeyboardButton("✅ Заказать", callback_data="order_0")])
         else:
@@ -151,7 +151,7 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 # Логика для включенных заказов
                 if order:
-                    menu_text += f"\n✅ Заказ: {order[0]} порции"
+                    menu_text += f"\n\n✅ Заказ: {order[0]} порции"
                     if can_modify_order(day_date):
                         keyboard.append([InlineKeyboardButton("✏️ Изменить", callback_data=f"change_{day_offset}")])
                 elif can_modify_order(day_date):
@@ -407,6 +407,10 @@ async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_T
         today = now.date()
         current_time = now.time()
 
+        # Обработка кнопки "🔙 Назад"
+        if text == "🏠 Главное меню":
+            return await monthly_stats(update, context)
+
         if text == "Вернуться в главное меню":
             return await show_main_menu(update, user.id)
 
@@ -572,15 +576,31 @@ async def handle_cancel_from_view(update: Update, context: ContextTypes.DEFAULT_
         user_id = query.from_user.id
         now = datetime.now(CONFIG.timezone)
         
+        # Новый код:
+        # Находим ID заказа
         db.cursor.execute("""
-            UPDATE orders
-            SET is_cancelled = TRUE,
-                order_time = ?
-            WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
-            AND target_date = ?
-            AND is_cancelled = FALSE
-        """, (now.isoformat(), user_id, target_date_str))
-        db.conn.commit()
+            SELECT o.id FROM orders o
+            JOIN users u ON o.user_id = u.id
+            WHERE u.telegram_id = ? AND o.target_date = ? AND o.is_cancelled = FALSE
+        """, (user_id, target_date_str))
+        
+        order_record = db.cursor.fetchone()
+        if order_record:
+            order_id = order_record[0]
+            
+            # Помечаем как отмененный
+            db.cursor.execute("""
+                UPDATE orders
+                SET is_cancelled = TRUE,
+                    order_time = ?
+                WHERE id = ?
+            """, (now.isoformat(), order_id))
+            db.conn.commit()
+            
+            # 🔥 НЕМЕДЛЕННОЕ УДАЛЕНИЕ
+            from bitrix.sync import BitrixSync
+            sync = BitrixSync()
+            await sync.cancel_order_immediate_cleanup(order_id)
 
         if db.cursor.rowcount == 0:
             await query.answer("❌ Заказ не найден или уже отменен", show_alert=True)
@@ -595,3 +615,117 @@ async def handle_cancel_from_view(update: Update, context: ContextTypes.DEFAULT_
     except Exception as e:
         logger.error(f"Ошибка при отмене заказа: {e}")
         await query.answer("⚠️ Ошибка при отмене заказа", show_alert=True)
+
+async def quick_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Быстрый заказ на 1 порцию на сегодня"""
+    try:
+        user = update.effective_user
+        user_id = user.id
+        now = datetime.now(CONFIG.timezone)
+        today = now.date()
+        
+        logger.info(f"USER {user_id}: начат быстрый заказ (username: {user.username or 'N/A'}, first_name: {user.first_name or 'N/A'})")
+        
+        # Проверяем выходной
+        if today.weekday() >= 5:
+            logger.info(f"USER {user_id}: выходной день - быстрый заказ недоступен")
+            await update.message.reply_text("⏳ Сегодня выходной! Быстрый заказ недоступен.")
+            return await show_main_menu(update, user_id)
+        
+        # Проверяем праздник
+        holiday_name = CONFIG.holidays.get(today.isoformat())
+        if holiday_name:
+            logger.info(f"USER {user_id}: праздник {holiday_name} - быстрый заказ недоступен")
+            await update.message.reply_text(f"🎉 Сегодня праздник - {holiday_name}! Быстрый заказ недоступен.")
+            return await show_main_menu(update, user_id)
+        
+        # Проверяем время (до 9:30)
+        if now.time() >= time(9, 30):
+            logger.info(f"USER {user_id}: время заказа истекло ({now.time()})")
+            await update.message.reply_text("⏳ Время для заказов истекло (после 9:30).")
+            return await show_main_menu(update, user_id)
+        
+        # Проверяем, отключены ли заказы глобально
+        if not CONFIG.orders_enabled:
+            logger.info(f"USER {user_id}: заказы глобально отключены")
+            await update.message.reply_text("⚠️ Приём заказов временно приостановлен.")
+            return await show_main_menu(update, user_id)
+        
+        # Получаем ID пользователя в БД
+        db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user_id,))
+        user_record = db.cursor.fetchone()
+        if not user_record:
+            logger.warning(f"USER {user_id}: пользователь не найден в БД")
+            await update.message.reply_text("❌ Пользователь не найден.")
+            return await show_main_menu(update, user_id)
+        
+        user_db_id = user_record[0]
+        logger.info(f"USER {user_id}: найден в БД с ID {user_db_id}")
+        
+        # Проверяем существующий заказ
+        db.cursor.execute("""
+            SELECT quantity FROM orders 
+            WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
+        """, (user_db_id, today.isoformat()))
+        
+        existing_order = db.cursor.fetchone()
+        
+        if existing_order:
+            # Если заказ уже есть - показываем его
+            logger.info(f"USER {user_id}: уже есть заказ на {today} - {existing_order[0]} порции")
+            await update.message.reply_text(
+                f"✅ У вас уже есть заказ на сегодня: {existing_order[0]} порции\n\n"
+                f"Чтобы изменить количество, используйте 'Меню на сегодня'."
+            )
+            return await show_main_menu(update, user_id)
+        
+        logger.info(f"USER {user_id}: создаю новый быстрый заказ на 1 порцию")
+        
+        # Создаем новый заказ на 1 порцию
+        with db.conn:
+            db.cursor.execute("""
+                INSERT INTO orders (
+                    user_id, target_date, order_time, 
+                    quantity, bitrix_quantity_id, is_active,
+                    is_preliminary, created_at
+                ) VALUES (?, ?, ?, ?, ?, TRUE, ?, ?)
+            """, (
+                user_db_id,
+                today.isoformat(),
+                now.strftime("%H:%M:%S"),
+                1,  # 1 порция
+                '821',  # ID для 1 порции в Битрикс
+                False,  # Не предзаказ
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ))
+            db.conn.commit()
+            order_id = db.cursor.lastrowid
+            logger.info(f"USER {user_id}: заказ создан с ID {order_id}")
+
+        # 🔥 НЕМЕДЛЕННАЯ СИНХРОНИЗАЦИЯ после 9:25
+        if now.time() >= time(9, 25):
+            logger.info(f"USER {user_id}: быстрый заказ - немедленная синхронизация (время {now.time()})")
+            try:
+                from bitrix.sync import BitrixSync
+                sync = BitrixSync()
+                success = await sync._push_to_bitrix()
+                if success:
+                    logger.info(f"USER {user_id}: быстрый заказ ID {order_id} синхронизирован с Битрикс")
+                else:
+                    logger.warning(f"USER {user_id}: ошибка синхронизации быстрого заказа ID {order_id}")
+            except Exception as sync_error:
+                logger.error(f"USER {user_id}: ошибка синхронизации быстрого заказа ID {order_id}: {sync_error}")
+
+        logger.info(f"USER {user_id}: быстрый заказ успешно оформлен - 1 порция на {today}")
+        await update.message.reply_text(
+            "✅ Быстрый заказ оформлен!\n"
+            "• Порции: 1\n" 
+            "• Дата: сегодня\n"
+            "• Статус: активен"
+        )
+        
+    except Exception as e:
+        logger.error(f"USER {user_id}: ошибка в быстром заказе - {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Ошибка при оформлении заказа.")
+    
+    return await show_main_menu(update, user_id)

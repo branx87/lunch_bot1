@@ -1,30 +1,63 @@
 # ##main.py
-# # ПЕРВЫЕ СТРОКИ В main.py
-# import tkinter_blocker  # noqa: F401
 import asyncio
 import logging
 from pathlib import Path
-from bot_core import LunchBot
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, time
-logger = logging.getLogger(__name__)
-
-from db import CONFIG
-# import matplotlib
-# matplotlib.use('Agg')  # Используем non-GUI бэкенд
-# import matplotlib.pyplot as plt
-
 import signal
 import atexit
-from db import db  # импортируйте ваш экземпляр базы данных
+import sys
+
+# 1. СНАЧАЛА настраиваем логирование
+def setup_logging():
+    # Создаем папку для логов, если ее нет
+    logs_dir = Path('data/logs')
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    
+    handler = RotatingFileHandler(
+        logs_dir / 'bot.log',
+        maxBytes=5*1024*1024,
+        backupCount=3,
+        encoding='utf-8'
+    )
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[handler]
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.WARNING)
+
+# Настраиваем логирование СРАЗУ
+setup_logging()
+logger = logging.getLogger(__name__)
+
+# 2. ПОТОМ импортируем остальные модули
+try:
+    from db import CONFIG, db
+    if db is None:
+        logger.error("❌ База данных не инициализирована")
+        sys.exit(1)
+        
+    from bot_core import LunchBot
+    logger.info("✅ Модули успешно импортированы")
+except ImportError as e:
+    logger.error(f"❌ Ошибка импорта модулей: {e}")
+    sys.exit(1)
+except Exception as e:
+    logger.error(f"❌ Ошибка инициализации: {e}")
+    sys.exit(1)
 
 
 def handle_shutdown(signum, frame):
     """Обработчик graceful shutdown"""
     logger.info("Получен сигнал завершения работы...")
     # Вызываем очистку базы
-    if hasattr(db, 'cleanup'):
-        db.cleanup()
+    try:
+        if hasattr(db, 'cleanup'):
+            db.cleanup()
+    except Exception as e:
+        logger.error(f"Ошибка при очистке базы: {e}")
     exit(0)
 
 # Регистрируем обработчики сигналов
@@ -51,9 +84,6 @@ def setup_logging():
     logging.getLogger("telegram").setLevel(logging.WARNING)
 
 async def main():
-    setup_logging()
-    logger = logging.getLogger(__name__)
-    
     try:
         logger.info("🚀 Запуск бота...")
         
@@ -73,16 +103,17 @@ async def main():
         bot = LunchBot(bitrix_sync=bitrix_sync) if bitrix_sync else LunchBot()
         
         await bot.run()
+        
     except Exception as e:
         logger.critical(f"⛔ Фатальная ошибка: {e}", exc_info=True)
+        raise
     finally:
         logger.info("✅ Работа бота полностью завершена")
-
-        # Затем очищаем базу ПОСЛЕДНЕЙ
-        if hasattr(db, 'cleanup'):
-            db.cleanup()
-        
-        exit(0)
+        try:
+            if hasattr(db, 'cleanup'):
+                db.cleanup()
+        except Exception as e:
+            logger.error(f"Ошибка при очистке базы: {e}")
 
 if __name__ == "__main__":
     try:

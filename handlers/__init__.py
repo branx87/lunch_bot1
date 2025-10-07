@@ -1,5 +1,6 @@
 # ##handlers/__init__.py
 from datetime import datetime, timedelta
+from handlers.registration_handlers import get_full_name, get_location, get_phone, change_location
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -11,6 +12,7 @@ from telegram.ext import (
     ContextTypes
 )
 
+from handlers.common import show_main_menu
 from admin import message_history
 from db import CONFIG
 from constants import (
@@ -34,6 +36,7 @@ from handlers.menu_handlers import (
     handle_order_confirmation, 
     monthly_stats, 
     monthly_stats_selected,
+    quick_order,
     show_today_menu,
     show_week_menu
 )
@@ -82,7 +85,7 @@ def setup_handlers(application):
     # 4. Обработчики заказов
     setup_order_callbacks(application)
     
-    # 5. Обработчик отчетов админа (должен быть перед главным ConversationHandler)
+    # 5. Обработчик отчетов админа
     admin_reports_conv = ConversationHandler(
         entry_points=[
             MessageHandler(
@@ -108,7 +111,7 @@ def setup_handlers(application):
                     filters.Regex(r'^(Текущий месяц|Прошлый месяц)$'),
                     select_month_range
                 ),
-                MessageHandler(filters.Regex(r'^🔙 Назад$'), admin_reports_menu)
+                MessageHandler(filters.Regex(r'^🏠 Главное меню$'), admin_reports_menu)
             ]
         },
         fallbacks=[
@@ -120,7 +123,29 @@ def setup_handlers(application):
     )
     application.add_handler(admin_reports_conv)
     
-    # 6. Явные обработчики команд
+    # 6. Обработчик изменения локации (ДОБАВЛЯЕМ ЭТОТ НОВЫЙ HANDLER)
+    change_location_conv = ConversationHandler(
+        entry_points=[
+            MessageHandler(
+                filters.Regex("^📍 Изменить локацию$"),
+                change_location
+            )
+        ],
+        states={
+            LOCATION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_location)
+            ]
+        },
+        fallbacks=[
+            CommandHandler('cancel', lambda u, c: show_main_menu(u, u.effective_user.id)),
+            MessageHandler(filters.Regex(r'^(❌ Отмена|Отмена|Вернуться в главное меню|🏠 Главное меню)$'), 
+                lambda u, c: show_main_menu(u, u.effective_user.id))
+        ],
+        allow_reentry=True
+    )
+    application.add_handler(change_location_conv)
+    
+    # 7. Явные обработчики команд
     application.add_handler(MessageHandler(
         filters.Regex(r'^(🏠 Главное меню|Вернуться в главное меню)$'),
         lambda update, context: show_main_menu(update, update.effective_user.id)
@@ -136,16 +161,17 @@ def setup_handlers(application):
         handle_admin_choice
     ))
 
-    # 7. Основные обработчики сообщений
+    # 8. Основные обработчики сообщений
     setup_message_handlers(application)
     
-    # 8. Главный ConversationHandler (регистрация, меню, заказы)
+    # 9. Главный ConversationHandler (регистрация, меню, заказы)
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('start', start),
             MessageHandler(filters.CONTACT, get_phone),
             MessageHandler(filters.Regex("^Меню на сегодня$"), show_today_menu),
             MessageHandler(filters.Regex("^Меню на неделю$"), show_week_menu),
+            MessageHandler(filters.Regex("^✅ Быстрый заказ$"), quick_order),
             MessageHandler(filters.Regex("^Просмотреть заказы$"), view_orders),
             MessageHandler(filters.Regex("^Статистика за месяц$"), monthly_stats),
             MessageHandler(filters.Regex("^Админ-панель$"), handle_admin_choice),
@@ -156,13 +182,15 @@ def setup_handlers(application):
                 MessageHandler(
                     filters.Regex("^(Текущий месяц|Прошлый месяц|Вернуться в главное меню)$"),
                     monthly_stats_selected
-                )
+                ),
+                MessageHandler(filters.Regex("^🏠 Главное меню$"), monthly_stats)
             ],
             SELECT_MONTH_RANGE: [
                 MessageHandler(
                     filters.Regex(r'^(Текущий месяц|Прошлый месяц)$'),
                     select_month_range
                 ),
+                MessageHandler(filters.Regex(r'^🏠 Главное меню$'), admin_reports_menu),
                 MessageHandler(filters.Regex(r'^Вернуться в главное меню$'), show_main_menu)
             ],
             PHONE: [
@@ -186,7 +214,7 @@ def setup_handlers(application):
     )
     application.add_handler(conv_handler)
     
-    # 9. Обработчик для зарегистрированных пользователей (только отчеты)
+    # 10. Обработчик для зарегистрированных пользователей (только отчеты)
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.Regex(
             r'^(💰 Бухгалтерский отчет|📦 Отчет поставщика|'
@@ -195,10 +223,10 @@ def setup_handlers(application):
         handle_registered_user
     ))
 
-    # 10. Общий обработчик callback-запросов
+    # 11. Общий обработчик callback-запросов
     application.add_handler(CallbackQueryHandler(callback_handler))
 
-    # 11. Обработчик всех остальных текстовых сообщений (должен быть самым последним)
+    # 12. Обработчик всех остальных текстовых сообщений (должен быть самым последним)
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -206,5 +234,5 @@ def setup_handlers(application):
         )
     )
 
-    # 12. Обработчик ошибок
+    # 13. Обработчик ошибок
     application.add_error_handler(error_handler)

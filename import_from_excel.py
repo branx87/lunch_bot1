@@ -4,7 +4,7 @@ import sqlite3
 import pandas as pd
 
 # Подключение к базе данных
-conn = sqlite3.connect(r"C:\projects\lunch_bot\lunch_bot.db")
+conn = sqlite3.connect(r"D:\lunch_bot\lunch_bot.db")
 
 # Загрузка users
 users_df = pd.read_excel("db_export.xlsx", sheet_name="users", dtype={
@@ -27,6 +27,15 @@ orders_df['bitrix_order_id'] = orders_df['bitrix_order_id'].astype('Int64')
 # Очистка и загрузка таблицы orders
 conn.execute("DELETE FROM orders;")
 orders_df.to_sql("orders", conn, if_exists="append", index=False)
+
+# Загрузка orders с указанием типа для bitrix_order_id
+orders_df = pd.read_excel("db_export.xlsx", sheet_name="menu", dtype={
+    'id': 'Int64'  # Используем Int64 для поддержки целых чисел
+})
+
+# Очистка и загрузка таблицы orders
+conn.execute("DELETE FROM menu;")
+orders_df.to_sql("menu", conn, if_exists="append", index=False)
 
 conn.close()
 print("Данные успешно импортированы из db_export.xlsx в базу данных")

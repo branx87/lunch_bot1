@@ -8,6 +8,7 @@ from typing import Optional, List, Dict, Any
 import os
 from pathlib import Path
 import atexit
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -18,18 +19,38 @@ class Database:
         db_dir.mkdir(parents=True, exist_ok=True)  # Создаем папку если ее нет
         db_path = db_dir / 'lunch_bot.db'
         
-        # Создаем папку для бэкапов
-        backup_dir = Path('data/backups')
-        backup_dir.mkdir(exist_ok=True)
+        # Пытаемся подключиться с повторными попытками
+        max_retries = 5
+        retry_delay = 1  # секунда
         
-        # Делаем бэкап при каждом запуске (если БД существует)
-        if db_path.exists():
-            backup_name = f"lunch_bot_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-            shutil.copy2(db_path, backup_dir / backup_name)
-            logger.info(f"Создан бэкап базы данных: {backup_name}")
+        for attempt in range(max_retries):
+            try:
+                # Создаем папку для бэкапов
+                backup_dir = Path('data/backups')
+                backup_dir.mkdir(exist_ok=True)
+                
+                # Делаем бэкап при каждом запуске (если БД существует)
+                if db_path.exists():
+                    backup_name = f"lunch_bot_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+                    shutil.copy2(db_path, backup_dir / backup_name)
+                    logger.info(f"Создан бэкап базы данных: {backup_name}")
+                
+                self.conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None, timeout=30)
+                self.cursor = self.conn.cursor()
+                break  # Успешное подключение
+                
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e) and attempt < max_retries - 1:
+                    logger.warning(f"База данных заблокирована, попытка {attempt + 1}/{max_retries}...")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    logger.critical(f"Не удалось подключиться к базе данных: {e}")
+                    raise
+            except Exception as e:
+                logger.critical(f"Ошибка при создании базы данных: {e}")
+                raise
         
-        self.conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
-        self.cursor = self.conn.cursor()
         self._init_db()
         if not self._is_data_loaded():
             self._load_initial_data()
@@ -489,7 +510,7 @@ class Database:
         try:
             query = '''
                 SELECT id, full_name, bitrix_id, crm_employee_id, position, 
-                    department, is_deleted, is_verified, location, 
+                    department, is_deleted, is_verified, location, city,  -- 🔥 ДОБАВЛЕНО city
                     is_employee, created_at, updated_at
                 FROM users 
                 WHERE is_employee = TRUE
@@ -674,12 +695,19 @@ class Database:
         self.cleanup()
 
 # Создаем глобальный экземпляр базы данных
-db = Database()
+db = None
+
+try:
+    db = Database()
+    logger.info("✅ База данных успешно инициализирована")
+except Exception as e:
+    logger.critical(f"❌ Ошибка инициализации базы данных: {e}")
+    # Не выходим сразу, даем возможность другим модулям обработать ошибку
 
 # Безопасная инициализация CONFIG с обработкой ошибок
 try:
     from config import BotConfig
-    CONFIG = BotConfig(db)
+    CONFIG = BotConfig(db) if db else None
 except ImportError as e:
     logging.error(f"Ошибка импорта BotConfig: {e}")
     CONFIG = None

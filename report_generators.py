@@ -124,8 +124,7 @@ async def export_accounting_report(
 
         reports_dir = ensure_reports_dir('accounting')
         now = datetime.now(CONFIG.timezone)
-        month_year = f"{month_names[now.month]} {now.year}"
-
+        
         # Обработка дат
         if not start_date or not end_date:
             start_date = end_date = now.date()
@@ -136,6 +135,12 @@ async def export_accounting_report(
         if start_date > end_date:
             start_date, end_date = end_date, start_date
 
+        # 🔥 ИСПРАВЛЕНО: определяем месяц и год по периоду отчета
+        # Берем месяц и год из start_date (начала периода)
+        report_month = start_date.month
+        report_year = start_date.year
+        month_year = f"{month_names[report_month]} {report_year}"
+
         # Создаем Excel файл
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -143,7 +148,7 @@ async def export_accounting_report(
         
         # Заголовки
         ws.append(["Список сотрудников на удержание обедов из ежемесячной премии"])
-        ws.append([f"за {month_year} г."])
+        ws.append([f"за {month_year} г."])  # Теперь правильно отображает месяц отчета
         ws.append([])
         ws.append(["", "удержание стоимости 1 обеда составляет", "150,00 руб. (без НДФЛ)"])
         ws.append(["", "", "172,41 руб. (с НДФЛ 13%)"])
@@ -258,8 +263,8 @@ async def export_accounting_report(
         for col, width in column_widths.items():
             ws.column_dimensions[col].width = min(width, 50)
         
-        # Сохранение файла
-        file_name = f"salary_deductions_{now.strftime('%Y%m')}.xlsx"
+        # 🔥 ИСПРАВЛЕНО: имя файла теперь включает месяц отчета
+        file_name = f"salary_deductions_{report_year}{report_month:02d}.xlsx"
         file_path = os.path.join(reports_dir, file_name)
         wb.save(file_path)
         
@@ -344,7 +349,6 @@ async def export_monthly_report(
                 JOIN users u ON o.user_id = u.id
                 WHERE o.target_date = ?
                 AND o.is_cancelled = FALSE
-                AND u.is_deleted = FALSE
                 ORDER BY 
                     o.target_date,
                     CASE WHEN o.bitrix_order_id IS NULL THEN o.created_at ELSE o.bitrix_order_id END,
@@ -364,7 +368,6 @@ async def export_monthly_report(
                 JOIN users u ON o.user_id = u.id
                 WHERE o.target_date BETWEEN ? AND ?
                 AND o.is_cancelled = FALSE
-                AND u.is_deleted = FALSE
                 ORDER BY 
                     o.target_date,
                     CASE WHEN o.bitrix_order_id IS NULL THEN o.created_at ELSE o.bitrix_order_id END,

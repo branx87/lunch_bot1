@@ -14,8 +14,10 @@ class LunchBot:
     def __init__(self, bitrix_sync=None):
         self.bitrix_sync = bitrix_sync
         
-        # Используем глобальную базу данных из db.py
-        self.conn = db.conn
+        # Проверяем, что база данных инициализирована
+        if db is None:
+            raise Exception("База данных не инициализирована")
+            
         self.cursor = db.cursor
         
         self.application = None

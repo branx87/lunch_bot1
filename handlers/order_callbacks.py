@@ -152,11 +152,18 @@ async def handle_order_callback(query, now, user, context):
 
         logger.info(f"USER {user_id}: успешно создал заказ на {target_date}, {initial_quantity} порция(й)")
 
-        # Если время после 9:29 - немедленная синхронизация
-        if now.time() >= time(9, 29):
-            logger.info(f"USER {user_id}: выполняется немедленная синхронизация с Битрикс")
-            sync = BitrixSync()
-            await sync._push_to_bitrix()  # Немедленная синхронизация
+        # 🔥 НЕМЕДЛЕННАЯ СИНХРОНИЗАЦИЯ после 9:25
+        if now.time() >= time(9, 25):
+            logger.info(f"USER {user_id}: выполняется немедленная синхронизация (время после 9:25)")
+            try:
+                sync = BitrixSync()
+                success = await sync._push_to_bitrix()
+                if success:
+                    logger.info(f"USER {user_id}: заказ синхронизирован немедленно")
+                else:
+                    logger.warning(f"USER {user_id}: ошибка немедленной синхронизации")
+            except Exception as sync_error:
+                logger.error(f"USER {user_id}: ошибка при немедленной синхронизации: {sync_error}")
 
         # Обновляем интерфейс
         await refresh_day_view(query, day_offset, user_db_id, now, is_order=True)
@@ -373,16 +380,29 @@ async def handle_cancel_callback(query, now, user, context):
             return
 
         # Отменяем заказ
-        with db.conn:
-            db.cursor.execute("""
-                UPDATE orders
-                SET is_cancelled = TRUE,
-                    order_time = ?
-                WHERE user_id = ?
-                  AND target_date = ?
-                  AND is_cancelled = FALSE
-            """, (now.strftime("%H:%M:%S"), user_db_id, target_date.isoformat()))
+        # Сначала находим ID заказа
+        db.cursor.execute("""
+            SELECT id FROM orders 
+            WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
+        """, (user_db_id, target_date.isoformat()))
+
+        order_record = db.cursor.fetchone()
+        if order_record:
+            order_id = order_record[0]
             
+            # Помечаем заказ как отмененный
+            with db.conn:
+                db.cursor.execute("""
+                    UPDATE orders
+                    SET is_cancelled = TRUE,
+                        order_time = ?
+                    WHERE id = ?
+                """, (now.strftime("%H:%M:%S"), order_id))
+            
+            # 🔥 НЕМЕДЛЕННОЕ УДАЛЕНИЕ если условия подходят
+            sync = BitrixSync()
+            await sync.cancel_order_immediate_cleanup(order_id)
+                    
             if db.cursor.rowcount == 0:
                 logger.warning(f"USER {user_id}: заказ на {target_date} не найден для отмены")
                 await query.answer("❌ Заказ не найден", show_alert=True)

@@ -149,7 +149,7 @@ def setup_provider_handlers(application):
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(
             filters.Regex("^✏️ Изменить меню$") & 
-            filters.User(user_id=CONFIG.provider_ids),
+            (filters.User(user_id=CONFIG.provider_ids) | filters.User(user_id=CONFIG.admin_ids)),  # Добавлены админы
             edit_menu
         )],
         states={

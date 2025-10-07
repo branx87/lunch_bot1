@@ -64,7 +64,7 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Переход к имени
         await update.message.reply_text(
-            "Введите ваше фамилию и имя:",
+            "Введите ваше фамилию имя и отчество:",
             reply_markup=ReplyKeyboardRemove()  # Убираем клавиатуру после успешного ввода
         )
         return FULL_NAME
@@ -131,14 +131,14 @@ async def get_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return AWAIT_MESSAGE_TEXT
 
         if user_input == "Попробовать снова":
-            await update.message.reply_text("Введите ваше фамилию и имя:")
+            await update.message.reply_text("Введите ваше фамилию имя и отчество:")
             return FULL_NAME
 
         # Проверяем формат имени
         name_parts = [part for part in user_input.split() if part]
         if len(name_parts) < 2:
             await update.message.reply_text(
-                "❌ Пожалуйста, введите фамилию и имя полностью.\nПример: Иванов Иван",
+                "❌ Пожалуйста, введите фамилию имя и отчество полностью.\nПример: Иванов Иван Иванович",
                 reply_markup=ReplyKeyboardMarkup(
                     [["Попробовать снова"], ["Написать администратору"]],
                     resize_keyboard=True
@@ -225,19 +225,24 @@ async def get_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return LOCATION
 
     try:
-        # Обновляем запись пользователя
+        # Обновляем запись пользователя (работает как для регистрации, так и для изменения)
         db.cursor.execute("""
             UPDATE users
-            SET location = ?, is_verified = TRUE
+            SET location = ?, is_verified = TRUE, updated_at = CURRENT_TIMESTAMP
             WHERE telegram_id = ?
         """, (location, user.id))
         db.conn.commit()
 
-        # После обновления записи
-        db.cursor.execute("SELECT is_verified FROM users WHERE telegram_id = ?", (user.id,))
-        verified_status = db.cursor.fetchone()[0]
-        logger.info(f"Текущий статус верификации: {verified_status}")
+        # Проверяем, что запись обновилась
+        db.cursor.execute("SELECT location, is_verified FROM users WHERE telegram_id = ?", (user.id,))
+        result = db.cursor.fetchone()
+        logger.info(f"Локация обновлена: {result[0]}, статус верификации: {result[1]}")
 
+        await update.message.reply_text(
+            f"✅ Локация успешно изменена на: {location}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        
         await show_main_menu(update, user.id)
         return ConversationHandler.END
 
@@ -245,3 +250,39 @@ async def get_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка сохранения локации: {e}")
         await update.message.reply_text("⚠️ Ошибка при сохранении данных")
         return LOCATION
+    
+# Добавить новую функцию в конец файла
+async def change_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обрабатывает запрос на изменение локации пользователя
+    """
+    user = update.effective_user
+    logger.info(f"Пользователь {user.id} запросил изменение локации")
+
+    try:
+        # Удаляем текущую локацию из базы данных
+        with db.conn:
+            db.cursor.execute("""
+                UPDATE users 
+                SET location = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE telegram_id = ?
+            """, (user.id,))
+
+        logger.info(f"Локация пользователя {user.id} удалена из БД")
+
+        # Предлагаем выбрать новую локацию
+        keyboard = [[loc] for loc in CONFIG.locations]
+        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        await update.message.reply_text(
+            "Выберите новый объект:",
+            reply_markup=reply_markup
+        )
+        return LOCATION  # Возвращаем состояние для продолжения диалога
+
+    except Exception as e:
+        logger.error(f"Ошибка при изменении локации: {e}", exc_info=True)
+        await update.message.reply_text(
+            "⚠️ Произошла ошибка при изменении локации. Попробуйте позже."
+        )
+        await show_main_menu(update, user.id)
+        return ConversationHandler.END

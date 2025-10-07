@@ -7,9 +7,10 @@ services:
     working_dir: /app
     volumes:
       - ./data/configs:/app/data/configs
-      - ./data/logs:/app/data/logs
+      - /var/log/lunch_bot:/app/data/logs  # ТОЛЬКО локальная папка ВМ
       - ./data/reports:/app/data/reports
-      - ./data/db:/app/data/db  # отдельно для базы
+      - ./data/db:/app/data/db
+      - .:/app  # Монтирование кода для hot-reload
     environment:
       - TZ=Europe/Moscow
       - PYTHONUNBUFFERED=1

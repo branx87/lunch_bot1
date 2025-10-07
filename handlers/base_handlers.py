@@ -82,6 +82,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await show_main_menu(update, user.id)
                 return ConversationHandler.END
 
+            # ДОБАВЛЯЕМ СИНХРОНИЗАЦИЮ ДЛЯ НЕВЕРИФИЦИРОВАННЫХ ОБЫЧНЫХ ПОЛЬЗОВАТЕЛЕЙ
+            from bitrix.sync import BitrixSync
+            bitrix_sync = BitrixSync()
+            await bitrix_sync.sync_employees()
+            logger.info(f"Синхронизация сотрудников выполнена для неверифицированного пользователя {user.id}")
+
+        else:
+            # ДОБАВЛЯЕМ СИНХРОНИЗАЦИЮ ДЛЯ НОВЫХ ПОЛЬЗОВАТЕЛЕЙ (КОТОРЫХ НЕТ В БАЗЕ)
+            from bitrix.sync import BitrixSync
+            bitrix_sync = BitrixSync()
+            await bitrix_sync.sync_employees()
+            logger.info(f"Синхронизация сотрудников выполнена для нового пользователя {user.id}")
+
         # Показываем кнопку для отправки номера телефона
         keyboard = [[KeyboardButton("📱 Отправить номер телефона", request_contact=True)]]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
@@ -163,7 +176,7 @@ async def test_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🤖 Бот:\n"
             f"ID: {bot_info.id}\n"
             f"Имя: @{bot_info.username}\n"
-            f"Версия: 2.4.0\n"
+            f"Версия: 2.5.0\n"
             f"Статус: активен"
         )
         
@@ -273,8 +286,8 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await monthly_stats(update, context)
         
         elif text == "✏️ Изменить меню":
-            # Проверяем, является ли пользователь поставщиком
-            if user.id in CONFIG.provider_ids:
+            # Проверяем, является ли пользователь поставщиком или админом
+            if user.id in CONFIG.provider_ids or user.id in CONFIG.admin_ids:
                 # Перенаправляем в обработчик поставщика
                 from handlers.provider_handlers import edit_menu
                 return await edit_menu(update, context)
