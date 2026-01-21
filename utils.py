@@ -5,24 +5,26 @@ import logging
 from datetime import datetime, timedelta, date, time
 import pytz
 
-from db import CONFIG
+from database import db
+from config import CONFIG
 from handlers.common import show_main_menu
 from settings import SETTINGS_CONFIG
-from db import db
+from models import User, Order
+from time_config import TIME_CONFIG
 
 logger = logging.getLogger(__name__)
 
 # Состояния диалога (для handle_unregistered)
 PHONE = 0
 
-def is_weekday(date=None):
-    if date is None:
-        date = datetime.now(CONFIG.timezone)
-    return date.weekday() < 5  # 0-4 = пн-пт
+# def is_weekday(date=None):
+#     if date is None:
+#         date = datetime.now(CONFIG.timezone)
+#     return date.weekday() < 5  # 0-4 = пн-пт
 
 def get_next_workday(date=None):
     if date is None:
-        date = datetime.now(CONFIG.timezone)
+        date = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
     
     days_to_add = 1
     if date.weekday() == 4:  # Пятница
@@ -34,9 +36,9 @@ def get_next_workday(date=None):
 
 def can_modify_order(target_date):
     """Проверяет, можно ли изменять заказ на указанную дату"""
-    if not CONFIG.orders_enabled:  # Первая проверка!
+    if not CONFIG.are_orders_accepted_now():  # Первая проверка!
         return False
-    now = datetime.now(CONFIG.timezone)
+    now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
     
     # Если target_date - строка, преобразуем в дату
     if isinstance(target_date, str):
@@ -47,16 +49,16 @@ def can_modify_order(target_date):
             return False
     
     # Заказы на выходные невозможны
-    if target_date.weekday() >= 5:  # 5-6 = суббота-воскресенье
+    if target_date.weekday() in TIME_CONFIG.WEEKEND_DAYS:  # ← ИСПРАВИТЬ
         return False
     
     # Заказы на будущие дни (предзаказы) можно менять в любое время
     if target_date > now.date():
         return True
     
-    # Заказы на сегодня можно менять только до 9:30
+    # Заказы на сегодня можно менять только до MODIFICATION_DEADLINE
     if target_date == now.date():
-        return now.time() < time(9, 30)
+        return now.time() < TIME_CONFIG.MODIFICATION_DEADLINE  # ← ИСПРАВИТЬ
     
     # Заказы на прошедшие дни нельзя менять
     return False
@@ -66,7 +68,7 @@ def is_order_time_expired():
     return not can_modify_order(datetime.now(CONFIG.timezone).date())
 
 def get_order_time_restriction():
-    now = datetime.now(CONFIG.timezone)
+    now = datetime.now(TIME_CONFIG.TIMEZONE)
     current_hour = now.hour
     
     if not is_weekday(now):
@@ -84,7 +86,7 @@ def is_employee(full_name):
     return normalized_input in CONFIG.staff_names
 
 def get_menu_for_day(day_offset=0):
-    now = datetime.now(CONFIG.timezone)
+    now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
     days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
     target_date = (now + timedelta(days=day_offset)).date()
     day_name = days[target_date.weekday()]
@@ -100,7 +102,7 @@ def format_menu(menu, day_name, is_tomorrow=False):
         return f"На {day_name} выходной! Меню не предусмотрено."
     
     # Получаем текущую дату и вычисляем дату для отображения
-    now = datetime.now(CONFIG.timezone)
+    now = datetime.now(TIME_CONFIG.TIMEZONE)
     days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
     
     # Находим индекс текущего дня и вычисляем дату
@@ -133,18 +135,16 @@ async def check_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if user.id in CONFIG.admin_ids:
         return True
 
-    db.cursor.execute("""
-        SELECT is_verified, is_employee 
-        FROM users 
-        WHERE telegram_id = ? AND is_deleted = FALSE
-    """, (user.id,))
-    
-    result = db.cursor.fetchone()
-    if not result:
-        return False
+    with db.get_session() as session:
+        user_data = session.query(User).filter(
+            User.telegram_id == user.id,
+            User.is_deleted == False
+        ).first()
+        
+        if not user_data:
+            return False
 
-    is_verified, is_employee = result
-    return bool(is_employee and is_verified)
+        return bool(user_data.is_employee and user_data.is_verified)
 
 async def handle_unregistered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -172,17 +172,18 @@ async def handle_unregistered(update: Update, context: ContextTypes.DEFAULT_TYPE
 def is_order_cancelled(user_id: int, target_date_str: str, context=None) -> bool:
     """Проверяет, отменён ли заказ (из БД или временного хранилища)"""
     try:
-        # Проверка из базы данных
-        db.cursor.execute("""
-            SELECT is_cancelled FROM orders 
-            WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
-            AND target_date = ?
-        """, (user_id, target_date_str))
-        
-        result = db.cursor.fetchone()
-        if result and result[0]:
-            return True
+        with db.get_session() as session:
+            # Проверка из базы данных
+            order = session.query(Order).join(
+                User, Order.user_id == User.id
+            ).filter(
+                User.telegram_id == user_id,
+                Order.target_date == target_date_str
+            ).first()
             
+            if order and order.is_cancelled:
+                return True
+                
         # Резервная проверка из контекста
         if context and context.user_data.get('cancelled_orders'):
             return target_date_str in context.user_data['cancelled_orders']

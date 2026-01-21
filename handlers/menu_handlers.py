@@ -5,21 +5,22 @@ from telegram.ext import ContextTypes
 from datetime import datetime, time, timedelta, date
 
 from bot_keyboards import create_main_menu_keyboard
-from db import CONFIG
+from database import db
+from models import User, Order
+from config import CONFIG
+from time_config import TIME_CONFIG  # ← ДОБАВИТЬ ИМПОРТ
 from constants import SELECT_MONTH_RANGE_STATS
-from db import db
 from handlers.common import show_main_menu
 from handlers.common_handlers import view_orders
 from utils import can_modify_order, check_registration, format_menu, handle_unregistered
 from view_utils import refresh_orders_view
-
 
 logger = logging.getLogger(__name__)
 
 async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отображает меню на текущий день с учетом праздников"""
     user_id = update.effective_user.id
-    now = datetime.now(CONFIG.timezone)
+    now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
     today = now.date()
     days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
     day_name = days_ru[today.weekday()]
@@ -32,7 +33,7 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_main_menu(update, user_id)
     
     # Проверяем выходной
-    if today.weekday() >= 5:
+    if today.weekday() in TIME_CONFIG.WEEKEND_DAYS:  # ← ИСПРАВИТЬ
         await update.message.reply_text(f"⏳ Сегодня ({day_name}, {date_str}) выходной! Меню не предусмотрено.")
         return await show_main_menu(update, user_id)
     
@@ -47,24 +48,28 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message += f"2. 🍛 Основное блюдо: {menu['main']}\n"
     message += f"3. 🥗 Салат: {menu['salad']}"
     
-    # Проверяем есть ли активный заказ
-        # Получаем информацию о заказе
-    db.cursor.execute("""
-        SELECT quantity FROM orders 
-        WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?) 
-        AND target_date = ? AND is_cancelled = FALSE
-    """, (user_id, today.isoformat()))
-    
-    order = db.cursor.fetchone()
-    has_active_order = order is not None
-    order_quantity = order[0] if order else 0
+    # Проверяем есть ли активный заказ через SQLAlchemy
+    user_record = db.session.query(User).filter(User.telegram_id == user_id).first()
+    if user_record:
+        order = db.session.query(Order).filter(
+            Order.user_id == user_record.id,
+            Order.target_date == today,
+            Order.is_cancelled == False
+        ).first()
+        
+        has_active_order = order is not None
+        order_quantity = order.quantity if order else 0
+    else:
+        has_active_order = False
+        order_quantity = 0
 
-    can_modify = can_modify_order(today)
+    can_modify = can_modify_order(today)  # ← ИСПРАВИТЬ
     
     keyboard = []
-    if not CONFIG.orders_enabled:
-        # Заказы отключены глобально
-        message += "\n\n⚠️ Приём заказов временно приостановлен"
+    if not CONFIG.are_orders_accepted_now():
+        # Заказы отключены по времени
+        status_msg = CONFIG.get_orders_status_message()
+        message += f"\n\n{status_msg}"
         keyboard.append([InlineKeyboardButton("⏳ Заказы принимаются через Битрикс", callback_data="noop")])
     elif has_active_order:
         # Есть активный заказ
@@ -97,11 +102,20 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     try:
         user = update.effective_user
-        now = datetime.now(CONFIG.timezone)
+        now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
         today = now.date()
         days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
         
         sent_days = 0
+        
+        # Инициализируем message ДО использования
+        message = ""
+        
+        # Получаем пользователя один раз
+        user_record = db.session.query(User).filter(User.telegram_id == user.id).first()
+        if not user_record:
+            await update.message.reply_text("❌ Пользователь не найден")
+            return await show_main_menu(update, user.id)
         
         for day_offset in range(7):
             day_date = today + timedelta(days=day_offset)
@@ -118,7 +132,7 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
             
             # Проверяем выходные
-            if day_date.weekday() >= 5:
+            if day_date.weekday() in TIME_CONFIG.WEEKEND_DAYS:  # ← ИСПРАВИТЬ
                 await update.message.reply_text(
                     f"⏳ {day_name} ({date_str}) — Выходной! Меню не предусмотрено."
                 )
@@ -134,24 +148,23 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             menu_text += f"2. 🍛 Основное блюдо: {menu['main']}\n"
             menu_text += f"3. 🥗 Салат: {menu['salad']}"
             
-            # Проверка заказа пользователя
-            db.cursor.execute("""
-                SELECT quantity FROM orders 
-                WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
-                AND target_date = ?
-                AND is_cancelled = FALSE
-            """, (user.id, date_iso))
-            order = db.cursor.fetchone()
+            # Проверка заказа пользователя через SQLAlchemy
+            order = db.session.query(Order).filter(
+                Order.user_id == user_record.id,
+                Order.target_date == day_date,
+                Order.is_cancelled == False
+            ).first()
             
             keyboard = []
-            if not CONFIG.orders_enabled:
-                # Добавляем информационную кнопку, если заказы отключены
-                menu_text += "\n\n⚠️ Приём заказов временно приостановлен"
+            if not CONFIG.are_orders_accepted_now():
+                # Заказы отключены по времени
+                status_msg = CONFIG.get_orders_status_message()
+                message += f"\n\n{status_msg}"
                 keyboard.append([InlineKeyboardButton("⏳ Заказы принимаются через Битрикс", callback_data="noop")])
             else:
                 # Логика для включенных заказов
                 if order:
-                    menu_text += f"\n\n✅ Заказ: {order[0]} порции"
+                    menu_text += f"\n\n✅ Заказ: {order.quantity} порции"
                     if can_modify_order(day_date):
                         keyboard.append([InlineKeyboardButton("✏️ Изменить", callback_data=f"change_{day_offset}")])
                 elif can_modify_order(day_date):
@@ -173,14 +186,6 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ Ошибка при загрузке меню. Попробуйте позже.",
             reply_markup=create_main_menu_keyboard(user.id)
         )
-            
-    except Exception as e:
-        logger.error(f"Ошибка в show_week_menu: {e}", exc_info=True)
-        # from bot_keyboards import create_main_menu_keyboard  # Добавляем импорт
-        await update.message.reply_text(
-            "⚠️ Ошибка при загрузке меню. Попробуйте позже.",
-            reply_markup=create_main_menu_keyboard(user.id)
-        )
         
 async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_offset=0):
     """
@@ -194,7 +199,7 @@ async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_
     """
     try:
         user = update.effective_user
-        now = datetime.now(CONFIG.timezone)
+        now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
         days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
         target_date = now.date() + timedelta(days=day_offset)
         day_name = days_ru[target_date.weekday()]
@@ -206,7 +211,7 @@ async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_
             return
 
         # Проверяем выходной
-        if target_date.weekday() >= 5:
+        if target_date.weekday() in TIME_CONFIG.WEEKEND_DAYS:  # ← ИСПРАВИТЬ
             await update.message.reply_text(f"⏳ {day_name} ({target_date.strftime('%d.%m')}) — Выходной! Меню не предусмотрено.")
             return
 
@@ -218,29 +223,32 @@ async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_
         # Формируем сообщение
         message = format_menu(menu, day_name, is_tomorrow=day_offset == 1)
 
-        # Получаем ID пользователя
-        if not (user_record := db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user.id,)).fetchone()):
+        # Получаем пользователя через SQLAlchemy
+        user_record = db.session.query(User).filter(User.telegram_id == user.id).first()
+        if not user_record:
             await update.message.reply_text("❌ Пользователь не найден")
             return
-        user_db_id = user_record[0]
+        user_db_id = user_record.id
 
-        # Проверяем существующий заказ
-        order = db.cursor.execute("""
-            SELECT quantity FROM orders 
-            WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
-        """, (user_db_id, date_iso)).fetchone()
+        # Проверяем существующий заказ через SQLAlchemy
+        order = db.session.query(Order).filter(
+            Order.user_id == user_db_id,
+            Order.target_date == target_date,
+            Order.is_cancelled == False
+        ).first()
 
         # Формируем клавиатуру
         keyboard = []
-        if not CONFIG.orders_enabled:
-            # Добавляем информационную кнопку, если заказы отключены
-            message += "\n\n⚠️ Приём заказов временно приостановлен"
+        if not CONFIG.are_orders_accepted_now():
+            # Заказы отключены по времени
+            status_msg = CONFIG.get_orders_status_message()
+            message += f"\n\n{status_msg}"
             keyboard.append([InlineKeyboardButton("⏳ Заказы принимаются через Битрикс", callback_data="noop")])
         else:
             # Существующая логика для включенных заказов
             can_modify = can_modify_order(target_date)
             if order:  # Если заказ уже есть
-                message += f"\n\n✅ {'Предзаказ' if day_offset > 0 else 'Заказ'}: {order[0]} порции"
+                message += f"\n\n✅ {'Предзаказ' if day_offset > 0 else 'Заказ'}: {order.quantity} порции"
                 if can_modify:
                     keyboard.append([InlineKeyboardButton("✏️ Изменить количество", callback_data=f"change_{day_offset}")])
                 keyboard.append([InlineKeyboardButton("❌ Отменить заказ", callback_data=f"cancel_{day_offset}")])
@@ -287,7 +295,7 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_id = query.from_user.id
 
                 # Определяем дату
-                now = datetime.now(CONFIG.timezone)
+                now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
                 if '-' in date_part:
                     target_date = datetime.strptime(date_part, "%Y-%m-%d").date()
                 elif date_part.isdigit():
@@ -301,34 +309,33 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Проверяем возможность отмены
                 if not can_modify_order(target_date):
                     logger.warning(f"USER {user_id}: отмена невозможна для {target_date} (время истекло)")
-                    await query.answer("ℹ️ Отмена невозможна после 9:30", show_alert=True)
+                    await query.answer(f"ℹ️ Отмена невозможна после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}", show_alert=True)  # ← ИСПРАВИТЬ
                     return
 
-                # Получаем ID пользователя из БД
-                db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user_id,))
-                user_record = db.cursor.fetchone()
+                # Получаем пользователя через SQLAlchemy
+                user_record = db.session.query(User).filter(User.telegram_id == user_id).first()
                 if not user_record:
                     logger.error(f"USER {user_id}: не найден в базе данных")
                     await query.answer("❌ Пользователь не найден", show_alert=True)
                     return
 
-                user_db_id = user_record[0]
+                user_db_id = user_record.id
 
-                # Отменяем заказ в БД
-                with db.conn:
-                    db.cursor.execute("""
-                        UPDATE orders 
-                        SET is_cancelled = TRUE,
-                            order_time = ?
-                        WHERE user_id = ?
-                          AND target_date = ?
-                          AND is_cancelled = FALSE
-                    """, (now.strftime("%H:%M:%S"), user_db_id, target_date.isoformat()))
+                # Отменяем заказ в БД через SQLAlchemy
+                order = db.session.query(Order).filter(
+                    Order.user_id == user_db_id,
+                    Order.target_date == target_date,
+                    Order.is_cancelled == False
+                ).first()
 
-                    if db.cursor.rowcount == 0:
-                        logger.warning(f"USER {user_id}: заказ на {target_date} не найден для отмены")
-                        await query.answer("❌ Заказ не найден", show_alert=True)
-                        return
+                if not order:
+                    logger.warning(f"USER {user_id}: заказ на {target_date} не найден для отмены")
+                    await query.answer("❌ Заказ не найден", show_alert=True)
+                    return
+
+                order.is_cancelled = True
+                order.order_time = now.strftime("%H:%M:%S")
+                db.session.commit()
 
                 logger.info(f"USER {user_id}: успешно отменил заказ на {target_date}")
 
@@ -403,7 +410,7 @@ async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_T
     try:
         user = update.effective_user
         text = update.message.text.strip()
-        now = datetime.now(CONFIG.timezone)
+        now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
         today = now.date()
         current_time = now.time()
 
@@ -427,39 +434,43 @@ async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_T
 
         end_date = (start_date + timedelta(days=32)).replace(day=1) - timedelta(days=1)
 
-        # Получаем ID пользователя
-        db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user.id,))
-        user_record = db.cursor.fetchone()
+        # Получаем пользователя через SQLAlchemy
+        user_record = db.session.query(User).filter(User.telegram_id == user.id).first()
         if not user_record:
             await update.message.reply_text("❌ Пользователь не найден.")
             return await show_main_menu(update, user.id)
 
-        user_db_id = user_record[0]
+        user_db_id = user_record.id
 
-        # Получаем статистику
-        db.cursor.execute("""
-            SELECT 
-                -- Выполненные заказы (дата прошла + не отменены)
-                SUM(CASE WHEN target_date < ? AND is_cancelled = FALSE THEN quantity ELSE 0 END) as completed,
-                
-                -- Заказы на сегодня (если время > 9:30)
-                SUM(CASE WHEN target_date = ? AND is_cancelled = FALSE THEN quantity ELSE 0 END) as today,
-                
-                -- Предстоящие заказы (дата в будущем + не отменены)
-                SUM(CASE WHEN target_date > ? AND is_cancelled = FALSE THEN quantity ELSE 0 END) as upcoming,
-                
-                -- Отмененные заказы
-                SUM(CASE WHEN is_cancelled = TRUE THEN quantity ELSE 0 END) as cancelled
-            FROM orders
-            WHERE user_id = ?
-              AND target_date BETWEEN ? AND ?
-        """, (today, today, today, user_db_id, start_date.isoformat(), end_date.isoformat()))
+        # 🔥 ИСПРАВЛЕНИЕ: Используем правильные типы данных для сравнения
+        from sqlalchemy import func, case, and_
+        
+        # Получаем статистику через отдельные запросы для надежности
+        completed = db.session.query(func.sum(Order.quantity)).filter(
+            Order.user_id == user_db_id,
+            Order.target_date < today,
+            Order.target_date.between(start_date, end_date),
+            Order.is_cancelled == False
+        ).scalar() or 0
 
-        stats = db.cursor.fetchone()
-        completed = stats[0] or 0
-        today_orders = stats[1] or 0
-        upcoming = stats[2] or 0
-        cancelled = stats[3] or 0
+        today_orders = db.session.query(func.sum(Order.quantity)).filter(
+            Order.user_id == user_db_id,
+            Order.target_date == today,
+            Order.is_cancelled == False
+        ).scalar() or 0
+
+        upcoming = db.session.query(func.sum(Order.quantity)).filter(
+            Order.user_id == user_db_id,
+            Order.target_date > today,
+            Order.target_date.between(start_date, end_date),
+            Order.is_cancelled == False
+        ).scalar() or 0
+
+        cancelled = db.session.query(func.sum(Order.quantity)).filter(
+            Order.user_id == user_db_id,
+            Order.target_date.between(start_date, end_date),
+            Order.is_cancelled == True
+        ).scalar() or 0
 
         # Формируем сообщение
         message_lines = [
@@ -470,8 +481,8 @@ async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_T
             f"✅ Выполненные: *{completed}*",
         ]
 
-        # Добавляем строку про сегодняшние заказы, если время > 9:30 и есть заказы
-        if current_time > time(9, 30) and today_orders > 0:
+        # Добавляем строку про сегодняшние заказы, если время > ORDER_DEADLINE и есть заказы
+        if current_time > TIME_CONFIG.ORDER_DEADLINE and today_orders > 0:  # ← ИСПРАВИТЬ
             message_lines.append(f"🍽 Сегодня: *{today_orders}*")
 
         message_lines.append(f"⏳ Предстоящие: *{upcoming}*")
@@ -481,27 +492,22 @@ async def monthly_stats_selected(update: Update, context: ContextTypes.DEFAULT_T
 
         # Дополнительная информация о предстоящих заказах
         if upcoming > 0:
-            db.cursor.execute("""
-                SELECT COUNT(*) 
-                FROM orders 
-                WHERE user_id = ? 
-                  AND target_date > ?
-                  AND is_cancelled = FALSE
-            """, (user_db_id, today))
-            order_count = db.cursor.fetchone()[0]
+            order_count = db.session.query(Order).filter(
+                Order.user_id == user_db_id,
+                Order.target_date > today,
+                Order.target_date.between(start_date, end_date),
+                Order.is_cancelled == False
+            ).count()
             
-            next_order_date = None
-            db.cursor.execute("""
-                SELECT MIN(target_date)
-                FROM orders
-                WHERE user_id = ?
-                  AND target_date > ?
-                  AND is_cancelled = FALSE
-            """, (user_db_id, today))
-            next_date = db.cursor.fetchone()[0]
+            next_order = db.session.query(Order).filter(
+                Order.user_id == user_db_id,
+                Order.target_date > today,
+                Order.target_date.between(start_date, end_date),
+                Order.is_cancelled == False
+            ).order_by(Order.target_date).first()
             
-            if next_date:
-                next_order_date = datetime.strptime(next_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+            if next_order:
+                next_order_date = next_order.target_date.strftime("%d.%m.%Y")
                 message_lines.extend([
                     "",
                     f"Ближайший заказ: *{next_order_date}*",
@@ -532,18 +538,26 @@ async def handle_order_confirmation(update: Update, context: ContextTypes.DEFAUL
         user = update.effective_user
         
         if text == "Да":
-            now = datetime.now(CONFIG.timezone)
+            now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
             target_date = now + timedelta(days=1)
             if now.weekday() == 4:  # Пятница -> понедельник
                 target_date += timedelta(days=2)
             
-            db.cursor.execute(
-                "INSERT INTO orders (user_id, target_date, order_time, quantity, is_preliminary) "
-                "SELECT id, ?, ?, 1, TRUE FROM users WHERE telegram_id = ?",
-                (target_date.date().isoformat(), now.strftime("%H:%M:%S"), user.id)
-            )
-            db.conn.commit()
-            await update.message.reply_text(f"✅ Предзаказ на {target_date.strftime('%d.%m')} оформлен!")
+            # Получаем пользователя через SQLAlchemy
+            user_record = db.session.query(User).filter(User.telegram_id == user.id).first()
+            if user_record:
+                new_order = Order(
+                    user_id=user_record.id,
+                    target_date=target_date.date(),
+                    order_time=now.strftime("%H:%M:%S"),
+                    quantity=1,
+                    is_preliminary=True
+                )
+                db.session.add(new_order)
+                db.session.commit()
+                await update.message.reply_text(f"✅ Предзаказ на {target_date.strftime('%d.%m')} оформлен!")
+            else:
+                await update.message.reply_text("❌ Пользователь не найден.")
         else:
             await update.message.reply_text("❌ Заказ отменен.")
         
@@ -569,48 +583,37 @@ async def handle_cancel_from_view(update: Update, context: ContextTypes.DEFAULT_
         
         # Проверяем возможность отмены
         if not can_modify_order(target_date):
-            await query.answer("ℹ️ Отмена невозможна после 9:30", show_alert=True)
+            await query.answer(f"ℹ️ Отмена невозможна после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}", show_alert=True)  # ← ИСПРАВИТЬ
             return
 
         # Отменяем заказ
         user_id = query.from_user.id
-        now = datetime.now(CONFIG.timezone)
+        now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
         
-        # Новый код:
-        # Находим ID заказа
-        db.cursor.execute("""
-            SELECT o.id FROM orders o
-            JOIN users u ON o.user_id = u.id
-            WHERE u.telegram_id = ? AND o.target_date = ? AND o.is_cancelled = FALSE
-        """, (user_id, target_date_str))
+        # Находим заказ через SQLAlchemy
+        order = db.session.query(Order).join(User).filter(
+            User.telegram_id == user_id,
+            Order.target_date == target_date,
+            Order.is_cancelled == False
+        ).first()
         
-        order_record = db.cursor.fetchone()
-        if order_record:
-            order_id = order_record[0]
-            
-            # Помечаем как отмененный
-            db.cursor.execute("""
-                UPDATE orders
-                SET is_cancelled = TRUE,
-                    order_time = ?
-                WHERE id = ?
-            """, (now.isoformat(), order_id))
-            db.conn.commit()
+        if order:
+            order.is_cancelled = True
+            order.order_time = now.isoformat()
+            db.session.commit()
             
             # 🔥 НЕМЕДЛЕННОЕ УДАЛЕНИЕ
             from bitrix.sync import BitrixSync
             sync = BitrixSync()
-            await sync.cancel_order_immediate_cleanup(order_id)
+            await sync.cancel_order_immediate_cleanup(order.id)
 
-        if db.cursor.rowcount == 0:
+            logger.info(f"Пользователь {user_id} отменил заказ на {target_date_str}")
+            
+            # Обновляем список заказов
+            await view_orders(update, context, is_cancellation=True)
+            await query.answer(f"✅ Заказ на {target_date.strftime('%d.%m')} отменён")
+        else:
             await query.answer("❌ Заказ не найден или уже отменен", show_alert=True)
-            return
-
-        logger.info(f"Пользователь {user_id} отменил заказ на {target_date_str}")
-        
-        # Обновляем список заказов
-        await view_orders(update, context, is_cancellation=True)
-        await query.answer(f"✅ Заказ на {target_date.strftime('%d.%m')} отменён")
 
     except Exception as e:
         logger.error(f"Ошибка при отмене заказа: {e}")
@@ -621,13 +624,13 @@ async def quick_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = update.effective_user
         user_id = user.id
-        now = datetime.now(CONFIG.timezone)
+        now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
         today = now.date()
         
         logger.info(f"USER {user_id}: начат быстрый заказ (username: {user.username or 'N/A'}, first_name: {user.first_name or 'N/A'})")
         
         # Проверяем выходной
-        if today.weekday() >= 5:
+        if today.weekday() in TIME_CONFIG.WEEKEND_DAYS:  # ← ИСПРАВИТЬ
             logger.info(f"USER {user_id}: выходной день - быстрый заказ недоступен")
             await update.message.reply_text("⏳ Сегодня выходной! Быстрый заказ недоступен.")
             return await show_main_menu(update, user_id)
@@ -639,82 +642,76 @@ async def quick_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"🎉 Сегодня праздник - {holiday_name}! Быстрый заказ недоступен.")
             return await show_main_menu(update, user_id)
         
-        # Проверяем время (до 9:30)
-        if now.time() >= time(9, 30):
+        # Проверяем время (до ORDER_DEADLINE)
+        if now.time() >= TIME_CONFIG.ORDER_DEADLINE:  # ← ИСПРАВИТЬ
             logger.info(f"USER {user_id}: время заказа истекло ({now.time()})")
-            await update.message.reply_text("⏳ Время для заказов истекло (после 9:30).")
+            await update.message.reply_text(f"⏳ Время для заказов истекло (после {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}).")  # ← ИСПРАВИТЬ
             return await show_main_menu(update, user_id)
         
-        # Проверяем, отключены ли заказы глобально
-        if not CONFIG.orders_enabled:
-            logger.info(f"USER {user_id}: заказы глобально отключены")
-            await update.message.reply_text("⚠️ Приём заказов временно приостановлен.")
+        # Проверяем, доступны ли заказы в текущее время
+        if not CONFIG.are_orders_accepted_now():
+            status_msg = CONFIG.get_orders_status_message()  # Получаем правильное сообщение
+            logger.info(f"USER {user_id}: заказы недоступны - {status_msg}")
+            await update.message.reply_text(status_msg)
             return await show_main_menu(update, user_id)
         
-        # Получаем ID пользователя в БД
-        db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user_id,))
-        user_record = db.cursor.fetchone()
+        # Получаем пользователя через SQLAlchemy
+        user_record = db.session.query(User).filter(User.telegram_id == user_id).first()
         if not user_record:
             logger.warning(f"USER {user_id}: пользователь не найден в БД")
             await update.message.reply_text("❌ Пользователь не найден.")
             return await show_main_menu(update, user_id)
         
-        user_db_id = user_record[0]
+        user_db_id = user_record.id
         logger.info(f"USER {user_id}: найден в БД с ID {user_db_id}")
         
-        # Проверяем существующий заказ
-        db.cursor.execute("""
-            SELECT quantity FROM orders 
-            WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
-        """, (user_db_id, today.isoformat()))
-        
-        existing_order = db.cursor.fetchone()
+        # Проверяем существующий заказ через SQLAlchemy
+        existing_order = db.session.query(Order).filter(
+            Order.user_id == user_db_id,
+            Order.target_date == today,
+            Order.is_cancelled == False
+        ).first()
         
         if existing_order:
             # Если заказ уже есть - показываем его
-            logger.info(f"USER {user_id}: уже есть заказ на {today} - {existing_order[0]} порции")
+            logger.info(f"USER {user_id}: уже есть заказ на {today} - {existing_order.quantity} порции")
             await update.message.reply_text(
-                f"✅ У вас уже есть заказ на сегодня: {existing_order[0]} порции\n\n"
+                f"✅ У вас уже есть заказ на сегодня: {existing_order.quantity} порции\n\n"
                 f"Чтобы изменить количество, используйте 'Меню на сегодня'."
             )
             return await show_main_menu(update, user_id)
         
         logger.info(f"USER {user_id}: создаю новый быстрый заказ на 1 порцию")
         
-        # Создаем новый заказ на 1 порцию
-        with db.conn:
-            db.cursor.execute("""
-                INSERT INTO orders (
-                    user_id, target_date, order_time, 
-                    quantity, bitrix_quantity_id, is_active,
-                    is_preliminary, created_at
-                ) VALUES (?, ?, ?, ?, ?, TRUE, ?, ?)
-            """, (
-                user_db_id,
-                today.isoformat(),
-                now.strftime("%H:%M:%S"),
-                1,  # 1 порция
-                '821',  # ID для 1 порции в Битрикс
-                False,  # Не предзаказ
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            ))
-            db.conn.commit()
-            order_id = db.cursor.lastrowid
-            logger.info(f"USER {user_id}: заказ создан с ID {order_id}")
+        # Создаем новый заказ на 1 порцию через SQLAlchemy
+        new_order = Order(
+            user_id=user_db_id,
+            target_date=today,
+            order_time=now.strftime("%H:%M:%S"),
+            quantity=1,
+            bitrix_quantity_id='821',  # ID для 1 порции в Битрикс
+            is_active=True,
+            is_preliminary=False,
+            created_at=datetime.now()
+        )
+        db.session.add(new_order)
+        db.session.commit()
+        order_id = new_order.id
+        logger.info(f"USER {user_id}: заказ создан с ID {order_id}")
 
-        # 🔥 НЕМЕДЛЕННАЯ СИНХРОНИЗАЦИЯ после 9:25
-        if now.time() >= time(9, 25):
-            logger.info(f"USER {user_id}: быстрый заказ - немедленная синхронизация (время {now.time()})")
-            try:
-                from bitrix.sync import BitrixSync
-                sync = BitrixSync()
-                success = await sync._push_to_bitrix()
-                if success:
-                    logger.info(f"USER {user_id}: быстрый заказ ID {order_id} синхронизирован с Битрикс")
-                else:
-                    logger.warning(f"USER {user_id}: ошибка синхронизации быстрого заказа ID {order_id}")
-            except Exception as sync_error:
-                logger.error(f"USER {user_id}: ошибка синхронизации быстрого заказа ID {order_id}: {sync_error}")
+        # # 🔥 НЕМЕДЛЕННАЯ СИНХРОНИЗАЦИЯ только для быстрых заказов на СЕГОДНЯ после IMMEDIATE_SYNC_TIME
+        # if now.time() >= TIME_CONFIG.IMMEDIATE_SYNC_TIME:  # ← ИСПРАВИТЬ
+        #     logger.info(f"USER {user_id}: быстрый заказ на сегодня - немедленная синхронизация (время {now.time()})")
+        #     try:
+        #         from bitrix.sync import BitrixSync
+        #         sync = BitrixSync()
+        #         success = await sync._push_to_bitrix()
+        #         if success:
+        #             logger.info(f"USER {user_id}: быстрый заказ на сегодня ID {order_id} синхронизирован с Битрикс")
+        #         else:
+        #             logger.warning(f"USER {user_id}: ошибка синхронизации быстрого заказа на сегодня ID {order_id}")
+        #     except Exception as sync_error:
+        #         logger.error(f"USER {user_id}: ошибка синхронизации быстрого заказа на сегодня ID {order_id}: {sync_error}")
 
         logger.info(f"USER {user_id}: быстрый заказ успешно оформлен - 1 порция на {today}")
         await update.message.reply_text(

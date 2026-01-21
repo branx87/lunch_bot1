@@ -3,8 +3,9 @@ import logging
 from telegram import InlineKeyboardButton, Update, InlineKeyboardMarkup
 from datetime import datetime, timedelta
 
-from db import CONFIG
-from db import db
+from database import db
+from config import CONFIG
+from models import User, Order
 from handlers.common import show_main_menu
 from utils import can_modify_order
 
@@ -40,14 +41,12 @@ async def refresh_day_view(query, day_offset, user_db_id, now, is_order=False):
             )
 
         # Проверяем заказ пользователя
-        db.cursor.execute("""
-            SELECT quantity, is_preliminary 
-            FROM orders 
-            WHERE user_id = ? 
-              AND target_date = ?
-              AND is_cancelled = FALSE
-        """, (user_db_id, target_date.isoformat()))
-        order = db.cursor.fetchone()
+        with db.get_session() as session:
+            order = session.query(Order.quantity, Order.is_preliminary).filter(
+                Order.user_id == user_db_id,
+                Order.target_date == target_date.isoformat(),
+                Order.is_cancelled == False
+            ).first()
 
         # Добавляем информацию о заказе
         keyboard = []
@@ -80,17 +79,18 @@ async def refresh_day_view(query, day_offset, user_db_id, now, is_order=False):
 async def refresh_orders_view(query, context, user_id, now, days_ru):
     """Обновляет список заказов после изменения количества"""
     try:
-        db.cursor.execute("""
-            SELECT o.target_date, o.quantity, o.is_preliminary
-            FROM orders o
-            JOIN users u ON o.user_id = u.id
-            WHERE u.telegram_id = ?
-              AND o.is_cancelled = FALSE
-              AND o.target_date >= ?
-            ORDER BY o.target_date
-        """, (user_id, now.date().isoformat()))
-
-        active_orders = db.cursor.fetchall()
+        with db.get_session() as session:
+            active_orders = session.query(
+                Order.target_date, 
+                Order.quantity, 
+                Order.is_preliminary
+            ).join(
+                User, Order.user_id == User.id
+            ).filter(
+                User.telegram_id == user_id,
+                Order.is_cancelled == False,
+                Order.target_date >= now.date().isoformat()
+            ).order_by(Order.target_date).all()
 
         if not active_orders:
             await query.edit_message_text("ℹ️ У вас нет активных заказов.")

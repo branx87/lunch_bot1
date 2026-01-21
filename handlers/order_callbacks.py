@@ -1,20 +1,21 @@
 # ##handlers/order_callbacks.py
-import sqlite3
-from turtle import update
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackQueryHandler
 from telegram.ext import ContextTypes
 from datetime import datetime, date, time, timedelta
 import logging
+from bot_keyboards import create_main_menu_keyboard, create_unverified_user_keyboard
 
 from bitrix.sync import BitrixSync
-from db import CONFIG
-from db import db
+from database import db
+from models import User, Order
+from config import CONFIG
 from handlers.common import show_main_menu
 from middleware import check_user_access
 from utils import can_modify_order
 from view_utils import refresh_day_view
 from notifications import show_access_denied
+from time_config import TIME_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +43,11 @@ async def handle_order_callback(query, now, user, context):
     logger.info(f"USER {user_id}: начинает оформление заказа: {query.data}")
     
     # Проверяем, разрешены ли заказы
-    if not CONFIG.orders_enabled:
-        logger.warning(f"USER {user_id}: попытка заказа при отключенных заказах")
-        await query.answer("❌ Приём заказов временно приостановлен", show_alert=True)
-        await query.edit_message_reply_markup(reply_markup=None)  # Убираем кнопки
+    if not CONFIG.are_orders_accepted_now():
+        status_msg = CONFIG.get_orders_status_message()
+        logger.warning(f"USER {user_id}: попытка заказа вне времени приема: {status_msg}")
+        await query.answer(status_msg, show_alert=True)
+        await query.edit_message_reply_markup(reply_markup=None)
         return
 
     # Проверяем "возраст" кнопки (если нужно ограничить время жизни)
@@ -80,7 +82,7 @@ async def handle_order_callback(query, now, user, context):
         logger.info(f"USER {user_id}: оформляет заказ на {target_date}")
         
         # Ручная проверка 1: Заказы на выходные не принимаются
-        if target_date.weekday() >= 5:  # 5-6 = суббота-воскресенье
+        if target_date.weekday() in TIME_CONFIG.WEEKEND_DAYS:
             logger.warning(f"USER {user_id}: попытка заказа на выходной {target_date}")
             await query.answer("ℹ️ Заказы на выходные не принимаются", show_alert=True)
             return
@@ -91,79 +93,64 @@ async def handle_order_callback(query, now, user, context):
             await query.answer("❌ Предзаказ можно сделать только на будущие даты", show_alert=True)
             return
 
-        # Ручная проверка 3: Обычные заказы только на сегодня и до 9:30
+        # Ручная проверка 3: Обычные заказы только на сегодня и до ORDER_DEADLINE
         if day_offset == 0:
-            if now.time() >= time(9, 30):
-                logger.warning(f"USER {user_id}: попытка заказа на сегодня после 9:30")
-                await query.answer("ℹ️ Приём заказов на сегодня завершён в 9:30", show_alert=True)
+            if now.time() >= TIME_CONFIG.ORDER_DEADLINE:
+                logger.warning(f"USER {user_id}: попытка заказа на сегодня после {TIME_CONFIG.ORDER_DEADLINE}")
+                await query.answer(f"ℹ️ Приём заказов на сегодня завершён в {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}", show_alert=True)
                 return
 
-        # Получаем ID пользователя из БД
-        db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user.id,))
-        user_record = db.cursor.fetchone()
+        # Получаем пользователя через SQLAlchemy
+        user_record = db.session.query(User).filter(User.telegram_id == user.id).first()
         if not user_record:
             logger.error(f"USER {user_id}: не найден в базе данных")
             await query.answer("❌ Пользователь не найден", show_alert=True)
             return
-        user_db_id = user_record[0]
+        user_db_id = user_record.id
 
-        # Проверяем существующий заказ
-        db.cursor.execute("""
-            SELECT quantity FROM orders 
-            WHERE user_id = ? 
-              AND target_date = ?
-              AND is_cancelled = FALSE
-        """, (user_db_id, target_date.isoformat()))
-        existing_order = db.cursor.fetchone()
+        # Проверяем существующий заказ через SQLAlchemy
+        existing_order = db.session.query(Order).filter(
+            Order.user_id == user_db_id,
+            Order.target_date == target_date,
+            Order.is_cancelled == False
+        ).first()
 
         if existing_order:
-            logger.info(f"USER {user_id}: уже имеет заказ на {target_date} - {existing_order[0]} порций")
-            await query.answer(f"ℹ️ У вас уже заказано {existing_order[0]} порций", show_alert=True)
+            logger.info(f"USER {user_id}: уже имеет заказ на {target_date} - {existing_order.quantity} порций")
+            await query.answer(f"ℹ️ У вас уже заказано {existing_order.quantity} порций", show_alert=True)
             return
 
-        # Маппинг количества порций на bitrix_quantity_id
-        quantity_map = {
-            1: '821',
-            2: '822',
-            3: '823',
-            4: '824',
-            5: '825'
-        }
         initial_quantity = 1  # По умолчанию 1 порция
-        bitrix_quantity_id = quantity_map[initial_quantity]
+        bitrix_quantity_id = QUANTITY_MAP[initial_quantity]
 
-        # Создаём новый заказ
-        with db.conn:
-            db.cursor.execute("""
-                INSERT INTO orders (
-                    user_id, target_date, order_time, 
-                    quantity, bitrix_quantity_id, is_active,
-                    is_preliminary, created_at
-                ) VALUES (?, ?, ?, ?, ?, TRUE, ?, ?)
-            """, (
-                user_db_id,
-                target_date.isoformat(),
-                now.strftime("%H:%M:%S"),
-                initial_quantity,
-                bitrix_quantity_id,
-                day_offset > 0,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            ))
+        # Создаём новый заказ через SQLAlchemy
+        new_order = Order(
+            user_id=user_db_id,
+            target_date=target_date,
+            order_time=now.strftime("%H:%M:%S"),
+            quantity=initial_quantity,
+            bitrix_quantity_id=bitrix_quantity_id,
+            is_active=True,
+            is_preliminary=day_offset > 0,
+            created_at=datetime.now()
+        )
+        db.session.add(new_order)
+        db.session.commit()
 
         logger.info(f"USER {user_id}: успешно создал заказ на {target_date}, {initial_quantity} порция(й)")
 
-        # 🔥 НЕМЕДЛЕННАЯ СИНХРОНИЗАЦИЯ после 9:25
-        if now.time() >= time(9, 25):
-            logger.info(f"USER {user_id}: выполняется немедленная синхронизация (время после 9:25)")
-            try:
-                sync = BitrixSync()
-                success = await sync._push_to_bitrix()
-                if success:
-                    logger.info(f"USER {user_id}: заказ синхронизирован немедленно")
-                else:
-                    logger.warning(f"USER {user_id}: ошибка немедленной синхронизации")
-            except Exception as sync_error:
-                logger.error(f"USER {user_id}: ошибка при немедленной синхронизации: {sync_error}")
+        # # 🔥 НЕМЕДЛЕННАЯ СИНХРОНИЗАЦИЯ только для заказов на СЕГОДНЯ после IMMEDIATE_SYNC_TIME
+        # if day_offset == 0 and now.time() >= TIME_CONFIG.IMMEDIATE_SYNC_TIME:
+        #     logger.info(f"USER {user_id}: выполняется немедленная синхронизация заказа на сегодня (время после {TIME_CONFIG.IMMEDIATE_SYNC_TIME.strftime('%H:%M')})")
+        #     try:
+        #         sync = BitrixSync()
+        #         success = await sync._push_to_bitrix()
+        #         if success:
+        #             logger.info(f"USER {user_id}: заказ на сегодня синхронизирован немедленно")
+        #         else:
+        #             logger.warning(f"USER {user_id}: ошибка немедленной синхронизации заказа на сегодня")
+        #     except Exception as sync_error:
+        #         logger.error(f"USER {user_id}: ошибка при немедленной синхронизации заказа на сегодня: {sync_error}")
 
         # Обновляем интерфейс
         await refresh_day_view(query, day_offset, user_db_id, now, is_order=True)
@@ -200,42 +187,42 @@ async def handle_change_callback(query, now, user, context):
         
         # Проверка возможности изменения
         if not can_modify_order(target_date):
-            await query.answer("ℹ️ Изменение невозможно после 9:30", show_alert=True)
+            await query.answer(f"ℹ️ Изменение невозможно после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}", show_alert=True)
             if 'user_db_id' in context.user_data:
                 await refresh_day_view(query, day_offset, context.user_data['user_db_id'], now)
             return
 
-        # Получаем ID пользователя
+        # Получаем ID пользователя через SQLAlchemy
         try:
             if 'user_db_id' not in context.user_data:
-                db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user.id,))
-                user_record = db.cursor.fetchone()
+                user_record = db.session.query(User).filter(User.telegram_id == user.id).first()
                 if not user_record:
                     await query.answer("❌ Пользователь не найден", show_alert=True)
                     return
-                context.user_data['user_db_id'] = user_record[0]
+                context.user_data['user_db_id'] = user_record.id
             
             user_db_id = context.user_data['user_db_id']
-        except sqlite3.Error as e:
+        except Exception as e:
             logger.error(f"Ошибка БД при получении user_id: {e}", exc_info=True)
             await query.answer("⚠️ Ошибка базы данных", show_alert=True)
             return
 
-        # Получаем текущий заказ
+        # Получаем текущий заказ через SQLAlchemy
         try:
-            db.cursor.execute("""
-                SELECT quantity, bitrix_quantity_id FROM orders 
-                WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
-            """, (user_db_id, target_date.isoformat()))
-            order_record = db.cursor.fetchone()
-            if not order_record:
+            order = db.session.query(Order).filter(
+                Order.user_id == user_db_id,
+                Order.target_date == target_date,
+                Order.is_cancelled == False
+            ).first()
+            
+            if not order:
                 await query.answer("ℹ️ Заказ не найден", show_alert=True)
                 return
             
-            current_qty = order_record[0]
-            bitrix_quantity_id = order_record[1]
+            current_qty = order.quantity
+            bitrix_quantity_id = order.bitrix_quantity_id
             
-        except sqlite3.Error as e:
+        except Exception as e:
             logger.error(f"Ошибка БД при получении заказа: {e}", exc_info=True)
             await query.answer("⚠️ Ошибка базы данных", show_alert=True)
             return
@@ -349,64 +336,45 @@ async def handle_cancel_callback(query, now, user, context):
 
         logger.info(f"USER {user_id}: пытается отменить заказ на {target_date}")
 
-        # Получаем ID пользователя в БД
-        user_db_id = await get_user_db_id(user.id)
-        if not user_db_id:
+        # Получаем ID пользователя в БД через SQLAlchemy
+        user_record = db.session.query(User).filter(User.telegram_id == user.id).first()
+        if not user_record:
             logger.error(f"USER {user_id}: не найден в базе данных")
             await query.answer("❌ Пользователь не найден", show_alert=True)
             return
+        user_db_id = user_record.id
 
         # Проверяем можно ли отменять заказ
         if not can_modify_order(target_date):
             logger.warning(f"USER {user_id}: отмена невозможна для {target_date} (время истекло)")
-            await query.answer("ℹ️ Отмена невозможна после 9:20", show_alert=True)
+            await query.answer(f"ℹ️ Отмена невозможна после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}", show_alert=True)
             return
 
-        # Проверяем, не создан ли заказ в Битрикс
-        db.cursor.execute("""
-            SELECT is_from_bitrix FROM orders 
-            WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
-        """, (user_db_id, target_date.isoformat()))
-        order_record = db.cursor.fetchone()
+        # Проверяем, не создан ли заказ в Битрикс через SQLAlchemy
+        order = db.session.query(Order).filter(
+            Order.user_id == user_db_id,
+            Order.target_date == target_date,
+            Order.is_cancelled == False
+        ).first()
         
-        if not order_record:
+        if not order:
             logger.warning(f"USER {user_id}: заказ на {target_date} не найден")
             await query.answer("❌ Заказ не найден", show_alert=True)
             return
             
-        if order_record[0] == 1:  # is_from_bitrix = 1
+        if order.is_from_bitrix == 1:
             logger.warning(f"USER {user_id}: попытка отменить заказ из Битрикс на {target_date}")
             await query.answer("❌ Заказ создан в Битрикс, отмена невозможна", show_alert=True)
             return
 
-        # Отменяем заказ
-        # Сначала находим ID заказа
-        db.cursor.execute("""
-            SELECT id FROM orders 
-            WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
-        """, (user_db_id, target_date.isoformat()))
+        # Отменяем заказ через SQLAlchemy
+        order.is_cancelled = True
+        order.order_time = now.strftime("%H:%M:%S")
+        db.session.commit()
 
-        order_record = db.cursor.fetchone()
-        if order_record:
-            order_id = order_record[0]
-            
-            # Помечаем заказ как отмененный
-            with db.conn:
-                db.cursor.execute("""
-                    UPDATE orders
-                    SET is_cancelled = TRUE,
-                        order_time = ?
-                    WHERE id = ?
-                """, (now.strftime("%H:%M:%S"), order_id))
-            
-            # 🔥 НЕМЕДЛЕННОЕ УДАЛЕНИЕ если условия подходят
-            sync = BitrixSync()
-            await sync.cancel_order_immediate_cleanup(order_id)
-                    
-            if db.cursor.rowcount == 0:
-                logger.warning(f"USER {user_id}: заказ на {target_date} не найден для отмены")
-                await query.answer("❌ Заказ не найден", show_alert=True)
-                return
+        # 🔥 НЕМЕДЛЕННОЕ УДАЛЕНИЕ если условия подходят
+        sync = BitrixSync()
+        await sync.cancel_order_immediate_cleanup(order.id)
 
         # Логируем успешную отмену
         logger.info(f"USER {user_id}: успешно отменил заказ на {target_date}")
@@ -431,15 +399,15 @@ async def handle_cancel_callback(query, now, user, context):
 def can_modify_order(target_date):
     """
     Проверяет возможность изменения/отмены заказа:
-    - Для сегодняшней даты: до 9:20
+    - Для сегодняшней даты: до TIME_CONFIG.MODIFICATION_DEADLINE
     - Для будущих дат: всегда можно
     - Для заказов из Битрикс: нельзя
     """
-    now = datetime.now(CONFIG.timezone)
+    now = datetime.now(TIME_CONFIG.TIMEZONE)
     
     # Если заказ на сегодня
     if target_date == now.date():
-        return now.time() < time(9, 20)
+        return now.time() < TIME_CONFIG.MODIFICATION_DEADLINE
     
     # Если заказ на будущее
     return True
@@ -480,49 +448,47 @@ async def modify_portion_count(query, now, user, context, delta):
         target_date = (now + timedelta(days=day_offset)).date()
         user_db_id = context.user_data['user_db_id']
         
-        # Проверяем можно ли изменять заказ
+        # Проверка возможности изменения
         if not can_modify_order(target_date):
-            await query.answer("ℹ️ Изменение невозможно после 9:20", show_alert=True)
+            await query.answer(f"ℹ️ Изменение невозможно после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}", show_alert=True)
+            if 'user_db_id' in context.user_data:
+                await refresh_day_view(query, day_offset, context.user_data['user_db_id'], now)
             return
 
-        # Получаем текущий заказ
-        db.cursor.execute("""
-            SELECT quantity, bitrix_quantity_id, is_from_bitrix FROM orders 
-            WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
-        """, (user_db_id, target_date.isoformat()))
-        current_order = db.cursor.fetchone()
+        # Получаем текущий заказ через SQLAlchemy
+        order = db.session.query(Order).filter(
+            Order.user_id == user_db_id,
+            Order.target_date == target_date,
+            Order.is_cancelled == False
+        ).first()
         
-        if not current_order:
+        if not order:
             await query.answer("ℹ️ Заказ не найден")
             return
             
         # Проверяем, не создан ли заказ в Битрикс
-        if current_order[2] == 1:  # is_from_bitrix = 1
+        if order.is_from_bitrix == 1:
             await query.answer("❌ Заказ создан в Битрикс, изменение невозможно", show_alert=True)
             return
             
-        current_qty = current_order[0]
+        current_qty = order.quantity
         new_qty = current_qty + delta
 
         # Проверка границ
         if new_qty < 1:
             return await handle_cancel_callback(query, now, user, context)
-        if new_qty > 5:  # Максимум 5 порций
-            await query.answer("ℹ️ Максимум 5 порций")
+        if new_qty > TIME_CONFIG.MAX_PORTIONS:
+            await query.answer(f"ℹ️ Максимум {TIME_CONFIG.MAX_PORTIONS} порций")
             return
 
         # Маппинг количества порций на bitrix_quantity_id
         new_bitrix_quantity_id = QUANTITY_MAP.get(new_qty, '821')
 
-        # Обновляем заказ
-        with db.conn:
-            db.cursor.execute("""
-                UPDATE orders 
-                SET quantity = ?,
-                    bitrix_quantity_id = ?,
-                    updated_at = datetime('now')
-                WHERE user_id = ? AND target_date = ? AND is_cancelled = FALSE
-            """, (new_qty, new_bitrix_quantity_id, user_db_id, target_date.isoformat()))
+        # Обновляем заказ через SQLAlchemy
+        order.quantity = new_qty
+        order.bitrix_quantity_id = new_bitrix_quantity_id
+        order.updated_at = datetime.now()
+        db.session.commit()
 
         # Обновляем интерфейс
         await handle_change_callback(query, now, user, context)
@@ -546,22 +512,38 @@ def setup_order_callbacks(application):
         pattern=r'^(order|inc|dec|change|cancel|confirm)_'
     ))
     
-    # Альтернативный вариант с раздельными обработчиками для каждого типа callback:
-    # handlers = [
-    #     CallbackQueryHandler(handle_order_callback, pattern=r'^order_'),
-    #     CallbackQueryHandler(modify_portion_count, pattern=r'^inc_'),
-    #     CallbackQueryHandler(modify_portion_count, pattern=r'^dec_'),
-    #     CallbackQueryHandler(handle_change_callback, pattern=r'^change_'),
-    #     CallbackQueryHandler(handle_cancel_callback, pattern=r'^cancel_'),
-    #     CallbackQueryHandler(handle_confirm_callback, pattern=r'^confirm_')
-    # ]
-    # for handler in handlers:
-    #     application.add_handler(handler)
+async def show_main_menu_from_callback(update: Update, user_id: int):
+    """Показ главного меню из callback"""
+    query = update.callback_query
+    try:
+        # Закрываем callback
+        await query.answer()
+        
+        # Отправляем новое сообщение с главным меню
+        if user_id in CONFIG.admin_ids or user_id in CONFIG.provider_ids or user_id in CONFIG.accounting_ids:
+            reply_markup = create_main_menu_keyboard(user_id)
+        else:
+            user = db.session.query(User).filter(
+                User.telegram_id == user_id
+            ).first()
+            
+            if user and user.is_verified:
+                reply_markup = create_main_menu_keyboard(user_id)
+            else:
+                reply_markup = create_unverified_user_keyboard()
+
+        await query.message.reply_text("Главное меню:", reply_markup=reply_markup)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в show_main_menu_from_callback: {e}", exc_info=True)
+        await query.message.reply_text("⚠️ Ошибка при отображении меню")
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
         return
+    
+    logger.info(f"Получен callback: {query.data} от пользователя {update.effective_user.id}")
     
     try:
         user = update.effective_user
@@ -569,26 +551,41 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
             
         if not await check_user_access(user.id, context.application):
-            await show_access_denied(update)  # Передаем весь update объект
+            await show_access_denied(update)
             return
         
-        user = update.effective_user
         now = datetime.now(CONFIG.timezone)
         
-        # Обработка кнопки "Назад"
+        # 1. Сначала проверяем back_to_menu - это самый частый случай
+        if query.data == "back_to_menu":
+            logger.info("Обработка back_to_menu")
+            await show_main_menu_from_callback(update, user.id)
+            return
+        
+        # 2. Затем проверяем историю сообщений
+        if query.data.startswith("history_"):
+            logger.info(f"Обработка истории: {query.data}")
+            data_parts = query.data.split('_')
+            if len(data_parts) >= 3:
+                action = data_parts[1]
+                page = int(data_parts[2])
+                
+                if action == "prev":
+                    page = max(0, page - 1)
+                else:  # "next"
+                    page += 1
+                
+                context.user_data['history_page'] = page
+                from admin import message_history
+                await message_history(update, context)
+            return
+        
+        # 3. Обработка back_to_main_menu
         if query.data == "back_to_main_menu":
-            await show_main_menu(query.message, user.id)
+            await show_main_menu_from_callback(update, user.id)
             return
         
-        # Обработка пагинации
-        if query.data.startswith(('admin_', 'provider_', 'accountant_', 'staff_', 'holiday_')) and ('_prev_' in query.data or '_next_' in query.data):
-            from handlers.admin_config_handlers import handle_pagination
-            return await handle_pagination(update, context)
-            
         # Остальная обработка callback'ов
-        user = update.effective_user
-        now = datetime.now(CONFIG.timezone)
-        
         if query.data.startswith("inc_"):
             await modify_portion_count(query, now, user, context, +1)
         elif query.data.startswith("dec_"):
@@ -604,8 +601,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data.startswith("del_"):  # Обработка удалений
             from handlers.admin_config_handlers import handle_deletion
             await handle_deletion(update, context)
-        elif query.data == "back_to_menu":
-            await show_main_menu(query.message, user.id)
         elif query.data == "noop":
             await query.answer()
         elif query.data == "refresh":
@@ -619,7 +614,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("⚠️ Произошла ошибка. Попробуйте позже")
 
 async def get_user_db_id(telegram_id):
-    """Получает ID пользователя в БД"""
-    db.cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (telegram_id,))
-    result = db.cursor.fetchone()
-    return result[0] if result else None
+    """Получает ID пользователя в БД через SQLAlchemy"""
+    user = db.session.query(User).filter(User.telegram_id == telegram_id).first()
+    return user.id if user else None

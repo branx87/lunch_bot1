@@ -2,7 +2,8 @@
 from telegram import Update
 from telegram.ext import BaseHandler, ContextTypes
 import logging
-from db import db
+from database import db
+from models import User
 
 logger = logging.getLogger(__name__)
 
@@ -27,22 +28,20 @@ class AccessControlHandler(BaseHandler):
             if user.id in context.application.bot_data.get('admin_ids', []):
                 return True
 
-            db.cursor.execute("""
-                SELECT is_verified, is_deleted 
-                FROM users 
-                WHERE telegram_id = ?
-            """, (user.id,))
-            result = db.cursor.fetchone()
-            
-            if not result:
-                logger.info(f"Незарегистрированный пользователь {user.id}")
-                return False
+            with db.get_session() as session:
+                user_data = session.query(User).filter(
+                    User.telegram_id == user.id
+                ).first()
                 
-            if not result[0] or result[1]:
-                logger.info(f"Доступ запрещен для пользователя {user.id} (verified={result[0]}, deleted={result[1]})")
-                return False
-                
-            return True
+                if not user_data:
+                    logger.info(f"Незарегистрированный пользователь {user.id}")
+                    return False
+                    
+                if not user_data.is_verified or user_data.is_deleted:
+                    logger.info(f"Доступ запрещен для пользователя {user.id} (verified={user_data.is_verified}, deleted={user_data.is_deleted})")
+                    return False
+                    
+                return True
         except Exception as e:
             logger.error(f"Ошибка проверки доступа: {e}", exc_info=True)
             return False
@@ -78,10 +77,12 @@ async def check_user_access(user_id: int, application=None) -> bool:
         if application and user_id in application.bot_data.get('admin_ids', []):
             return True
             
-        db.cursor.execute("SELECT is_verified, is_deleted FROM users WHERE telegram_id = ?", (user_id,))
-        result = db.cursor.fetchone()
-        
-        return bool(result and result[0] and not result[1])
+        with db.get_session() as session:
+            user_data = session.query(User).filter(
+                User.telegram_id == user_id
+            ).first()
+            
+            return bool(user_data and user_data.is_verified and not user_data.is_deleted)
     except Exception as e:
         logger.error(f"Ошибка проверки доступа: {e}")
         return False

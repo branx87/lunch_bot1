@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Создаем необходимые директории
-RUN mkdir -p /app/data/configs /app/data/logs /app/data/reports /app/data/db /app/data/backups
+RUN mkdir -p /app/data/configs /app/data/logs /app/data/reports /app/data/db
 
 # Запускаем бота
 CMD ["python", "main.py"]

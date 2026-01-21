@@ -70,6 +70,10 @@ temp/
 *.tmp
 *.temp
 
+### Data directory (database, logs, backups, configs) ###
+data/*
+PostgreSQL/*
+
 ### Custom directories ###
 Мусор и прочее/
 Последнее, но не рабочее/

@@ -1,5 +1,7 @@
 # ##handlers/__init__.py
+from bitrix_checker import BitrixChecker
 from datetime import datetime, timedelta
+from time_config import TIME_CONFIG
 from handlers.registration_handlers import get_full_name, get_location, get_phone, change_location
 from telegram import Update
 from telegram.ext import (
@@ -14,7 +16,8 @@ from telegram.ext import (
 
 from handlers.common import show_main_menu
 from admin import message_history
-from db import CONFIG
+from database import db
+from config import CONFIG, logger
 from constants import (
     ADMIN_REPORTS_MENU, AWAIT_MESSAGE_TEXT, FULL_NAME, LOCATION, MAIN_MENU, 
     ORDER_ACTION, ORDER_CONFIRMATION, PHONE, 
@@ -50,11 +53,195 @@ from handlers.order_callbacks import callback_handler, setup_order_callbacks
 from handlers.provider_handlers import setup_provider_handlers
 from handlers.registration_handlers import get_full_name, get_location, get_phone
 
+async def manual_push_orders_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ручной отправки заказов"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    from config import logger  # 🔥 Импортируем здесь
+    
+    # Проверка прав
+    if not CONFIG.master_admin_id or user_id != CONFIG.master_admin_id:
+        await query.answer("❌ У вас нет прав для этой операции", show_alert=True)
+        return
+    
+    await query.answer("🔄 Запускаю отправку заказов...")
+    
+    try:
+        from bitrix.sync import BitrixSync
+        from time_config import TIME_CONFIG  # 🔥 Импортируем здесь
+        
+        # Получаем информацию о неотправленных заказах
+        sync = BitrixSync()
+        pending_info = await sync.get_pending_orders_info()
+        
+        if pending_info['count'] == 0:
+            await query.edit_message_text(
+                "✅ Все заказы уже отправлены!\n\n"
+                f"Дата: {pending_info['date']}"
+            )
+            await sync.close()  # 🔥 ВАЖНО: закрыть sync
+            return
+        
+        # Запускаем отправку
+        await query.edit_message_text(
+            f"🔄 Отправляю {pending_info['count']} заказов в Bitrix...\n"
+            "⏳ Это может занять некоторое время..."
+        )
+        
+        success = await sync._push_to_bitrix()
+        
+        if success:
+            result_msg = (
+                f"✅ УСПЕШНО!\n\n"
+                f"📤 Отправлено заказов: {pending_info['count']}\n"
+                f"📅 Дата: {pending_info['date']}\n"
+                f"⏰ Время: {datetime.now(TIME_CONFIG.TIMEZONE).strftime('%H:%M:%S')}"
+            )
+        else:
+            # Получаем обновленную информацию
+            new_pending = await sync.get_pending_orders_info()
+            result_msg = (
+                f"⚠️ ЧАСТИЧНО ВЫПОЛНЕНО\n\n"
+                f"✅ Отправлено: {pending_info['count'] - new_pending['count']}\n"
+                f"❌ Не отправлено: {new_pending['count']}\n"
+                f"📅 Дата: {pending_info['date']}\n\n"
+                "Проверьте логи для деталей ошибок."
+            )
+        
+        await query.edit_message_text(result_msg)
+        await sync.close()
+        
+    except Exception as e:
+        logger.error(f"Ошибка ручной отправки заказов: {e}", exc_info=True)
+        await query.edit_message_text(
+            f"❌ Ошибка при отправке заказов:\n\n{str(e)}\n\n"
+            "Проверьте логи для подробностей."
+        )
+
 def setup_handlers(application):
     """Настройка всех обработчиков в правильном порядке"""
     
+    # Временная функция прямо здесь
+    async def check_system_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда для проверки системы на СЕГОДНЯ"""
+        user_id = update.effective_user.id
+        
+        if user_id not in CONFIG.admin_ids:
+            await update.message.reply_text("❌ У вас нет прав для выполнения этой команды")
+            return
+        
+        from config import logger
+        logger.info(f"Админ {user_id} запустил проверку системы на сегодня")
+        
+        await update.message.reply_text("🔍 Запускаю проверку системы на сегодня...")
+        
+        try:
+            checker = BitrixChecker()
+            success, info_issues, orders_count = await checker.run_all_checks()
+            
+            if success:
+                message = "✅ СИСТЕМА ГОТОВА К ОТПРАВКЕ В 9:25!\n\n"
+                
+                if info_issues:
+                    message += "💡 Технические замечания (не влияют на работу):\n"
+                    for issue in info_issues:
+                        message += f"• {issue}\n"
+                    message += "\n"
+                
+                if orders_count > 0:
+                    message += f"🎯 В 9:25 будет отправлено {orders_count} заказов в Bitrix"
+                else:
+                    message += "ℹ️ На сегодня нет заказов для отправки"
+                    
+                await update.message.reply_text(message)
+            else:
+                await update.message.reply_text(
+                    "❌ ЕСТЬ КРИТИЧЕСКИЕ ПРОБЛЕМЫ!\n\n"
+                    "Система НЕ ГОТОВА к отправке в 9:25.\n"
+                    "Проверьте логи для деталей и срочно исправьте проблемы."
+                )
+                
+        except Exception as e:
+            logger.error(f"Ошибка при проверке системы: {e}", exc_info=True)
+            await update.message.reply_text("❌ Произошла ошибка при проверке системы")
+
+    async def check_safety_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда для проверки безопасности отправки заказов"""
+        user_id = update.effective_user.id
+        
+        if user_id not in CONFIG.admin_ids:
+            await update.message.reply_text("❌ У вас нет прав для выполнения этой команды")
+            return
+        
+        from config import logger
+        logger.info(f"Админ {user_id} запустил проверку безопасности")
+        
+        await update.message.reply_text("🔒 Запускаю проверку безопасности отправки...")
+        
+        try:
+            checker = BitrixChecker()
+            is_safe, orders, issues = await checker.check_send_orders_safety()
+            
+            if is_safe:
+                message = (
+                    f"✅ ОТПРАВКА БЕЗОПАСНА!\n\n"
+                    f"📦 Заказов для отправки: {len(orders)}\n"
+                    f"🔒 Риск дублей: НЕТ\n"
+                    f"🌐 Подключение к Bitrix: РАБОТАЕТ\n\n"
+                    f"Можно запускать отправку в 9:25!"
+                )
+            else:
+                message = "🚨 ОПАСНОСТЬ ДУБЛЕЙ!\n\nПРОБЛЕМЫ:\n"
+                for issue in issues:
+                    message += f"• {issue}\n"
+                message += "\n❌ НЕ отправлять заказы до исправления!"
+                
+            await update.message.reply_text(message)
+                
+        except Exception as e:
+            logger.error(f"Ошибка при проверке безопасности: {e}", exc_info=True)
+            await update.message.reply_text("❌ Произошла ошибка при проверке безопасности")
+
+    async def check_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда для проверки текущей конфигурации"""
+        user = update.effective_user
+        
+        # Принудительно перезагружаем конфиг
+        CONFIG.reload()
+        
+        # Импортируем TIME_CONFIG
+        from time_config import TIME_CONFIG
+        
+        message = (
+            f"🔧 ТЕКУЩАЯ КОНФИГУРАЦИЯ:\n"
+            f"👑 Админы: {CONFIG.admin_ids}\n"
+            f"📦 Поставщики: {CONFIG.provider_ids}\n"
+            f"💰 Бухгалтеры: {CONFIG.accounting_ids}\n"
+            f"🔑 Ваш ID: {user.id}\n"
+            f"✅ Вы админ: {user.id in CONFIG.admin_ids}\n"
+            f"🔄 Заказы включены: {CONFIG.orders_enabled}\n\n"
+            f"⏰ НАСТРОЙКИ ВРЕМЕНИ:\n"
+            f"🕘 Прием заказов до: {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}\n"
+            f"✏️ Изменение до: {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}\n"
+            f"🔄 Синхронизация с: {TIME_CONFIG.IMMEDIATE_SYNC_TIME.strftime('%H:%M')}\n"
+            f"📅 Выходные дни: {[['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][i] for i in TIME_CONFIG.WEEKEND_DAYS]}\n"
+            f"🏢 Рабочие дни: {[['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][i] for i in TIME_CONFIG.WORK_DAYS]}\n"
+            f"⏰ Часовой пояс: {TIME_CONFIG.TIMEZONE}\n\n"
+            f"🔔 CRON ЗАДАЧИ:\n"
+            f"⏰ Напоминания: {TIME_CONFIG.MORNING_REMINDER_TIME.strftime('%H:%M')}\n"
+            f"📊 Отчеты: {TIME_CONFIG.MORNING_REPORTS_TIME.strftime('%H:%M')}\n"
+            f"💰 Бух. отчет: {TIME_CONFIG.ACCOUNTING_REPORT_TIME.strftime('%H:%M')}\n"
+            f"🔄 Синхр. сотр.: {TIME_CONFIG.SYNC_EMPLOYEES_TIME.strftime('%H:%M')}"
+        )
+        
+        await update.message.reply_text(message)
+    
     # 1. Специальные команды (тестовые, служебные)
     application.add_handler(CommandHandler('test', test_connection))
+    application.add_handler(CommandHandler('check_system', check_system_command))
+    application.add_handler(CommandHandler('check_safety', check_safety_command))
+    application.add_handler(CommandHandler('config_check', check_config_command))
     
     # 2. Обработчики рассылки
     broadcast_handler = ConversationHandler(
@@ -150,7 +337,7 @@ def setup_handlers(application):
         filters.Regex(r'^(🏠 Главное меню|Вернуться в главное меню)$'),
         lambda update, context: show_main_menu(update, update.effective_user.id)
     ))
-    
+
     application.add_handler(MessageHandler(
         filters.Regex("^📜 История сообщений$") & filters.User(user_id=CONFIG.admin_ids),
         message_history
@@ -213,6 +400,18 @@ def setup_handlers(application):
         allow_reentry=True
     )
     application.add_handler(conv_handler)
+    
+    # 🔥 ОБРАБОТЧИК ДЛЯ CALLBACK РУЧНОЙ ОТПРАВКИ (до общего CallbackQueryHandler!)
+    application.add_handler(
+        CallbackQueryHandler(
+            manual_push_orders_callback, 
+            pattern="^manual_push_orders$"
+        )
+    )
+    
+    # 🔥 КОМАНДА РУЧНОЙ ОТПРАВКИ ЗАКАЗОВ
+    from handlers.commands import manual_sync_command
+    application.add_handler(CommandHandler('manual_sync', manual_sync_command))
     
     # 10. Обработчик для зарегистрированных пользователей (только отчеты)
     application.add_handler(MessageHandler(

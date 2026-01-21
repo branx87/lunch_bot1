@@ -2,9 +2,13 @@
 from asyncio.log import logger
 from typing import Optional
 from telegram import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
-from db import CONFIG
-from db import db
+from database import db
+from config import CONFIG
 from settings import SETTINGS_CONFIG
+import logging
+from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__) 
 
 LOCATIONS = SETTINGS_CONFIG["LOCATIONS"]
 
@@ -116,14 +120,15 @@ def get_user_role(user_id: int) -> Optional[str]:
             logger.debug(f"User {user_id} identified as accountant")
             return 'accountant'
 
-        # Проверяем, является ли пользователь сотрудником
-        db.cursor.execute(
-            "SELECT id FROM users WHERE telegram_id = ? AND is_employee = TRUE AND is_deleted = FALSE",
-            (user_id,)  # Важно: передаем как кортеж
-        )
-        result = db.cursor.fetchone()
+        # 🔥 ИСПРАВЛЕНИЕ: Используем SQLAlchemy вместо cursor()
+        from models import User
+        user = db.session.query(User).filter(
+            User.telegram_id == user_id,
+            User.is_employee == True,
+            User.is_deleted == False
+        ).first()
         
-        if result:
+        if user:
             logger.debug(f"User {user_id} identified as employee")
             return 'employee'
         

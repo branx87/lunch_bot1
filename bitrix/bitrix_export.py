@@ -7,7 +7,9 @@ import pandas as pd
 import logging
 from datetime import datetime, timedelta
 from bitrix.sync import BitrixSync
-from db import db
+from database import db
+from models import User
+from sqlalchemy import text
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -104,7 +106,6 @@ async def export_monthly_orders(year=None, month=None):
             created_time = order.get('createdTime', '')
             created_date = created_time.split('T')[0] if created_time else ''
 
-            # Обновить processed_data в export_monthly_orders
             processed_data.append({
                 'ID_заказа_Bitrix': order.get('id'),
                 'ID_сотрудника': employee_bitrix_id,
@@ -133,55 +134,45 @@ async def export_monthly_orders(year=None, month=None):
         logger.error(f"Ошибка при экспорте: {str(e)}", exc_info=True)
         raise
 
-# Временное решение для старых заказов
-# В bitrix_export.py обновите функцию get_employee_name
-async def get_employee_name(search_value: str, search_by: str = 'crm_employee_id') -> str:
+async def get_employee_name(search_value: str, search_by: str = 'bitrix_id') -> str:
     """Получаем имя сотрудника с приоритетом для CRM ID"""
     try:
-        # Сначала ищем по CRM ID
-        if search_by == 'crm_employee_id':
-            result = db.execute(
-                "SELECT full_name, position, department FROM users WHERE crm_employee_id = ? LIMIT 1",
-                (search_value,)
-            )
-            if result:
-                full_name = result[0][0]
-                position = result[0][1] if len(result[0]) > 1 else None
-                department = result[0][2] if len(result[0]) > 2 else None
-                
-                info_parts = []
-                if position:
-                    info_parts.append(position)
-                if department:
-                    info_parts.append(department)
-                
-                info_str = f" ({', '.join(info_parts)})" if info_parts else ""
-                return f"{full_name}{info_str}"
-        
-        # Если не нашли по CRM ID, ищем по Bitrix ID
-        result = db.execute(
-            "SELECT full_name, position, department FROM users WHERE bitrix_id = ? LIMIT 1",
-            (search_value,)
-        )
-        
-        if result:
-            full_name = result[0][0]
-            position = result[0][1] if len(result[0]) > 1 else None
-            department = result[0][2] if len(result[0]) > 2 else None
+        with db.get_session() as session:
+            # Сначала ищем по CRM ID если указано
+            if search_by == 'crm_employee_id':
+                user = session.query(User).filter(
+                    User.crm_employee_id == search_value
+                ).first()
+                if user:
+                    return _format_employee_info(user)
             
-            info_parts = []
-            if position:
-                info_parts.append(position)
-            if department:
-                info_parts.append(department)
+            # Ищем по Bitrix ID
+            user = session.query(User).filter(
+                User.bitrix_id == search_value
+            ).first()
             
-            info_str = f" ({', '.join(info_parts)})" if info_parts else ""
-            return f"{full_name}{info_str} (по Bitrix ID)"
-        else:
-            return f"Неизвестный сотрудник (ID: {search_value})"
+            if user:
+                return _format_employee_info(user, source="Bitrix ID")
+            else:
+                return f"Неизвестный сотрудник (ID: {search_value})"
+                
     except Exception as e:
         logger.error(f"Ошибка получения имени сотрудника: {e}")
         return f"Неизвестный сотрудник (ID: {search_value})"
+
+def _format_employee_info(user: User, source: str = "") -> str:
+    """Форматирует информацию о сотруднике для отображения"""
+    info_parts = []
+    
+    if user.position:
+        info_parts.append(user.position)
+    if user.department:
+        info_parts.append(user.department)
+    
+    info_str = f" ({', '.join(info_parts)})" if info_parts else ""
+    source_str = f" (по {source})" if source else ""
+    
+    return f"{user.full_name}{info_str}{source_str}"
 
 if __name__ == '__main__':
     asyncio.run(export_monthly_orders(year=2025, month=7))

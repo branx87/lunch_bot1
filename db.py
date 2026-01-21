@@ -454,8 +454,8 @@ class Database:
             # Список допустимых полей для обновления
             allowed_fields = ['bitrix_id', 'position', 'department', 'is_deleted', 
                             'full_name', 'phone', 'location', 'is_verified', 
-                            'is_employee', 'username', 'notifications_enabled']
-            
+                            'is_employee', 'username', 'notifications_enabled',
+                            'crm_employee_id']  # 🔥 ДОБАВЛЕНО ЭТО ПОЛЕ
             # Фильтруем только допустимые поля
             update_data = {k: v for k, v in kwargs.items() if k in allowed_fields}
             

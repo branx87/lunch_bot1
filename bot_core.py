@@ -1,163 +1,119 @@
-# ##bot_core.py
-from datetime import datetime, timedelta
-import sqlite3
-from telegram.ext import ApplicationBuilder
-from middleware import AccessControlHandler
 import logging
 import asyncio
-from db import CONFIG, db  # Импортируем db напрямую
-from cron_jobs import CronManager
+from telegram.ext import ApplicationBuilder
+from telegram.request import HTTPXRequest
 
-logger = logging.getLogger(__name__)
 
 class LunchBot:
     def __init__(self, bitrix_sync=None):
         self.bitrix_sync = bitrix_sync
-        
-        # Проверяем, что база данных инициализирована
-        if db is None:
-            raise Exception("База данных не инициализирована")
-            
-        self.cursor = db.cursor
-        
         self.application = None
         self._running = False
         self.cron_manager = None
+        
+        # Простой логгер без сложной логики
+        self.logger = logging.getLogger(__name__)
+
 
     async def run(self):
         try:
-            # Проверяем, что CONFIG загружен
+            self.logger.info("=== НАЧАЛО РАБОТЫ BOT_CORE ===")
+            
+            # Отложенный импорт ВСЕХ модулей
+            from config import CONFIG
+            from database import db
+            
+            self.logger.info("1. Конфиг и БД импортированы")
+            
             if CONFIG is None:
-                logger.error("CONFIG не загружен! Проверьте настройки.")
+                self.logger.error("CONFIG не загружен")
                 return
                 
-            self.application = ApplicationBuilder().token(CONFIG.token).build()
+            self.logger.info("2. Создаем application с устойчивостью к сетевым ошибкам")
             
-            # Безопасное получение admin_ids
+            # 🔥 КАСТОМНЫЙ REQUEST С УВЕЛИЧЕННЫМИ ТАЙМАУТАМИ
+            request = HTTPXRequest(
+                connection_pool_size=8,
+                connect_timeout=30.0,
+                read_timeout=30.0,
+                write_timeout=30.0,
+                pool_timeout=30.0
+            )
+            
+            # ✅ УБРАЛИ connect_timeout, read_timeout и т.д. из ApplicationBuilder
+            self.application = (
+                ApplicationBuilder()
+                .token(CONFIG.token)
+                .request(request)  # ← ВСЕ ТАЙМАУТЫ УЖЕ В request
+                .build()
+            )
+            
+            # Передаем application в BitrixSync если он был создан
+            if self.bitrix_sync:
+                self.bitrix_sync.bot_application = self.application
+                # Запускаем sync задачи
+                asyncio.create_task(self.bitrix_sync.run_sync_tasks())
+                self.logger.info("2a. BitrixSync подключен к application")
+            
+            self.logger.info("3. Настраиваем admin_ids")
             admin_ids = getattr(CONFIG, 'admin_ids', [])
             self.application.bot_data['admin_ids'] = admin_ids
             
-            # Инициализируем CronManager
+            self.logger.info("4. Импортируем CronManager")
+            from cron_jobs import CronManager
             self.cron_manager = CronManager(self.application)
             await self.cron_manager.setup()
             
-            # Добавляем обработчик контроля доступа первым
+            self.logger.info("5. Импортируем middleware")
+            from middleware import AccessControlHandler
             self.application.add_handler(AccessControlHandler(), group=-1)
             
-            # Настройка обработчиков
+            self.logger.info("6. Настраиваем обработчики")
             from handlers import setup_handlers
             setup_handlers(self.application)
             
             from handlers.commands import setup as setup_commands
             setup_commands(self.application)
 
+            self.logger.info("7. Инициализируем application")
             await self.application.initialize()
             await self.application.start()
 
             bot_info = await self.application.bot.get_me()
-            logger.info(f"Бот @{bot_info.username} запущен")
+            self.logger.info(f"8. Бот @{bot_info.username} запущен")
             
-            # Добавьте синхронизацию при старте
-            from bitrix import BitrixSync
-            bitrix_sync = BitrixSync()
-            # asyncio.create_task(bitrix_sync.sync_employees())  # Запуск в фоне
-            asyncio.create_task(self._initial_sync(bitrix_sync))
-            
-            await self.application.updater.start_polling()
+            self.logger.info("9. Запускаем polling с увеличенными таймаутами")
+            # 🔥 ТОЛЬКО ПАРАМЕТРЫ POLLING, БЕЗ ТАЙМАУТОВ (они уже в request)
+            await self.application.updater.start_polling(
+                allowed_updates=None,
+                drop_pending_updates=False,
+                bootstrap_retries=5  # 5 попыток при старте
+            )
             self._running = True
             
+            self.logger.info("10. Бот успешно запущен, переходим в основной цикл")
             while self._running:
-                try:
-                    await asyncio.sleep(1)
-                except asyncio.CancelledError:
-                    logger.info("Получен запрос на остановку")
-                    break
-                    
-        except asyncio.CancelledError:
-            logger.info("Бот остановлен по запросу")
+                await asyncio.sleep(1)
+                
         except Exception as e:
-            logger.error(f"Ошибка: {e}")
-        finally:
+            self.logger.error(f"ОШИБКА В RUN: {e}", exc_info=True)
             await self.stop()
             
-    async def _initial_sync(self, sync):
-        """Выполняет начальную синхронизацию"""
-        try:
-            logger.info("Запуск начальной синхронизации с Bitrix...")
-            
-            # 1. Синхронизируем сотрудников (ОДИН РАЗ)
-            emp_stats = await sync.sync_employees()
-            logger.info(f"Сотрудники синхронизированы: {emp_stats}")
-            
-            # 2. Синхронизируем заказы БЕЗ повторной синхронизации сотрудников
-            end_date = datetime.now().strftime('%Y-%m-%d')
-            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-            
-            # Временное отключение sync_employees внутри sync_orders
-            original_sync_orders = sync.sync_orders
-            
-            async def sync_orders_without_employees(*args, **kwargs):
-                # Сохраняем оригинальный метод
-                original_sync_employees = sync.sync_employees
-                
-                # Подменяем на пустую функцию
-                sync.sync_employees = lambda: {'total': 0, 'updated': 0, 'added': 0, 'errors': 0}
-                
-                try:
-                    return await original_sync_orders(*args, **kwargs)
-                finally:
-                    # Восстанавливаем оригинальный метод
-                    sync.sync_employees = original_sync_employees
-            
-            order_stats = await sync_orders_without_employees(start_date, end_date)
-            logger.info(f"Заказы синхронизированы: {order_stats}")
-            
-        except Exception as e:
-            logger.error(f"Ошибка начальной синхронизации: {e}", exc_info=True)
-
     async def stop(self):
-        """Финальная версия метода остановки"""
-        stop_timeout = 3
+        self.logger.info("=== НАЧАЛО ОСТАНОВКИ ===")
         try:
             self._running = False
-            if not self.application:
-                logger.info("Бот не был инициализирован")
-                return
-
-            logger.info("Начинаем процесс остановки...")
             
-            if hasattr(self.application, 'updater') and self.application.updater:
-                try:
-                    if self.application.updater.running:
-                        logger.debug("Останавливаем updater...")
-                        await asyncio.wait_for(self.application.updater.stop(), timeout=stop_timeout)
-                except asyncio.TimeoutError:
-                    logger.warning("Таймаут при остановке updater")
-                except Exception as e:
-                    logger.warning(f"Ошибка остановки updater: {str(e)}")
-
-            if hasattr(self.application, 'running') and self.application.running:
-                try:
-                    logger.debug("Останавливаем application...")
-                    await asyncio.wait_for(self.application.stop(), timeout=stop_timeout)
-                    await asyncio.wait_for(self.application.shutdown(), timeout=stop_timeout)
-                except asyncio.TimeoutError:
-                    logger.warning("Таймаут при остановке application")
-                except Exception as e:
-                    logger.warning(f"Ошибка остановки application: {str(e)}")
-
-            if hasattr(self, 'cron_manager') and self.cron_manager:
-                try:
-                    logger.debug("Останавливаем cron задачи...")
-                    if hasattr(self.cron_manager, 'shutdown'):
-                        await asyncio.wait_for(self.cron_manager.shutdown(), timeout=stop_timeout)
-                    elif hasattr(self.cron_manager, 'stop'):
-                        await asyncio.wait_for(self.cron_manager.stop(), timeout=stop_timeout)
-                except Exception as e:
-                    logger.warning(f"Ошибка остановки cron: {str(e)}")
-
+            # Остановка BitrixSync
+            if self.bitrix_sync:
+                await self.bitrix_sync.close()
+                self.logger.info("BitrixSync остановлен")
+            
+            if self.application:
+                if hasattr(self.application, 'updater') and self.application.updater:
+                    await self.application.updater.stop()
+                await self.application.stop()
+                await self.application.shutdown()
+            self.logger.info("Бот успешно остановлен")
         except Exception as e:
-            logger.error(f"Критическая ошибка при остановке: {str(e)}", exc_info=True)
-        finally:
-            logger.info("Все компоненты успешно остановлены")
-            self._running = False
+            self.logger.error(f"Ошибка при остановке: {e}")

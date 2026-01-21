@@ -3,7 +3,8 @@
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler
 from datetime import datetime, date, timedelta
-from db import CONFIG
+from database import db
+from config import CONFIG
 from constants import SELECT_MONTH_RANGE
 from handlers.common import show_main_menu
 from utils import check_registration, logger

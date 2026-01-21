@@ -9,7 +9,8 @@ import logging
 # matplotlib.use('Agg')  # Используем non-GUI бэкенд
 # import matplotlib.pyplot as plt
 
-from db import CONFIG
+from database import db
+from config import CONFIG
 from constants import SELECT_MONTH_RANGE
 from handlers.common import show_main_menu
 from report_generators import export_accounting_report, export_monthly_report, export_orders_for_provider

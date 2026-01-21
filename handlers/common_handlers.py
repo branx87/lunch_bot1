@@ -3,8 +3,9 @@ from asyncio.log import logger
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
-from db import CONFIG
-from db import db
+from database import db
+from models import User, Order
+from config import CONFIG
 from handlers.common import show_main_menu
 from utils import can_modify_order
 
@@ -39,21 +40,26 @@ async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, is_can
 
         user_id = user.id
         today = datetime.now(CONFIG.timezone).date()
-        today_str = today.isoformat()
 
-        # Получаем активные заказы
-        db.cursor.execute("""
-            SELECT target_date, quantity, is_preliminary
-            FROM orders 
-            WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
-            AND is_cancelled = FALSE
-            AND target_date >= ?
-            ORDER BY target_date
-        """, (user_id, today_str))
-        active_orders = db.cursor.fetchall()
+        # Получаем пользователя и его активные заказы через SQLAlchemy
+        user_record = db.session.query(User).filter(
+            User.telegram_id == user_id
+        ).first()
+
+        if not user_record:
+            logger.error(f"Пользователь с telegram_id {user_id} не найден")
+            return
+
+        # Получаем активные заказы через SQLAlchemy
+        active_orders = db.session.query(Order).filter(
+            Order.user_id == user_record.id,
+            Order.is_cancelled == False,
+            Order.target_date >= today
+        ).order_by(Order.target_date).all()
+        
         logger.info(f"Найдено активных заказов: {len(active_orders)}")
         if active_orders:
-            logger.info(f"Пример заказа: {active_orders[0]}")
+            logger.info(f"Пример заказа: {active_orders[0].target_date} - {active_orders[0].quantity} порций")
 
         # Если заказов нет
         if not active_orders:
@@ -75,16 +81,15 @@ async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, is_can
         days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
 
         for order in active_orders:
-            target_date = datetime.strptime(order[0], "%Y-%m-%d").date()
-            day_name = days_ru[target_date.weekday()]
-            date_str = target_date.strftime('%d.%m')
-            qty = order[1]
-            status = " (предв.)" if order[2] else ""
+            day_name = days_ru[order.target_date.weekday()]
+            date_str = order.target_date.strftime('%d.%m')
+            qty = order.quantity
+            status = " (предв.)" if order.is_preliminary else ""
 
             keyboard.append([
                 InlineKeyboardButton(
                     f"{day_name} {date_str} - {qty} порц.{status}",
-                    callback_data=f"cancel_order_{target_date.strftime('%Y-%m-%d')}"
+                    callback_data=f"cancel_order_{order.target_date.strftime('%Y-%m-%d')}"
                 )
             ])
 

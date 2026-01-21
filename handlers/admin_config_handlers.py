@@ -23,8 +23,9 @@ import os
 from telegram.error import BadRequest
 from pathlib import Path
 
-from db import CONFIG
-from db import db
+from database import db
+from models import User, Holiday
+from config import CONFIG
 from constants import (
     ADD_ACCOUNTANT, ADD_ADMIN, ADD_HOLIDAY_DATE, ADD_HOLIDAY_NAME, 
     ADD_PROVIDER, ADD_STAFF, CONFIG_MENU, DELETE_ACCOUNTANT, DELETE_ADMIN, 
@@ -96,7 +97,8 @@ def update_env_file(key: str, value: str):
 
     # Перезагружаем конфиг в памяти
     load_dotenv(ENV_PATH, override=True)
-    from db import CONFIG
+    from database import db
+    from config import CONFIG
     CONFIG.reload()
 
 async def config_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -424,16 +426,25 @@ async def show_staff_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
         
-        # Получаем всех сотрудников
+        # Получаем всех сотрудников через SQLAlchemy
         employees = db.get_employees(active_only=False)
         if not employees:
             await _send_response(update, "❌ В базе нет сотрудников")
             return CONFIG_MENU
 
+        # Преобразуем в список словарей для совместимости
+        employees_list = []
+        for emp in employees:
+            employees_list.append({
+                'id': emp.id,
+                'full_name': emp.full_name,
+                'is_deleted': emp.is_deleted
+            })
+        
         # Сохраняем в кеш пагинации
         current_pages[user_id] = {
             'page': current_pages.get(user_id, {}).get('page', 0),
-            'items': employees,
+            'items': employees_list,
             'timestamp': datetime.now()
         }
         
@@ -457,12 +468,17 @@ async def show_staff_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Сохраняем поисковый запрос
         context.user_data['search_text'] = search_text
         
-        # Ищем в базе
+        # Ищем в базе через SQLAlchemy
         all_employees = db.get_employees(active_only=False)
-        found_employees = [
-            emp for emp in all_employees 
-            if search_text in emp['full_name'].lower()
-        ]
+        found_employees = []
+        
+        for emp in all_employees:
+            if search_text in emp.full_name.lower():
+                found_employees.append({
+                    'id': emp.id,
+                    'full_name': emp.full_name,
+                    'is_deleted': emp.is_deleted
+                })
         
         if not found_employees:
             await update.message.reply_text(f"❌ По запросу '{search_text}' ничего не найдено")
@@ -546,14 +562,11 @@ async def _send_error_response(update: Update, text: str):
 async def show_holiday_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
-        holidays = db.get_holidays()
-
-        if not holidays:
-            await update.message.reply_text("❌ В базе нет праздников для удаления")
-            return CONFIG_MENU
-
-        current_pages[user_id] = {'page': 0, 'items': holidays}
-        page_data = current_pages[user_id]
+        page_data = current_pages.get(user_id)
+        
+        if not page_data:
+            return await start_delete_holiday(update, context)
+            
         page = page_data['page']
         holidays = page_data['items']
 
@@ -563,10 +576,17 @@ async def show_holiday_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = []
         for holiday in page_items:
-            date = holiday.get('date', '')
+            date_str = holiday.get('date', '')
             name = holiday.get('name', 'Неизвестный праздник')
-            if date:
-                keyboard.append([InlineKeyboardButton(f"{date} — {name}", callback_data=f"del_holiday_{date}")])
+            if date_str:
+                try:
+                    # 🔥 ПРЕОБРАЗУЕМ строку "YYYY-MM-DD" в "DD.MM.YYYY" для отображения
+                    date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+                    display_date = date_obj.strftime("%d.%m.%Y")
+                    keyboard.append([InlineKeyboardButton(f"{display_date} — {name}", callback_data=f"del_holiday_{date_str}")])
+                except ValueError:
+                    # Если формат неправильный, используем как есть
+                    keyboard.append([InlineKeyboardButton(f"{date_str} — {name}", callback_data=f"del_holiday_{date_str}")])
 
         pagination_buttons = create_pagination_buttons(page, len(holidays), "holiday")
         if pagination_buttons:
@@ -603,7 +623,8 @@ async def handle_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         # Добавляем импорт CONFIG в начале функции
-        from db import CONFIG
+        from database import db
+        from config import CONFIG
         
         if query.data == "staff_show_all":
             context.user_data.pop('search_text', None)
@@ -689,41 +710,27 @@ async def handle_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE):
             staff_id = int(query.data.split('_')[2])
             
             try:
-                # Получаем данные из БД
-                db.cursor.execute("""
-                    SELECT id, full_name, is_deleted 
-                    FROM users 
-                    WHERE id = ?
-                """, (staff_id,))
-                result = db.cursor.fetchone()
+                # Получаем данные из БД через SQLAlchemy
+                employee = db.session.query(User).filter(User.id == staff_id).first()
                 
-                if not result:
+                if not employee:
                     await query.answer("❌ Сотрудник не найден", show_alert=True)
                     return CONFIG_MENU
 
-                _, full_name, is_deleted = result
+                if employee.is_deleted:
+                    # Восстанавливаем сотрудника (с автоматической верификацией)
+                    employee.is_deleted = False
+                    employee.is_verified = True
+                    employee.updated_at = datetime.now()
+                    message = f"✅ Сотрудник '{employee.full_name}' восстановлен"
+                else:
+                    # Деактивируем сотрудника (с автоматической деверификацией)
+                    employee.is_deleted = True
+                    employee.is_verified = False
+                    employee.updated_at = datetime.now()
+                    message = f"✅ Сотрудник '{employee.full_name}' деактивирован"
 
-                with db.conn:
-                    if is_deleted:
-                        # Восстанавливаем сотрудника (с автоматической верификацией)
-                        db.cursor.execute("""
-                            UPDATE users 
-                            SET is_deleted = FALSE,
-                                is_verified = TRUE,
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ?
-                        """, (staff_id,))
-                        message = f"✅ Сотрудник '{full_name}' восстановлен"
-                    else:
-                        # Деактивируем сотрудника (с автоматической деверификацией)
-                        db.cursor.execute("""
-                            UPDATE users 
-                            SET is_deleted = TRUE,
-                                is_verified = FALSE,
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ?
-                        """, (staff_id,))
-                        message = f"✅ Сотрудник '{full_name}' деактивирован"
+                db.session.commit()
 
                 # Обновляем интерфейс
                 try:
@@ -749,11 +756,14 @@ async def handle_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Удаление праздника
         elif query.data.startswith("del_holiday_"):
             holiday_date = query.data.split('_')[2]
-            with db.conn:
-                db.cursor.execute("DELETE FROM holidays WHERE date = ?", (holiday_date,))
+            
+            # Удаляем праздник через SQLAlchemy
+            result = db.session.query(Holiday).filter(Holiday.date == holiday_date).delete()
+            db.session.commit()
                 
             # ОБНОВЛЯЕМ КОНФИГУРАЦИЮ БЕЗ ПЕРЕЗАПУСКА
-            from db import CONFIG
+            from database import db
+            from config import CONFIG
             CONFIG.reload()
                 
             try:
@@ -799,28 +809,21 @@ async def handle_add_staff(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     full_name = ' '.join(word.capitalize() for word in name_parts)
 
-    # Проверяем, существует ли сотрудник с таким именем
-    db.cursor.execute("""
-        SELECT id, is_deleted 
-        FROM users 
-        WHERE full_name = ? COLLATE NOCASE 
-        AND is_employee = TRUE
-    """, (full_name,))
-    existing = db.cursor.fetchone()
+    # Проверяем, существует ли сотрудник с таким именем через SQLAlchemy
+    existing = db.session.query(User).filter(
+        User.full_name.ilike(full_name),
+        User.is_employee == True
+    ).first()
 
     if existing:
-        employee_id, is_deleted = existing
-        if is_deleted:
+        if existing.is_deleted:
             # Восстанавливаем удаленного сотрудника
-            with db.conn:
-                db.cursor.execute("""
-                    UPDATE users 
-                    SET is_deleted = FALSE,
-                        is_verified = FALSE,
-                        telegram_id = NULL,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                """, (employee_id,))
+            existing.is_deleted = False
+            existing.is_verified = False
+            existing.telegram_id = None
+            existing.updated_at = datetime.now()
+            db.session.commit()
+            
             await update.message.reply_text(
                 f"✅ Сотрудник '{full_name}' восстановлен (ожидает регистрации)",
                 reply_markup=create_admin_config_keyboard()
@@ -832,12 +835,17 @@ async def handle_add_staff(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return CONFIG_MENU
 
-    # Добавляем нового сотрудника без Telegram ID
-    with db.conn:
-        db.cursor.execute("""
-            INSERT INTO users (full_name, is_employee, is_verified)
-            VALUES (?, TRUE, FALSE)
-        """, (full_name,))
+    # Добавляем нового сотрудника без Telegram ID через SQLAlchemy
+    new_employee = User(
+        full_name=full_name,
+        is_employee=True,
+        is_verified=False,
+        telegram_id=None,
+        created_at=datetime.now(),
+        updated_at=datetime.now()
+    )
+    db.session.add(new_employee)
+    db.session.commit()
 
     await update.message.reply_text(
         f"✅ Сотрудник '{full_name}' добавлен. Теперь он может пройти регистрацию.",
@@ -847,14 +855,31 @@ async def handle_add_staff(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_delete_holiday(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    holidays = db.get_holidays()
     
-    if not holidays:
-        await update.message.reply_text("❌ В базе нет праздников для удаления")
+    try:
+        # 🔥 ИСПРАВЛЕНИЕ: поле date уже строка, не нужно вызывать strftime()
+        with db.get_session() as session:
+            holidays = session.query(Holiday).order_by(Holiday.date).all()
+            
+            if not holidays:
+                await update.message.reply_text("❌ В базе нет праздников для удаления")
+                return CONFIG_MENU
+            
+            # 🔥 date уже строка в формате "YYYY-MM-DD"
+            holidays_list = []
+            for holiday in holidays:
+                holidays_list.append({
+                    'date': holiday.date,  # Уже строка "2025-10-13"
+                    'name': holiday.name
+                })
+        
+        current_pages[user_id] = {'page': 0, 'items': holidays_list}
+        return await show_holiday_page(update, context)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка праздников: {e}", exc_info=True)
+        await update.message.reply_text("❌ Ошибка при загрузке списка праздников")
         return CONFIG_MENU
-    
-    current_pages[user_id] = {'page': 0, 'items': holidays}
-    return await show_holiday_page(update, context)
 
 async def force_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Принудительный выход из любого состояния"""
@@ -976,27 +1001,39 @@ async def handle_holiday_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     date_str = context.user_data['holiday_date']
     
     try:
-        # Добавляем праздник в базу данных
-        result = db.add_holiday(date_str, holiday_name)
-        
-        if result == -1:
-            await update.message.reply_text(
-                "⚠️ Такой праздник уже существует",
-                reply_markup=create_admin_config_keyboard()
-            )
-        else:
-            # ОБНОВЛЯЕМ КОНФИГУРАЦИЮ БЕЗ ПЕРЕЗАПУСКА
-            from db import CONFIG
-            CONFIG.reload()
+        # 🔥 ИСПРАВЛЕНИЕ: используем прямой SQLAlchemy запрос вместо db.add_holiday()
+        with db.get_session() as session:
+            # Проверяем, существует ли уже праздник с такой датой
+            existing_holiday = session.query(Holiday).filter(Holiday.date == date_str).first()
             
-            await update.message.reply_text(
-                f"✅ Праздник '{holiday_name}' на {date_str} добавлен и сразу доступен в боте",
-                reply_markup=create_admin_config_keyboard()
+            if existing_holiday:
+                await update.message.reply_text(
+                    "⚠️ Такой праздник уже существует",
+                    reply_markup=create_admin_config_keyboard()
+                )
+                return CONFIG_MENU
+            
+            # Создаем новый праздник
+            new_holiday = Holiday(
+                date=date_str,
+                name=holiday_name,
+                is_recurring=False
             )
+            session.add(new_holiday)
+            session.commit()
+            
+        # 🔥 ОБНОВЛЯЕМ КОНФИГУРАЦИЮ
+        from config import CONFIG
+        CONFIG.reload()
+        
+        await update.message.reply_text(
+            f"✅ Праздник '{holiday_name}' на {date_str} добавлен и сразу доступен в боте",
+            reply_markup=create_admin_config_keyboard()
+        )
         return CONFIG_MENU
         
     except Exception as e:
-        logger.error(f"Ошибка при добавлении праздника: {e}")
+        logger.error(f"Ошибка при добавлении праздника: {e}", exc_info=True)
         await update.message.reply_text(
             "❌ Произошла ошибка. Попробуйте позже.",
             reply_markup=create_admin_config_keyboard()

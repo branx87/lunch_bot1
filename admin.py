@@ -4,22 +4,24 @@ from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKey
 from telegram.ext import CallbackContext
 from telegram.ext import ContextTypes
 import logging
+from handlers.common import show_main_menu
 # import matplotlib
 # matplotlib.use('Agg')  # Используем non-GUI бэкенд
 # import matplotlib.pyplot as plt
 
-from db import CONFIG
+from database import db
+from config import CONFIG
 from constants import ADMIN_MESSAGE, MAIN_MENU, SELECT_MONTH_RANGE
-from db import db
+from models import User, AdminMessage
 from bot_keyboards import create_admin_keyboard
+from sqlalchemy import text
+
 try:
     from openpyxl.styles import Font
 except RuntimeError:  # Для окружений без GUI
     class Font:
         def __init__(self, bold=False):
             self.bold = bold
-import sqlite3
-from typing import Optional, Union, List, Dict, Any, Tuple, Callable
 import os
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -58,8 +60,6 @@ def ensure_reports_dir(report_type: str = 'accounting') -> str:
     
     return reports_dir
 
-# Остальные функции (message_history, handle_export_orders_for_month) остаются без изменений
-
 async def message_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показ истории сообщений админам"""
     user = update.effective_user
@@ -78,20 +78,27 @@ async def message_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = context.user_data.get('history_page', 0)
         offset = page * 20
         
-        db.cursor.execute("""
-            SELECT 
-                m.sent_at, 
-                a.full_name AS admin_name,
-                u.full_name AS user_name,
-                m.message_text,
-                CASE WHEN m.admin_id IS NOT NULL THEN 'admin_to_user' ELSE 'user_to_admin' END AS direction
-            FROM admin_messages m
-            LEFT JOIN users a ON m.admin_id = a.telegram_id
-            LEFT JOIN users u ON m.user_id = u.telegram_id
-            ORDER BY m.sent_at DESC 
-            LIMIT 20 OFFSET ?
-        """, (offset,))
-        messages = db.cursor.fetchall()
+        with db.get_session() as session:
+            # ИСПРАВЛЕННЫЙ ЗАПРОС - используем created_at и правильные JOIN
+            messages = session.execute(text("""
+                SELECT 
+                    m.created_at, 
+                    a.full_name AS admin_name,
+                    u.full_name AS user_name,
+                    m.message_text,
+                    CASE 
+                        WHEN m.admin_id IS NOT NULL OR m.admin_telegram_id IS NOT NULL THEN 'admin_to_user' 
+                        ELSE 'user_to_admin' 
+                    END AS direction,
+                    m.is_unregistered,
+                    m.admin_telegram_id,
+                    m.user_telegram_id
+                FROM admin_messages m
+                LEFT JOIN users a ON m.admin_id = a.id  -- JOIN по id таблицы users
+                LEFT JOIN users u ON m.user_id = u.id   -- JOIN по id таблицы users
+                ORDER BY m.created_at DESC 
+                LIMIT 20 OFFSET :offset
+            """), {'offset': offset}).fetchall()
 
         if not messages:
             await update.message.reply_text(
@@ -101,15 +108,39 @@ async def message_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ADMIN_MESSAGE
 
         # Формируем ответ
-        response = ["📜 История сообщений (страница {page+1}):\n\n"]
+        response = [f"📜 История сообщений (страница {page+1}):\n\n"]
         
         for msg in messages:
-            sent_at, admin_name, user_name, message_text, direction = msg
+            created_at, admin_name, user_name, message_text, direction, is_unregistered, admin_tg_id, user_tg_id = msg
+            
+            # Форматируем дату
+            if isinstance(created_at, datetime):
+                date_str = created_at.strftime("%d.%m.%Y %H:%M")
+            else:
+                date_str = str(created_at)
+            
+            # Определяем отправителя и получателя
+            if direction == 'admin_to_user':
+                sender_name = admin_name or f"Админ (ID: {admin_tg_id})" if admin_tg_id else "Админ"
+                receiver_name = user_name or f"Пользователь (ID: {user_tg_id})" if user_tg_id else "Пользователь"
+                if is_unregistered:
+                    receiver_name = f"👤 {receiver_name} (незарегистрированный)"
+                else:
+                    receiver_name = f"👤 {receiver_name}"
+                sender_prefix = "👨‍💼 Админ"
+            else:
+                sender_name = user_name or f"Пользователь (ID: {user_tg_id})" if user_tg_id else "Пользователь"
+                receiver_name = "Администраторам"
+                if is_unregistered:
+                    sender_name = f"👤 {sender_name} (незарегистрированный)"
+                else:
+                    sender_name = f"👤 {sender_name}"
+                sender_prefix = "👤 Пользователь"
             
             msg_text = (
-                f"📅 {sent_at}\n"
-                f'{"👨‍💼 Админ" if direction == "admin_to_user" else "👤 Пользователь"}: '
-                f"{admin_name if direction == 'admin_to_user' else user_name}\n"
+                f"📅 {date_str}\n"
+                f"{sender_prefix}: {sender_name}\n"
+                f"➡️ Получатель: {receiver_name}\n"
                 f"✉️: {message_text}\n"
                 "━━━━━━━━━━━━━━\n"
             )
@@ -127,7 +158,7 @@ async def message_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка при выводе истории: {e}", exc_info=True)
         await update.message.reply_text(
-            f"❌ Ошибка: {str(e)}",
+            f"❌ Ошибка при загрузке истории: {str(e)}",
             reply_markup=create_admin_keyboard()
         )
     
@@ -163,22 +194,27 @@ def create_history_keyboard(current_page=0, has_next=False):
     
     buttons.append(InlineKeyboardButton("🔙 В меню", callback_data="back_to_menu"))
     
+    # ДОБАВЬТЕ ЛОГ ДЛЯ ПРОВЕРКИ
+    logger.info(f"Создана клавиатура истории: page={current_page}, has_next={has_next}")
+    
     return InlineKeyboardMarkup([buttons])
 
 async def handle_history_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    action, _, page = query.data.split('_')
-    page = int(page)
-    
-    if action == "prev":
-        page = max(0, page - 1)
-    else:
-        page += 1
-    
-    context.user_data['history_page'] = page
-    await message_history(update, context)
+    data_parts = query.data.split('_')
+    if len(data_parts) >= 3:
+        action = data_parts[1]
+        page = int(data_parts[2])
+        
+        if action == "prev":
+            page = max(0, page - 1)
+        else:
+            page += 1
+        
+        context.user_data['history_page'] = page
+        await message_history(update, context)
     
 async def handle_sync_bitrix(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ручной запуск синхронизации с Bitrix (/sync_bitrix)"""
@@ -190,7 +226,7 @@ async def handle_sync_bitrix(update: Update, context: ContextTypes.DEFAULT_TYPE)
     msg = await update.message.reply_text("🔄 Начинаю синхронизацию с Bitrix...")
     
     try:
-        from bitrix import BitrixSync
+        from bitrix.sync import BitrixSync
         sync = BitrixSync()
         
         # 1. Синхронизация сотрудников
@@ -213,7 +249,7 @@ async def handle_sync_bitrix(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"• Добавлено: {emp_stats['added']}\n"
             f"• Ошибок: {emp_stats['errors']}\n\n"
             "🍽 Заказы:\n"
-            f"• Всего: {order_stats['total']}\n"
+            f"• Всего: {order_stats['processed']}\n"
             f"• Добавлено: {order_stats['added']}\n"
             f"• Обновлено: {order_stats['updated']}\n"
             f"• Ошибок: {order_stats['errors']}"

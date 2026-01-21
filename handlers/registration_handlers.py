@@ -1,14 +1,14 @@
 # ##handlers/registration_handlers.py
-import sqlite3
 import logging
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ConversationHandler
 from telegram.ext import ContextTypes
 from datetime import datetime, timedelta
 
-from db import CONFIG
+from database import db
+from models import User
+from config import CONFIG
 from constants import AWAIT_MESSAGE_TEXT, FULL_NAME, LOCATION, PHONE
-from db import db
 from handlers.common import show_main_menu
 from handlers.message_handlers import handle_admin_message, start_user_to_admin_message
 
@@ -49,18 +49,16 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Сохраняем в контекст
         context.user_data['phone'] = normalized_phone
 
-        # Обновляем запись в БД
-        with db.conn:
-            db.cursor.execute("""
-                UPDATE users 
-                SET phone = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE telegram_id = ?
-            """, (normalized_phone, user.id))
+        # Обновляем запись в БД через SQLAlchemy
+        user_record = db.session.query(User).filter(User.telegram_id == user.id).first()
+        if user_record:
+            user_record.phone = normalized_phone
+            user_record.updated_at = datetime.now()
+            db.session.commit()
 
         # Проверяем, что запись действительно изменилась
-        db.cursor.execute("SELECT phone FROM users WHERE telegram_id = ?", (user.id,))
-        result = db.cursor.fetchone()
-        logger.info(f"После обновления телефон в БД: {result[0] if result else None}")
+        updated_user = db.session.query(User).filter(User.telegram_id == user.id).first()
+        logger.info(f"После обновления телефон в БД: {updated_user.phone if updated_user else None}")
 
         # Переход к имени
         await update.message.reply_text(
@@ -115,10 +113,9 @@ async def get_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_input = update.message.text.strip()
         logger.info(f"Получено имя: '{user_input}' от пользователя {user.id}")
 
-        # Проверка существующей записи пользователя
-        db.cursor.execute("SELECT id, phone FROM users WHERE telegram_id = ?", (user.id,))
-        record_before = db.cursor.fetchone()
-        logger.info(f"Запись в БД перед get_full_name: {record_before}")
+        # Проверка существующей записи пользователя через SQLAlchemy
+        user_record = db.session.query(User).filter(User.telegram_id == user.id).first()
+        logger.info(f"Запись в БД перед get_full_name: {user_record.id if user_record else None}")
 
         # Обработка специальных команд
         if user_input == "Написать администратору":
@@ -149,26 +146,23 @@ async def get_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Нормализуем ввод пользователя
         normalized_input = ' '.join(name_parts).lower()
 
-        # Ищем совпадения в базе данных среди незарегистрированных пользователей
-        db.cursor.execute("""
-            SELECT id, full_name 
-            FROM users 
-            WHERE telegram_id IS NULL AND is_employee = TRUE
-        """)
-        all_users = db.cursor.fetchall()
+        # Ищем совпадения в базе данных среди незарегистрированных пользователей через SQLAlchemy
+        unregistered_users = db.session.query(User).filter(
+            User.telegram_id == None,
+            User.is_employee == True
+        ).all()
 
         matched_user = None
-        for db_user in all_users:
-            user_id, db_full_name = db_user
-            if not db_full_name:
+        for db_user in unregistered_users:
+            if not db_user.full_name:
                 continue
 
             # Нормализуем имя из базы и сравниваем наборы слов
-            db_parts = {part.lower() for part in db_full_name.split()}
+            db_parts = {part.lower() for part in db_user.full_name.split()}
             input_parts = {part.lower() for part in name_parts}
             
             if db_parts == input_parts:
-                matched_user = (user_id, db_full_name)
+                matched_user = db_user
                 break
 
         if not matched_user:
@@ -182,22 +176,17 @@ async def get_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return FULL_NAME
 
-        user_id, db_full_name = matched_user
-        context.user_data['full_name'] = db_full_name  # Сохраняем оригинальное имя из базы
+        context.user_data['full_name'] = matched_user.full_name  # Сохраняем оригинальное имя из базы
 
-        # Обновляем запись в БД
+        # Обновляем запись в БД через SQLAlchemy
         phone = context.user_data.get('phone')
-        with db.conn:
-            db.cursor.execute("""
-                UPDATE users
-                SET telegram_id = ?, 
-                    username = ?,
-                    phone = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (user.id, user.username, phone, user_id))
+        matched_user.telegram_id = user.id
+        matched_user.username = user.username
+        matched_user.phone = phone
+        matched_user.updated_at = datetime.now()
+        db.session.commit()
 
-        logger.info(f"Обновлена запись пользователя ID: {user_id}")
+        logger.info(f"Обновлена запись пользователя ID: {matched_user.id}")
 
         # Переход к выбору локации
         keyboard = [[loc] for loc in CONFIG.locations]
@@ -225,18 +214,17 @@ async def get_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return LOCATION
 
     try:
-        # Обновляем запись пользователя (работает как для регистрации, так и для изменения)
-        db.cursor.execute("""
-            UPDATE users
-            SET location = ?, is_verified = TRUE, updated_at = CURRENT_TIMESTAMP
-            WHERE telegram_id = ?
-        """, (location, user.id))
-        db.conn.commit()
+        # Обновляем запись пользователя через SQLAlchemy
+        user_record = db.session.query(User).filter(User.telegram_id == user.id).first()
+        if user_record:
+            user_record.location = location
+            user_record.is_verified = True
+            user_record.updated_at = datetime.now()
+            db.session.commit()
 
         # Проверяем, что запись обновилась
-        db.cursor.execute("SELECT location, is_verified FROM users WHERE telegram_id = ?", (user.id,))
-        result = db.cursor.fetchone()
-        logger.info(f"Локация обновлена: {result[0]}, статус верификации: {result[1]}")
+        updated_user = db.session.query(User).filter(User.telegram_id == user.id).first()
+        logger.info(f"Локация обновлена: {updated_user.location}, статус верификации: {updated_user.is_verified}")
 
         await update.message.reply_text(
             f"✅ Локация успешно изменена на: {location}",
@@ -257,27 +245,32 @@ async def change_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Обрабатывает запрос на изменение локации пользователя
     """
     user = update.effective_user
-    logger.info(f"Пользователь {user.id} запросил изменение локации")
 
     try:
-        # Удаляем текущую локацию из базы данных
-        with db.conn:
-            db.cursor.execute("""
-                UPDATE users 
-                SET location = NULL, updated_at = CURRENT_TIMESTAMP
-                WHERE telegram_id = ?
-            """, (user.id,))
+        # Получаем текущую локацию пользователя через SQLAlchemy
+        user_record = db.session.query(User).filter(User.telegram_id == user.id).first()
+        current_location = user_record.location if user_record and user_record.location else "не установлена"
+        
+        logger.info(f"Пользователь {user.id} запросил изменение локации. Текущая локация: '{current_location}'")
 
-        logger.info(f"Локация пользователя {user.id} удалена из БД")
+        # Удаляем текущую локацию из базы данных через SQLAlchemy
+        if user_record:
+            user_record.location = None
+            user_record.updated_at = datetime.now()
+            db.session.commit()
 
-        # Предлагаем выбрать новую локацию
+        logger.info(f"Локация пользователя {user.id} удалена из БД (была: '{current_location}')")
+
+        # Предлагаем выбрать новую локацию с информацией о текущей
         keyboard = [[loc] for loc in CONFIG.locations]
         reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        
+        location_info = f" (текущая: {current_location})" if current_location != "не установлена" else ""
         await update.message.reply_text(
-            "Выберите новый объект:",
+            f"Выберите новый объект{location_info}:",
             reply_markup=reply_markup
         )
-        return LOCATION  # Возвращаем состояние для продолжения диалога
+        return LOCATION
 
     except Exception as e:
         logger.error(f"Ошибка при изменении локации: {e}", exc_info=True)

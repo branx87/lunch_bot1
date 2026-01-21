@@ -1,14 +1,14 @@
 # ##handlers/common.py
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ConversationHandler
-from telegram.ext import ContextTypes  # вместо ContextType
+from telegram.ext import ContextTypes
 import logging
 
-from db import CONFIG
+from database import db
+from models import User
+from config import CONFIG
 from constants import MAIN_MENU
-from db import db
 from bot_keyboards import create_main_menu_keyboard, create_provider_menu_keyboard, create_unverified_user_keyboard
-
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +19,12 @@ async def show_main_menu(update: Update, user_id: int):
         if user_id in CONFIG.admin_ids or user_id in CONFIG.provider_ids or user_id in CONFIG.accounting_ids:
             reply_markup = create_main_menu_keyboard(user_id)
         else:
-            # Остальные должны быть сотрудниками
-            db.cursor.execute("SELECT is_verified FROM users WHERE telegram_id = ?", (user_id,))
-            result = db.cursor.fetchone()
-            if result and result[0]:
+            # Остальные должны быть сотрудниками - проверяем через SQLAlchemy
+            user = db.session.query(User).filter(
+                User.telegram_id == user_id
+            ).first()
+            
+            if user and user.is_verified:
                 reply_markup = create_main_menu_keyboard(user_id)
             else:
                 reply_markup = create_unverified_user_keyboard()
@@ -40,13 +42,9 @@ async def show_main_menu(update: Update, user_id: int):
             )
         return ConversationHandler.END
 
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ContextTypes, ConversationHandler
-
 async def cancel_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Изменение меню отменено",
         reply_markup=create_provider_menu_keyboard()
     )
     return ConversationHandler.END
-

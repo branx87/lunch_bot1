@@ -3,7 +3,8 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
 from bot_keyboards import create_admin_keyboard
-from db import CONFIG
+from database import db
+from config import CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ async def manual_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        from bitrix.sync import BitrixSync  # Импортируем здесь, чтобы избежать циклических импортов
+        from bitrix.sync import BitrixSync
         sync = BitrixSync()
         await update.message.reply_text("🔄 Начата синхронизация с Bitrix24...")
         await sync._push_to_bitrix()
@@ -59,16 +60,13 @@ async def toggle_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_status = not CONFIG.orders_enabled
     CONFIG.toggle_orders(new_status)
 
-    # Отправляем обновлённое меню без кнопок
-    from handlers.menu_handlers import send_weekly_menu  # Импортируем здесь, чтобы избежать циклических импортов
-    await send_weekly_menu(update, context, force_disable_buttons=not new_status)
-
     status = "разрешены ✅" if new_status else "запрещены ❌"
-    await update.message.reply_text(f"Приём заказов теперь {status}")
-
-    # После изменения статуса обновляем все активные меню
-    from handlers.menu_handlers import refresh_all_active_menus
-    await refresh_all_active_menus(context.bot, not new_status)
+    status_msg = CONFIG.get_orders_status_message()
+    
+    await update.message.reply_text(
+        f"Глобальный статус заказов: {status}\n"
+        f"Текущий статус: {status_msg}"
+    )
 
 # В конец файла добавьте регистрацию команды:
 def setup_admin_handlers(application):

@@ -8,9 +8,10 @@ from telegram.ext import ContextTypes
 from datetime import datetime, timedelta
 
 from bot_keyboards import create_admin_reports_menu, create_main_menu_keyboard, create_report_type_menu, create_month_selection_keyboard
-from db import CONFIG
+from database import db
+from models import User
+from config import CONFIG
 from constants import FULL_NAME, PHONE, SELECT_MONTH_RANGE
-from db import db
 from handlers.common import show_main_menu
 from handlers.common_handlers import view_orders
 from handlers.common_report_handlers import select_month_range
@@ -28,18 +29,21 @@ SELECT_REPORT_TYPE = "SELECT_REPORT_TYPE"
 
 def get_user_role(user_id):
     """Определяет роль пользователя на основе ID"""
-    
-    user_id = str(user_id)
-    roles = []
-    
-    if user_id in [str(id) for id in CONFIG.admin_ids]:
-        roles.append("Администратор")
-    if user_id in [str(id) for id in CONFIG.provider_ids]:
-        roles.append("Поставщик")
-    if user_id in [str(id) for id in CONFIG.accounting_ids]:
-        roles.append("Бухгалтер")
-    
-    return ", ".join(roles) if roles else "Пользователь"
+    try:
+        user_id = str(user_id)
+        roles = []
+        
+        if user_id in [str(id) for id in CONFIG.admin_ids]:
+            roles.append("Администратор")
+        if user_id in [str(id) for id in CONFIG.provider_ids]:
+            roles.append("Поставщик")
+        if user_id in [str(id) for id in CONFIG.accounting_ids]:
+            roles.append("Бухгалтер")
+        
+        return ", ".join(roles) if roles else "Пользователь"
+    except Exception as e:
+        logger.error(f"Ошибка определения роли для пользователя {user_id}: {e}")
+        return "Пользователь"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -60,25 +64,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Пропускаем регистрацию и сразу показываем главное меню
             return await show_main_menu(update, user.id)
         
-        # Проверяем регистрацию пользователя
-        db.cursor.execute("""
-            SELECT id, full_name, is_verified, is_deleted 
-            FROM users 
-            WHERE telegram_id = ?
-        """, (user.id,))
-        user_data = db.cursor.fetchone()
+        # Проверяем регистрацию пользователя через SQLAlchemy
+        user_data = db.session.query(User).filter(
+            User.telegram_id == user.id
+        ).first()
 
         if user_data:
-            user_id, full_name, is_verified, is_deleted = user_data
-
-            if is_deleted:
+            if user_data.is_deleted:
                 await update.message.reply_text(
                     "❌ Ваш аккаунт деактивирован. Обратитесь к администратору.",
                     reply_markup=ReplyKeyboardRemove()
                 )
                 return ConversationHandler.END
 
-            if is_verified:
+            if user_data.is_verified:
                 await show_main_menu(update, user.id)
                 return ConversationHandler.END
 
@@ -146,37 +145,32 @@ async def test_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         bot_info = await context.bot.get_me()
         
-        # Получаем данные пользователя из БД
-        db.cursor.execute("""
-            SELECT full_name, phone, is_deleted, is_verified, location 
-            FROM users 
-            WHERE telegram_id = ?
-        """, (user.id,))
-        user_data = db.cursor.fetchone()
+        # Получаем данные пользователя из БД через SQLAlchemy
+        user_data = db.session.query(User).filter(
+            User.telegram_id == user.id
+        ).first()
         
         if user_data:
-            full_name, phone, is_deleted, is_verified, location = user_data
-            user_status = "❌ Удален/заблокирован" if is_deleted else (
-                "🟡 Ожидает верификации" if not is_verified else "✅ Активен"
+            user_status = "❌ Удален/заблокирован" if user_data.is_deleted else (
+                "🟡 Ожидает верификации" if not user_data.is_verified else "✅ Активен"
             )
         else:
-            full_name = phone = location = "не указано"
             user_status = "❌ Не зарегистрирован"
         
         response = (
             "✅ Система работает\n\n"
             f"👤 Ваш профиль:\n"
-            f"Имя: {full_name}\n"
-            f"Телефон: {phone if phone else 'не указан'}\n"
+            f"Имя: {user_data.full_name if user_data else 'не указано'}\n"
+            f"Телефон: {user_data.phone if user_data and user_data.phone else 'не указан'}\n"
             f"ID: {user.id}\n"
             f"Роль: {get_user_role(user.id)}\n"
             f"Логин: @{user.username if user.username else 'не установлен'}\n"
-            f"Локация: {location if location else 'не указана'}\n"  # ← ДОБАВЛЕНО ОТОБРАЖЕНИЕ ЛОКАЦИИ
+            f"Локация: {user_data.location if user_data and user_data.location else 'не указана'}\n"
             f"Статус: {user_status}\n\n"
             f"🤖 Бот:\n"
             f"ID: {bot_info.id}\n"
             f"Имя: @{bot_info.username}\n"
-            f"Версия: 2.5.0\n"
+            f"Версия: 3.0.0\n"
             f"Статус: активен"
         )
         
@@ -203,12 +197,12 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         # Обработка сообщения от незарегистрированного пользователя
         if text == "Написать администратору":
-            # Проверяем, есть ли пользователь в списке сотрудников (is_employee = TRUE)
-            db.cursor.execute("""
-                SELECT id FROM users 
-                WHERE full_name LIKE ? AND is_employee = TRUE AND is_deleted = FALSE
-            """, (f"%{user.full_name}%",))
-            employee_data = db.cursor.fetchone()
+            # Проверяем, есть ли пользователь в списке сотрудников через SQLAlchemy
+            employee_data = db.session.query(User).filter(
+                User.full_name.ilike(f"%{user.full_name}%"),
+                User.is_employee == True,
+                User.is_deleted == False
+            ).first()
 
             if not employee_data:
                 await update.message.reply_text(
@@ -455,37 +449,6 @@ async def handle_registered_user(update: Update, context: ContextTypes.DEFAULT_T
             reply_markup=ReplyKeyboardRemove()
         )
         return ConversationHandler.END
-    
-# async def check_employee_registration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-#     """Проверяет, зарегистрирован ли пользователь как сотрудник"""
-#     user = update.effective_user
-
-#     try:
-#         # Админы, поставщики и бухгалтеры не обязаны быть сотрудниками
-#         if user.id in CONFIG.admin_ids:
-#             return True
-#         if user.id in CONFIG.provider_ids:
-#             return True
-#         if user.id in CONFIG.accounting_ids:
-#             return True
-
-#         # Остальные должны быть сотрудниками
-#         db.cursor.execute("""
-#             SELECT is_verified, is_employee 
-#             FROM users 
-#             WHERE telegram_id = ? AND is_deleted = FALSE
-#         """, (user.id,))
-        
-#         result = db.cursor.fetchone()
-#         if not result:
-#             return False
-
-#         is_verified, is_employee = result
-#         return bool(is_employee and is_verified)
-
-#     except Exception as e:
-#         logger.error(f"Ошибка проверки регистрации: {e}")
-#         return False
 
 async def check_employee_registration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Проверяет, является ли пользователь сотрудником или имеет роль provider/accountant/admin"""
@@ -496,30 +459,49 @@ async def check_employee_registration(update: Update, context: ContextTypes.DEFA
         return True
 
     try:
-        db.cursor.execute("""
-            SELECT is_verified, is_employee 
-            FROM users 
-            WHERE telegram_id = ? AND is_deleted = FALSE
-        """, (user.id,))
+        # Используем SQLAlchemy для проверки регистрации
+        user_data = db.session.query(User).filter(
+            User.telegram_id == user.id,
+            User.is_deleted == False
+        ).first()
         
-        result = db.cursor.fetchone()
-        if not result:
+        if not user_data:
             return False
 
-        is_verified, is_employee = result
-        return bool(is_employee and is_verified)
+        return bool(user_data.is_employee and user_data.is_verified)
 
     except Exception as e:
         logger.error(f"Ошибка при проверке регистрации: {e}")
         return False
     
 async def admin_reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик меню отчетов админа"""
+    """Обработчик меню отчетов админа с фоновой синхронизацией"""
     user = update.effective_user
     if user.id not in CONFIG.admin_ids:
         await update.message.reply_text("❌ У вас нет прав доступа")
         return await show_main_menu(update, user.id)
     
+    # 🔥 ФОНОВАЯ СИНХРОНИЗАЦИЯ В ОТДЕЛЬНОЙ ЗАДАЧЕ
+    async def background_sync():
+        try:
+            from bitrix.sync import BitrixSync
+            from datetime import datetime, timedelta
+            
+            sync = BitrixSync()
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
+            
+            await sync.sync_orders(start_date, end_date, incremental=True)
+            logger.info(f"✅ Фоновая синхронизация выполнена для пользователя {user.id}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка фоновой синхронизации: {e}")
+    
+    # Запускаем в фоне без ожидания
+    import asyncio
+    asyncio.create_task(background_sync())
+    
+    # Сразу показываем меню
     await update.message.reply_text(
         "📊 Выберите период для отчета:",
         reply_markup=create_admin_reports_menu()

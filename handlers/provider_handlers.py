@@ -2,8 +2,9 @@
 from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import ConversationHandler, MessageHandler, filters
 from telegram.ext import ContextTypes
-from db import CONFIG
-from db import db
+from database import db
+from models import Menu
+from config import CONFIG
 from constants import (
     EDIT_MENU_DAY, 
     EDIT_MENU_FIRST, 
@@ -51,12 +52,12 @@ async def handle_menu_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     context.user_data['edit_menu_day'] = day
     
-    # Загружаем текущее меню для этого дня (если есть)
-    current_menu = db.get_menu_by_day(day)
+    # Загружаем текущее меню для этого дня через SQLAlchemy
+    current_menu = db.session.query(Menu).filter(Menu.day == day).first()
     if current_menu:
-        context.user_data['current_first'] = current_menu['first_course']
-        context.user_data['current_main'] = current_menu['main_course']
-        context.user_data['current_salad'] = current_menu['salad']
+        context.user_data['current_first'] = current_menu.first_course
+        context.user_data['current_main'] = current_menu.main_course
+        context.user_data['current_salad'] = current_menu.salad
     
     await update.message.reply_text(
         f"Текущее первое блюдо: {context.user_data.get('current_first', 'не указано')}\n"
@@ -117,8 +118,26 @@ async def handle_menu_salad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     salad = update.message.text
     
     try:
-        # Сохраняем в базу данных
-        db.add_menu(day, first, main, salad)
+        # Сохраняем в базу данных через SQLAlchemy
+        # Сначала проверяем, существует ли уже меню для этого дня
+        existing_menu = db.session.query(Menu).filter(Menu.day == day).first()
+        
+        if existing_menu:
+            # Обновляем существующее меню
+            existing_menu.first_course = first
+            existing_menu.main_course = main
+            existing_menu.salad = salad
+        else:
+            # Создаем новое меню
+            new_menu = Menu(
+                day=day,
+                first_course=first,
+                main_course=main,
+                salad=salad
+            )
+            db.session.add(new_menu)
+        
+        db.session.commit()
         
         # Обновляем конфиг в памяти
         CONFIG.menu[day] = {
