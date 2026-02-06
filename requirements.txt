@@ -1,25 +1,24 @@
-# Core dependencies
+# Core
 python-telegram-bot==20.3
-aiocron>=1.8
-openpyxl==3.1.2
-pandas==2.2.0  # Для генерации Excel-отчётов
-pytz==2023.3
-python-dotenv==1.1.0
-httpx==0.24.1
-filelock==3.16.1  # Для блокировок при работе с файлами
-# matplotlib==3.7.1; python_version < '3.12'  # Версия без жестких зависимостей
 fast_bitrix24
+python-dotenv==1.1.0
 apscheduler
+aiocron>=1.8
 
-# Optional for colored logs (Windows)
-colorlog==6.7.0
-
-# Watchdog for hot-reloading
-watchdog==3.0.0
-
-# Ensure pip version (optional)
-pip>=25.0.1
-requests>=2.25.0
+# Database
 sqlalchemy==2.0.23
 psycopg2-binary==2.9.7
-yadisk>=3.0.0  # Для загрузки бекапов на Яндекс.Диск
+
+# Excel/Reports
+pandas==2.2.0
+openpyxl==3.1.2
+
+# Utils
+colorlog==6.7.0
+watchdog==3.0.0
+pytz==2023.3
+yadisk>=3.0.0
+
+# HTTP (если используются)
+httpx==0.24.1
+requests>=2.32.0
