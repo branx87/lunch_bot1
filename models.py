@@ -27,8 +27,9 @@ class User(Base):
     notifications_enabled = Column(Boolean, default=True)
     bitrix_entity_type = Column(String(50), nullable=True)
     
-    # 🔥 ДОБАВЬТЕ ЭТО ПОЛЕ
     employment_date = Column(Date, nullable=True)  # Дата трудоустройства
+    work_time_start = Column(String(5), nullable=True)  # Начало рабочего дня, например "08:00"
+    work_time_end = Column(String(5), nullable=True)  # Конец рабочего дня, например "17:00"
     
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

@@ -398,6 +398,9 @@ class BitrixSync:
 
             logger.info(f"Создано {len(rest_to_crm_mapping)} соответствий REST -> CRM")
 
+            # 3.5. Получаем данные из сущности 1120 (дата трудоустройства, рабочее время)
+            entity_1120_map = await self._get_entity_1120_employees()
+
             # 4. Получаем всех существующих сотрудников из базы
             with db.get_session() as session:
                 existing_employees = session.query(User).filter(
@@ -409,20 +412,7 @@ class BitrixSync:
                 existing_by_name = {}
                 
                 for emp in existing_employees:
-                    if emp.bitrix_id:
-                        existing_by_bitrix_id[str(emp.bitrix_id)] = {
-                            'id': emp.id,
-                            'full_name': emp.full_name,
-                            'position': emp.position,
-                            'department': emp.department,
-                            'city': emp.city,
-                            'is_deleted': emp.is_deleted,
-                            'crm_employee_id': emp.crm_employee_id
-                        }
-                    
-                    # Добавляем в поиск по имени
-                    normalized_name = self._normalize_name(emp.full_name)
-                    existing_by_name[normalized_name] = {
+                    emp_dict = {
                         'id': emp.id,
                         'full_name': emp.full_name,
                         'position': emp.position,
@@ -430,8 +420,18 @@ class BitrixSync:
                         'city': emp.city,
                         'is_deleted': emp.is_deleted,
                         'crm_employee_id': emp.crm_employee_id,
-                        'bitrix_id': emp.bitrix_id
+                        'bitrix_id': emp.bitrix_id,
+                        'employment_date': emp.employment_date,
+                        'work_time_start': emp.work_time_start,
+                        'work_time_end': emp.work_time_end,
                     }
+
+                    if emp.bitrix_id:
+                        existing_by_bitrix_id[str(emp.bitrix_id)] = emp_dict
+
+                    # Добавляем в поиск по имени
+                    normalized_name = self._normalize_name(emp.full_name)
+                    existing_by_name[normalized_name] = emp_dict
             
             # 5. Обновляем существующих и добавляем новых сотрудников
             for rest_emp in rest_employees:
@@ -453,10 +453,10 @@ class BitrixSync:
                     
                     if existing_employee:
                         # ОБНОВЛЯЕМ существующего сотрудника
-                        await self._update_existing_employee(existing_employee, rest_emp, rest_to_crm_mapping, stats)
+                        await self._update_existing_employee(existing_employee, rest_emp, rest_to_crm_mapping, stats, entity_1120_map)
                     else:
                         # ДОБАВЛЯЕМ нового сотрудника
-                        await self._add_new_employee(rest_emp, rest_to_crm_mapping, stats)
+                        await self._add_new_employee(rest_emp, rest_to_crm_mapping, stats, entity_1120_map)
                         
                 except Exception as e:
                     stats['errors'] += 1
@@ -987,6 +987,93 @@ class BitrixSync:
         except Exception as e:
             logger.error(f"Ошибка получения сотрудников из CRM: {e}")
             return []
+
+    # Маппинг ufCrm20WorkTime -> (начало, конец) рабочего дня
+    _work_time_map = {
+        '1650': ('07:00', '16:00'),
+        '1651': ('08:00', '17:00'),
+        '1652': ('09:00', '18:00'),
+    }
+
+    async def _get_entity_1120_employees(self) -> Dict[str, Dict]:
+        """
+        Получает данные сотрудников из сущности 1120 (HR-карточки).
+        Матчинг по нормализованному ФИО (title), т.к. assignedById меняется при увольнении.
+        Возвращает словарь: normalized_name -> {employment_date, work_time_start, work_time_end}
+        """
+        result_map = {}
+        try:
+            params = {
+                'entityTypeId': 1120,
+                'select': [
+                    'id',
+                    'title',
+                    'ufCrm20DataTrydoystroistva',
+                    'ufCrm20WorkTime'
+                ]
+            }
+
+            items = await asyncio.wait_for(
+                self.bx.get_all('crm.item.list', params),
+                timeout=60.0
+            )
+
+            if not items:
+                logger.warning("Не получено данных из сущности 1120")
+                return result_map
+
+            logger.info(f"Получено {len(items)} записей из сущности 1120")
+
+            for item in items:
+                title = item.get('title', '')
+                if not title:
+                    continue
+
+                # Парсим дату трудоустройства
+                employment_date_raw = item.get('ufCrm20DataTrydoystroistva')
+                employment_date = None
+                if employment_date_raw:
+                    try:
+                        date_str = employment_date_raw.split('T')[0]
+                        employment_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"Неверный формат даты трудоустройства '{employment_date_raw}' для '{title}': {e}")
+
+                # Парсим рабочее время
+                work_time_id = str(item.get('ufCrm20WorkTime', '')) if item.get('ufCrm20WorkTime') else None
+                work_time_start = None
+                work_time_end = None
+                if work_time_id and work_time_id in self._work_time_map:
+                    work_time_start, work_time_end = self._work_time_map[work_time_id]
+                elif work_time_id:
+                    logger.debug(f"Неизвестный ufCrm20WorkTime: {work_time_id} для '{title}'")
+
+                data = {
+                    'employment_date': employment_date,
+                    'work_time_start': work_time_start,
+                    'work_time_end': work_time_end,
+                }
+
+                # Ключ — нормализованное полное ФИО
+                normalized_full = self._normalize_name(title)
+                result_map[normalized_full] = data
+
+                # Дополнительный ключ — фамилия + имя (без отчества)
+                name_parts = title.split()
+                if len(name_parts) >= 2:
+                    fi_key = self._normalize_name(f"{name_parts[0]} {name_parts[1]}")
+                    if fi_key not in result_map:
+                        result_map[fi_key] = data
+
+            logger.info(f"Построена карта данных из сущности 1120 для {len(result_map)} записей")
+            return result_map
+
+        except asyncio.TimeoutError:
+            logger.error("Таймаут при получении данных из сущности 1120")
+            return result_map
+        except Exception as e:
+            logger.error(f"Ошибка получения данных из сущности 1120: {e}", exc_info=True)
+            return result_map
 
     def _create_employee_search_structure(self, crm_employees: List[Dict]) -> Dict[str, Dict]:
         """Создает структуру для поиска сотрудников"""
@@ -1546,8 +1633,8 @@ class BitrixSync:
         except Exception as e:
             logger.error(f"Ошибка удаления дублей: {e}")
             
-    async def _update_existing_employee(self, existing_employee: Dict, rest_emp: Dict, rest_to_crm_mapping: Dict, stats: Dict):
-        """Обновляет данные существующего сотрудника с датой трудоустройства"""
+    async def _update_existing_employee(self, existing_employee: Dict, rest_emp: Dict, rest_to_crm_mapping: Dict, stats: Dict, entity_1120_map: Dict = None):
+        """Обновляет данные существующего сотрудника с датой трудоустройства и рабочим временем из сущности 1120"""
         try:
             update_data = {}
             bitrix_id = rest_emp['ID']
@@ -1632,21 +1719,37 @@ class BitrixSync:
                 # Случай 3: Пропускаем - город не изменился
                 logger.debug(f"✅ Город для {rest_emp['ФИО']} актуален: '{current_city}'")
 
-            # 🔥 ИСПРАВЛЕНИЕ: Обновление даты трудоустройства
-            new_employment_date = rest_emp.get('UF_EMPLOYMENT_DATE')
-            if new_employment_date == '':  # Если пустая строка
-                new_employment_date = None
-                
-            current_employment_date = existing_employee.get('employment_date')
-            
-            # Сравниваем даты трудоустройства
-            if new_employment_date != current_employment_date:
-                if new_employment_date:
-                    update_data['employment_date'] = new_employment_date
-                    logger.info(f"📅 Обновлена дата трудоустройства для {rest_emp['ФИО']}: {current_employment_date} -> {new_employment_date}")
-                elif current_employment_date:
-                    # Если в Bitrix дата удалена, но у нас была - оставляем нашу
-                    logger.debug(f"⚠️ Дата трудоустройства удалена в Bitrix для {rest_emp['ФИО']}, сохраняем текущую: {current_employment_date}")
+            # Обновление даты трудоустройства и рабочего времени из сущности 1120 (матчинг по ФИО)
+            if entity_1120_map:
+                emp_name_normalized = self._normalize_name(rest_emp['ФИО'])
+                emp_1120 = entity_1120_map.get(emp_name_normalized)
+                # Если не нашли по полному ФИО, пробуем по фамилии + имени
+                if not emp_1120:
+                    name_parts = rest_emp['ФИО'].split()
+                    if len(name_parts) >= 2:
+                        fi_key = self._normalize_name(f"{name_parts[0]} {name_parts[1]}")
+                        emp_1120 = entity_1120_map.get(fi_key)
+                if emp_1120:
+                    # Дата трудоустройства
+                    new_employment_date = emp_1120.get('employment_date')
+                    current_employment_date = existing_employee.get('employment_date')
+                    if new_employment_date and new_employment_date != current_employment_date:
+                        update_data['employment_date'] = new_employment_date
+                        logger.info(f"📅 Обновлена дата трудоустройства для {rest_emp['ФИО']}: {current_employment_date} -> {new_employment_date}")
+
+                    # Рабочее время - начало
+                    new_wt_start = emp_1120.get('work_time_start')
+                    current_wt_start = existing_employee.get('work_time_start')
+                    if new_wt_start and new_wt_start != current_wt_start:
+                        update_data['work_time_start'] = new_wt_start
+                        logger.info(f"🕐 Обновлено начало рабочего дня для {rest_emp['ФИО']}: {current_wt_start} -> {new_wt_start}")
+
+                    # Рабочее время - конец
+                    new_wt_end = emp_1120.get('work_time_end')
+                    current_wt_end = existing_employee.get('work_time_end')
+                    if new_wt_end and new_wt_end != current_wt_end:
+                        update_data['work_time_end'] = new_wt_end
+                        logger.info(f"🕐 Обновлен конец рабочего дня для {rest_emp['ФИО']}: {current_wt_end} -> {new_wt_end}")
 
             # 🔥 ИСПОЛЬЗУЕМ МЕТОД ДЛЯ ПРОВЕРКИ РЕАЛЬНЫХ ИЗМЕНЕНИЙ
             if update_data and self._has_real_changes(existing_employee, update_data):
@@ -1691,27 +1794,37 @@ class BitrixSync:
         except Exception as e:
             logger.error(f"Ошибка очистки неактивных сотрудников: {e}")
             
-    async def _add_new_employee(self, rest_emp: Dict, rest_to_crm_mapping: Dict, stats: Dict):
-        """Добавляет нового сотрудника из Bitrix с датой трудоустройства"""
+    async def _add_new_employee(self, rest_emp: Dict, rest_to_crm_mapping: Dict, stats: Dict, entity_1120_map: Dict = None):
+        """Добавляет нового сотрудника из Bitrix с датой трудоустройства и рабочим временем из сущности 1120"""
         try:
             bitrix_id = rest_emp['ID']
-            
-            # 🔥 ПРОВЕРЯЕМ ЕЩЕ РАЗ ПЕРЕД ДОБАВЛЕНИЕМ
+
             if self._user_exists_by_bitrix_id(bitrix_id):
-                logger.debug(f"⚠️ Сотрудник с Bitrix ID {bitrix_id} уже существует, пропускаем")
+                logger.debug(f"Сотрудник с Bitrix ID {bitrix_id} уже существует, пропускаем")
                 stats['exists'] += 1
                 return
-                
+
             crm_id = rest_to_crm_mapping.get(bitrix_id)
             department = rest_emp.get('Подразделение', '')
             city = rest_emp.get('Город', '')
-            
-            # 🔥 ИСПРАВЛЕНИЕ: Обработка даты трудоустройства
-            employment_date = rest_emp.get('UF_EMPLOYMENT_DATE')
-            if employment_date == '':  # Если пустая строка
-                employment_date = None
-                logger.debug(f"Пустая дата трудоустройства для {rest_emp['ФИО']}, устанавливаем None")
-            
+
+            # Получаем данные из сущности 1120 (матчинг по ФИО)
+            employment_date = None
+            work_time_start = None
+            work_time_end = None
+            if entity_1120_map:
+                emp_name_normalized = self._normalize_name(rest_emp['ФИО'])
+                emp_1120 = entity_1120_map.get(emp_name_normalized)
+                if not emp_1120:
+                    name_parts = rest_emp['ФИО'].split()
+                    if len(name_parts) >= 2:
+                        fi_key = self._normalize_name(f"{name_parts[0]} {name_parts[1]}")
+                        emp_1120 = entity_1120_map.get(fi_key)
+                if emp_1120:
+                    employment_date = emp_1120.get('employment_date')
+                    work_time_start = emp_1120.get('work_time_start')
+                    work_time_end = emp_1120.get('work_time_end')
+
             with db.get_session() as session:
                 try:
                     new_user = User(
@@ -1725,13 +1838,15 @@ class BitrixSync:
                         city=city,
                         is_deleted=not rest_emp.get('Активен', True),
                         bitrix_entity_type='rest_employee',
-                        employment_date=employment_date  # 🔥 Теперь всегда корректное значение
+                        employment_date=employment_date,
+                        work_time_start=work_time_start,
+                        work_time_end=work_time_end,
                     )
                     session.add(new_user)
                     session.commit()
-                    
+
                     stats['added'] += 1
-                    logger.info(f"✅ Добавлен новый сотрудник: {rest_emp['ФИО']}, отдел: {department}, дата трудоустройства: {employment_date}")
+                    logger.info(f"✅ Добавлен новый сотрудник: {rest_emp['ФИО']}, отдел: {department}, дата трудоустройства: {employment_date}, график: {work_time_start}-{work_time_end}")
                     
                 except Exception as e:
                     logger.error(f"❌ Ошибка при добавлении сотрудника {rest_emp['ФИО']}: {e}")
