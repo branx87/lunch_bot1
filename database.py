@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self):
-        self.database_url = os.getenv('DATABASE_URL', 'postgresql://bot_user:password@localhost:5432/lunch_bot')
+        self.database_url = os.getenv('DATABASE_URL', 'postgresql://bot_user:password@localhost:5434/lunch_bot')
         self.engine = create_engine(self.database_url, pool_pre_ping=True, pool_recycle=300)
         self.SessionLocal = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=self.engine))
         self.session = self.SessionLocal()

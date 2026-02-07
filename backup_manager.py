@@ -67,7 +67,7 @@ class BackupManager:
 
             # Разделяем host:port/database
             host_port, database = host_db.split('/')
-            host, port = host_port.split(':') if ':' in host_port else (host_port, '5432')
+            host, port = host_port.split(':') if ':' in host_port else (host_port, '5434')
 
             self.db_host = host
             self.db_port = port

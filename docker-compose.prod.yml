@@ -9,7 +9,7 @@ services:
       POSTGRES_USER: bot_user
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     ports:
-      - "5434:5432"
+      - "5434:5434"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backups:/backups
@@ -37,7 +37,7 @@ services:
     environment:
     - TZ=Europe/Moscow
     - PYTHONUNBUFFERED=1
-    - DATABASE_URL=postgresql://bot_user:lunch_bot123456@postgres:5432/lunch_bot
+    - DATABASE_URL=postgresql://bot_user:lunch_bot123456@postgres:5434/lunch_bot
     # env_file:
     #   - ./data/configs/.env
     extra_hosts:

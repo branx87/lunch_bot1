@@ -78,7 +78,7 @@ BACKUP_MONTHS=3
 Убедитесь, что в `.env` правильно настроен `DATABASE_URL`:
 
 ```env
-DATABASE_URL=postgresql://bot_user:password@postgres:5432/lunch_bot
+DATABASE_URL=postgresql://bot_user:password@postgres:5434/lunch_bot
 ```
 
 ### 5. Проверка доступности pg_dump
