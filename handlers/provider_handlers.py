@@ -6,13 +6,14 @@ from database import db
 from models import Menu
 from config import CONFIG
 from constants import (
-    EDIT_MENU_DAY, 
-    EDIT_MENU_FIRST, 
-    EDIT_MENU_MAIN, 
+    EDIT_MENU_DAY,
+    EDIT_MENU_FIRST,
+    EDIT_MENU_MAIN,
     EDIT_MENU_SALAD
 )
 from handlers.admin_config_handlers import cancel_config
 from bot_keyboards import create_provider_menu_keyboard
+from decorators import provider_or_admin_filter
 
 async def edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -167,8 +168,8 @@ def setup_provider_handlers(application):
     """
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(
-            filters.Regex("^✏️ Изменить меню$") & 
-            (filters.User(user_id=CONFIG.provider_ids) | filters.User(user_id=CONFIG.admin_ids)),  # Добавлены админы
+            filters.Regex("^✏️ Изменить меню$") &
+            provider_or_admin_filter,
             edit_menu
         )],
         states={

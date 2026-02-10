@@ -27,11 +27,12 @@ from database import db
 from models import User, Holiday
 from config import CONFIG
 from constants import (
-    ADD_ACCOUNTANT, ADD_ADMIN, ADD_HOLIDAY_DATE, ADD_HOLIDAY_NAME, 
-    ADD_PROVIDER, ADD_STAFF, CONFIG_MENU, DELETE_ACCOUNTANT, DELETE_ADMIN, 
+    ADD_ACCOUNTANT, ADD_ADMIN, ADD_HOLIDAY_DATE, ADD_HOLIDAY_NAME,
+    ADD_PROVIDER, ADD_STAFF, CONFIG_MENU, DELETE_ACCOUNTANT, DELETE_ADMIN,
     DELETE_HOLIDAY, DELETE_PROVIDER, DELETE_STAFF, PAGE_SIZE
 )
 from bot_keyboards import create_admin_config_keyboard, create_admin_keyboard, create_main_menu_keyboard, get_cancel_button
+from decorators import admin_filter
 
 ENV_PATH = Path("data/configs/.env")
 
@@ -1061,8 +1062,8 @@ def setup_admin_config_handlers(application):
     conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(
-                filters.Regex("^⚙️ Управление конфигурацией$") & 
-                filters.User(user_id=CONFIG.admin_ids),
+                filters.Regex("^⚙️ Управление конфигурацией$") &
+                admin_filter,
                 config_menu
             )
         ],

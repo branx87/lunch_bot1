@@ -18,6 +18,7 @@ from handlers.common import show_main_menu
 from admin import message_history
 from database import db
 from config import CONFIG, logger
+from decorators import admin_filter, provider_or_admin_filter
 from constants import (
     ADMIN_REPORTS_MENU, AWAIT_MESSAGE_TEXT, FULL_NAME, LOCATION, MAIN_MENU, 
     ORDER_ACTION, ORDER_CONFIRMATION, PHONE, 
@@ -246,8 +247,8 @@ def setup_handlers(application):
     # 2. Обработчики рассылки
     broadcast_handler = ConversationHandler(
         entry_points=[MessageHandler(
-            filters.Regex("^📢 Сделать рассылку$") & 
-            filters.User(user_id=CONFIG.admin_ids),
+            filters.Regex("^📢 Сделать рассылку$") &
+            admin_filter,
             handle_broadcast_command
         )],
         states={
@@ -276,7 +277,7 @@ def setup_handlers(application):
     admin_reports_conv = ConversationHandler(
         entry_points=[
             MessageHandler(
-                filters.Regex("^📊 Отчеты$") & filters.User(user_id=CONFIG.admin_ids),
+                filters.Regex("^📊 Отчеты$") & admin_filter,
                 admin_reports_menu
             )
         ],
@@ -339,12 +340,12 @@ def setup_handlers(application):
     ))
 
     application.add_handler(MessageHandler(
-        filters.Regex("^📜 История сообщений$") & filters.User(user_id=CONFIG.admin_ids),
+        filters.Regex("^📜 История сообщений$") & admin_filter,
         message_history
     ))
 
     application.add_handler(MessageHandler(
-        filters.Regex("^🔒 Вкл/Выкл заказы$") & filters.User(user_id=CONFIG.admin_ids),
+        filters.Regex("^🔒 Вкл/Выкл заказы$") & admin_filter,
         handle_admin_choice
     ))
 
