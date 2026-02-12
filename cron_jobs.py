@@ -1,5 +1,5 @@
 # ##handlers/cron_jobs.py
-import aiocron
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from database import db
 from config import CONFIG
 from datetime import datetime, timedelta
@@ -21,17 +21,17 @@ class CronManager:
             if hasattr(self, 'bitrix_sync') and self.bitrix_sync:
                 await self.bitrix_sync.close()
                 logger.info("✅ BitrixSync в CronManager закрыт")
-            
+
             # Останавливаем планировщик
-            if hasattr(self, 'scheduler') and self.scheduler:
+            if hasattr(self, 'scheduler') and self.scheduler and self.scheduler.running:
                 self.scheduler.shutdown()
                 logger.info("✅ Планировщик CronManager остановлен")
         except Exception as e:
             logger.error(f"❌ Ошибка закрытия CronManager: {e}")
-            
+
     def __init__(self, application: Application):
         self.application = application
-        self.jobs = []
+        self.scheduler = AsyncIOScheduler(timezone=TIME_CONFIG.TIMEZONE)
 
     async def is_workday(self, date: datetime) -> bool:
         """Проверяет, является ли день рабочим"""
@@ -44,80 +44,98 @@ class CronManager:
         """Инициализация cron-задач в боевом режиме"""
         logger.info(f"Начало настройки cron задач в {datetime.now(TIME_CONFIG.TIMEZONE)}")
         self._add_production_jobs()
+        self.scheduler.start()
         logger.info(f"Cron задачи настроены в боевом режиме в {datetime.now(TIME_CONFIG.TIMEZONE)}")
-        
-        # Убираем проблемное логирование объектов cron
-        logger.info(f"Всего настроено {len(self.jobs)} cron задач")
-        
-        # Вместо этого логируем сами cron выражения которые мы создали
-        logger.info("Созданные cron выражения:")
-        logger.info(f"  Напоминания: 0 9 * * 1,2,3,4,5")
-        logger.info(f"  Отчеты: 31 9 * * 1,2,3,4,5") 
-        logger.info(f"  Бух.отчет: 0 11 28-31 * *")
-        logger.info(f"  Синхронизация: 0 18 * * 1,2,3,4,5")
 
-        # 🔥 ТЕСТ: запуск через 3 минуты для проверки работы cron
+        # Логируем информацию о настроенных задачах
+        logger.info("Созданные расписания:")
+        logger.info(f"  Напоминания: {TIME_CONFIG.MORNING_REMINDER_TIME.strftime('%H:%M')} (Пн-Пт)")
+        logger.info(f"  Отчеты: {TIME_CONFIG.MORNING_REPORTS_TIME.strftime('%H:%M')} (Пн-Пт)")
+        logger.info(f"  Бух.отчет: {TIME_CONFIG.ACCOUNTING_REPORT_TIME.strftime('%H:%M')} (28-31 числа)")
+        logger.info(f"  Синхронизация: {TIME_CONFIG.SYNC_EMPLOYEES_TIME.strftime('%H:%M')} (Пн-Пт)")
+        logger.info(f"  Бекап: 03:00 (каждый день)")
+
+        # 🔥 ТЕСТ: запуск через 3 минуты для проверки работы планировщика
         test_time = datetime.now(TIME_CONFIG.TIMEZONE) + timedelta(minutes=3)
-        test_cron = aiocron.crontab(
-            f'{test_time.minute} {test_time.hour} * * *',  # каждый день в это время
-            func=self._test_cron_working,
-            tz=TIME_CONFIG.TIMEZONE
+        self.scheduler.add_job(
+            self._test_cron_working,
+            'cron',
+            minute=test_time.minute,
+            hour=test_time.hour,
+            second=0
         )
-        self.jobs.append(test_cron)
         logger.info(f"🧪 ТЕСТ: задача настроена на {test_time.strftime('%H:%M')}")
 
     async def _test_cron_working(self):
-        """Тестовая функция для проверки работы cron"""
-        logger.info(f"✅ ТЕСТ УСПЕШЕН: Cron работает! Время: {datetime.now(TIME_CONFIG.TIMEZONE)}")
+        """Тестовая функция для проверки работы планировщика"""
+        logger.info(f"✅ ТЕСТ УСПЕШЕН: Планировщик работает! Время: {datetime.now(TIME_CONFIG.TIMEZONE)}")
 
     def _add_production_jobs(self):
         """Боевые задачи по расписанию"""
-        logger.info(f"🕒 Настройка cron задач в {datetime.now(TIME_CONFIG.TIMEZONE)}")
-        
+        logger.info(f"🕒 Настройка задач планировщика в {datetime.now(TIME_CONFIG.TIMEZONE)}")
+
+        # Получаем рабочие дни в формате APScheduler
+        work_days_cron = self._get_cron_days(TIME_CONFIG.WORK_DAYS)
+
         # Утренние напоминания
-        cron_expression = f'{TIME_CONFIG.MORNING_REMINDER_TIME.minute} {TIME_CONFIG.MORNING_REMINDER_TIME.hour} * * {self._get_cron_days(TIME_CONFIG.WORK_DAYS)}'
-        logger.info(f"📅 Напоминания: {cron_expression}")
-        
-        self.jobs.append(aiocron.crontab(
-            cron_expression,
-            func=self._morning_reminder,
-            tz=TIME_CONFIG.TIMEZONE
-        ))
-        
+        self.scheduler.add_job(
+            self._morning_reminder,
+            'cron',
+            minute=TIME_CONFIG.MORNING_REMINDER_TIME.minute,
+            hour=TIME_CONFIG.MORNING_REMINDER_TIME.hour,
+            day_of_week=work_days_cron,
+            second=0
+        )
+        logger.info(f"📅 Напоминания: {TIME_CONFIG.MORNING_REMINDER_TIME.strftime('%H:%M')} (Пн-Пт)")
+
         # Утренние отчеты
-        self.jobs.append(aiocron.crontab(
-            f'{TIME_CONFIG.MORNING_REPORTS_TIME.minute} {TIME_CONFIG.MORNING_REPORTS_TIME.hour} * * {self._get_cron_days(TIME_CONFIG.WORK_DAYS)}',
-            func=self._morning_reports,
-            tz=TIME_CONFIG.TIMEZONE
-        ))
-        
-        # Бухгалтерский отчет
-        self.jobs.append(aiocron.crontab(
-            f'{TIME_CONFIG.ACCOUNTING_REPORT_TIME.minute} {TIME_CONFIG.ACCOUNTING_REPORT_TIME.hour} 28-31 * *',
-            func=self._accounting_report,
-            tz=TIME_CONFIG.TIMEZONE
-        ))
+        self.scheduler.add_job(
+            self._morning_reports,
+            'cron',
+            minute=TIME_CONFIG.MORNING_REPORTS_TIME.minute,
+            hour=TIME_CONFIG.MORNING_REPORTS_TIME.hour,
+            day_of_week=work_days_cron,
+            second=0
+        )
+        logger.info(f"📊 Отчеты: {TIME_CONFIG.MORNING_REPORTS_TIME.strftime('%H:%M')} (Пн-Пт)")
+
+        # Бухгалтерский отчет (в последние дни месяца)
+        self.scheduler.add_job(
+            self._accounting_report,
+            'cron',
+            minute=TIME_CONFIG.ACCOUNTING_REPORT_TIME.minute,
+            hour=TIME_CONFIG.ACCOUNTING_REPORT_TIME.hour,
+            day='28-31',
+            second=0
+        )
+        logger.info(f"💰 Бух.отчет: {TIME_CONFIG.ACCOUNTING_REPORT_TIME.strftime('%H:%M')} (28-31 числа)")
 
         # Синхронизация сотрудников
-        self.jobs.append(aiocron.crontab(
-            f'{TIME_CONFIG.SYNC_EMPLOYEES_TIME.minute} {TIME_CONFIG.SYNC_EMPLOYEES_TIME.hour} * * {self._get_cron_days(TIME_CONFIG.WORK_DAYS)}',
-            func=self._sync_employees,
-            tz=TIME_CONFIG.TIMEZONE
-        ))
+        self.scheduler.add_job(
+            self._sync_employees,
+            'cron',
+            minute=TIME_CONFIG.SYNC_EMPLOYEES_TIME.minute,
+            hour=TIME_CONFIG.SYNC_EMPLOYEES_TIME.hour,
+            day_of_week=work_days_cron,
+            second=0
+        )
+        logger.info(f"🔄 Синхронизация: {TIME_CONFIG.SYNC_EMPLOYEES_TIME.strftime('%H:%M')} (Пн-Пт)")
 
         # Автоматическое резервное копирование (каждую ночь в 03:00)
-        self.jobs.append(aiocron.crontab(
-            '0 3 * * *',  # Каждый день в 03:00
-            func=self._create_backup,
-            tz=TIME_CONFIG.TIMEZONE
-        ))
-        logger.info("📦 Настроен автоматический бекап БД: каждый день в 03:00")
+        self.scheduler.add_job(
+            self._create_backup,
+            'cron',
+            hour=3,
+            minute=0,
+            second=0
+        )
+        logger.info("📦 Бекап БД: 03:00 (каждый день)")
 
     def _get_cron_days(self, days_list):
-        """Конвертирует список дней в формат cron (0=воскресенье, 1=понедельник)"""
-        # Конвертируем: 0(пн)->1, 1(вт)->2, ..., 4(пт)->5
-        cron_days = [str(day + 1) for day in days_list]
-        return ','.join(cron_days)
+        """Конвертирует список дней в формат APScheduler"""
+        # days_list: [0,1,2,3,4] -> 'mon,tue,wed,thu,fri'
+        day_names = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+        return ','.join([day_names[day] for day in days_list])
 
     async def _morning_reminder(self):
         """Утренние напоминания пользователям без заказов на сегодня"""

@@ -2,6 +2,7 @@ import logging
 import asyncio
 from telegram.ext import ApplicationBuilder
 from telegram.request import HTTPXRequest
+from telegram.error import NetworkError, TimedOut
 
 
 class LunchBot:
@@ -10,9 +11,21 @@ class LunchBot:
         self.application = None
         self._running = False
         self.cron_manager = None
-        
+
         # Простой логгер без сложной логики
         self.logger = logging.getLogger(__name__)
+
+    async def error_handler(self, update, context):
+        """Обработчик ошибок для игнорирования временных сетевых проблем"""
+        error = context.error
+
+        # Игнорируем временные сетевые ошибки (они автоматически повторяются)
+        if isinstance(error, (NetworkError, TimedOut)):
+            self.logger.warning(f"Временная сетевая ошибка (автоповтор): {error.__class__.__name__}")
+            return
+
+        # Все остальные ошибки логируем полностью
+        self.logger.error(f"Необработанная ошибка: {error}", exc_info=context.error)
 
 
     async def run(self):
@@ -32,12 +45,13 @@ class LunchBot:
             self.logger.info("2. Создаем application с устойчивостью к сетевым ошибкам")
             
             # 🔥 КАСТОМНЫЙ REQUEST С УВЕЛИЧЕННЫМИ ТАЙМАУТАМИ
+            # read_timeout должен быть больше, чем polling_timeout Telegram (обычно 30-60 сек)
             request = HTTPXRequest(
                 connection_pool_size=8,
-                connect_timeout=30.0,
-                read_timeout=30.0,
-                write_timeout=30.0,
-                pool_timeout=30.0
+                connect_timeout=10.0,
+                read_timeout=90.0,  # Увеличено для long polling
+                write_timeout=10.0,
+                pool_timeout=10.0
             )
             
             # ✅ УБРАЛИ connect_timeout, read_timeout и т.д. из ApplicationBuilder
@@ -75,14 +89,17 @@ class LunchBot:
             from handlers.commands import setup as setup_commands
             setup_commands(self.application)
 
-            self.logger.info("7. Инициализируем application")
+            self.logger.info("7. Добавляем обработчик ошибок")
+            self.application.add_error_handler(self.error_handler)
+
+            self.logger.info("8. Инициализируем application")
             await self.application.initialize()
             await self.application.start()
 
             bot_info = await self.application.bot.get_me()
-            self.logger.info(f"8. Бот @{bot_info.username} запущен")
-            
-            self.logger.info("9. Запускаем polling с увеличенными таймаутами")
+            self.logger.info(f"9. Бот @{bot_info.username} запущен")
+
+            self.logger.info("10. Запускаем polling с увеличенными таймаутами")
             # 🔥 ТОЛЬКО ПАРАМЕТРЫ POLLING, БЕЗ ТАЙМАУТОВ (они уже в request)
             await self.application.updater.start_polling(
                 allowed_updates=None,
@@ -90,8 +107,8 @@ class LunchBot:
                 bootstrap_retries=5  # 5 попыток при старте
             )
             self._running = True
-            
-            self.logger.info("10. Бот успешно запущен, переходим в основной цикл")
+
+            self.logger.info("11. Бот успешно запущен, переходим в основной цикл")
             while self._running:
                 await asyncio.sleep(1)
                 

@@ -68,7 +68,7 @@ class BitrixSync:
             }
             
             logger.info("✅ Подключение к Bitrix24 инициализировано (SSL включен)")
-            self.scheduler = AsyncIOScheduler()
+            self.scheduler = AsyncIOScheduler(timezone=TIME_CONFIG.TIMEZONE)
             self.is_running = False
             
             # 🔥 ДОБАВЛЯЕМ: флаг для отслеживания активных сессий
