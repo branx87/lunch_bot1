@@ -14,7 +14,7 @@ from config import CONFIG
 from models import User, Order
 from sqlalchemy import text
 
-from admin import ensure_reports_dir
+from report_utils import ensure_reports_dir
 from settings import SETTINGS_CONFIG
 
 logger = logging.getLogger(__name__)
