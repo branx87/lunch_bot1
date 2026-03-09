@@ -32,13 +32,45 @@ class CronManager:
     def __init__(self, application: Application):
         self.application = application
         self.scheduler = AsyncIOScheduler(timezone=TIME_CONFIG.TIMEZONE)
+        self._calendar_cache: dict = {}  # Кэш производственного календаря
 
     async def is_workday(self, date: datetime) -> bool:
-        """Проверяет, является ли день рабочим"""
-        # Используем настройки из TIME_CONFIG вместо жестких значений
+        """Проверяет, является ли день рабочим (включая производственный календарь РФ)"""
+        # Стандартные выходные (сб, вс)
         if date.weekday() in TIME_CONFIG.WEEKEND_DAYS:
             return False
-        return date.strftime("%Y-%m-%d") not in CONFIG.holidays
+        # Ручной список праздников из БД
+        if date.strftime("%Y-%m-%d") in CONFIG.holidays:
+            return False
+        # Производственный календарь РФ (переносы, официальные выходные)
+        return await self._check_production_calendar(date)
+
+    async def _check_production_calendar(self, date: datetime) -> bool:
+        """Проверяет производственный календарь через isdayoff.ru.
+        Возвращает True если день рабочий, False если выходной."""
+        date_key = date.strftime("%Y%m%d")
+
+        if date_key in self._calendar_cache:
+            return self._calendar_cache[date_key]
+
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"https://isdayoff.ru/{date_key}")
+                if response.status_code == 200:
+                    result = response.text.strip()
+                    if result == '1':
+                        is_work = False  # Выходной/праздник по производственному календарю
+                        logger.info(f"📅 Производственный календарь: {date_key} — выходной день")
+                    else:
+                        is_work = True  # '0' — рабочий, '100'/'101' — неизвестно, считаем рабочим
+                    self._calendar_cache[date_key] = is_work
+                    return is_work
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось проверить производственный календарь для {date_key}: {e}")
+
+        # Если API недоступен — считаем рабочим днём
+        return True
 
     async def setup(self):
         """Инициализация cron-задач в боевом режиме"""
