@@ -4,6 +4,7 @@ from typing import Optional
 import openpyxl
 from datetime import datetime, date
 from telegram import Update
+from telegram.error import Forbidden
 from telegram.ext import ContextTypes
 import os
 import logging
@@ -89,9 +90,14 @@ async def export_orders_for_provider(
             parse_mode="Markdown"
         )
 
+    except Forbidden:
+        raise
     except Exception as e:
         logger.error(f"Ошибка при создании отчета для поставщика: {e}", exc_info=True)
-        await update.message.reply_text("❌ Ошибка при формировании отчёта.")
+        try:
+            await update.message.reply_text("❌ Ошибка при формировании отчёта.")
+        except Forbidden:
+            pass
         raise
     
 async def export_accounting_report(
@@ -306,9 +312,14 @@ async def export_accounting_report(
 
         return file_path
 
+    except Forbidden:
+        raise
     except Exception as e:
         logger.error(f"Ошибка формирования отчета: {e}", exc_info=True)
-        await update.message.reply_text("❌ Произошла ошибка при создании отчета.")
+        try:
+            await update.message.reply_text("❌ Произошла ошибка при создании отчета.")
+        except Forbidden:
+            pass
         raise
     
 async def export_monthly_report(
@@ -511,9 +522,14 @@ async def export_monthly_report(
                 filename=file_name
             )
 
+    except Forbidden:
+        raise
     except Exception as e:
         logger.error(f"Ошибка формирования админ отчёта: {e}", exc_info=True)
-        await update.message.reply_text("❌ Ошибка формирования отчёта")
+        try:
+            await update.message.reply_text("❌ Ошибка формирования отчёта")
+        except Forbidden:
+            pass
         
 async def export_daily_admin_report(
     update: Update, 

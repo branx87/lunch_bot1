@@ -1,6 +1,7 @@
 # # ##scheduled_reports.py
 import logging
 from datetime import datetime
+from telegram.error import Forbidden
 from telegram.ext import Application
 from config import CONFIG
 from settings import SETTINGS_CONFIG
@@ -69,6 +70,8 @@ async def send_scheduled_reports(application: Application, report_types: list):
                 fake_update = FakeUpdate(user_id, application.bot)
                 await config['func'](fake_update, application, *config['args'])
                 logger.info("Отчет '%s' отправлен пользователю %d", report, user_id)
+            except Forbidden:
+                logger.warning("Пользователь %d заблокировал бота, отчет '%s' пропущен", user_id, report)
             except Exception as e:
-                logger.error("Ошибка отправки отчета '%s' пользователю %d: %s", 
+                logger.error("Ошибка отправки отчета '%s' пользователю %d: %s",
                            report, user_id, str(e))
