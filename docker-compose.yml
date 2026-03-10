@@ -47,5 +47,8 @@ services:
       - /home/lunch_bot/lunch_bot/data/configs/.env
     extra_hosts:
       - "b24.epc.su:192.168.10.138"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     restart: unless-stopped
     user: "599:599"  # Запускаем от имени conteiner
