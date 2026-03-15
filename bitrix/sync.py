@@ -73,6 +73,7 @@ class BitrixSync:
             
             # 🔥 ДОБАВЛЯЕМ: флаг для отслеживания активных сессий
             self._active_sessions = []
+            self._push_lock = asyncio.Lock()
             
         except Exception as e:
             logger.critical(f"Ошибка инициализации BitrixSync: {e}")
@@ -1247,105 +1248,110 @@ class BitrixSync:
     
     async def _push_to_bitrix(self) -> bool:
         """Отправка заказов в Bitrix с правильным управлением сессиями"""
-        try:
-            today = datetime.now(TIME_CONFIG.TIMEZONE).date().isoformat()
-            
-            # 🔥 ШАГ 1: Получаем ID заказов (не объекты!)
-            with db.get_session() as session:
-                orders_ids = session.query(Order.id).filter(
-                    Order.is_sent_to_bitrix == False,
-                    Order.is_cancelled == False,
-                    Order.target_date == today,
-                    Order.bitrix_order_id == None,
-                    Order.is_from_bitrix == False
-                ).all()
-                
-                # Извлекаем только ID
-                order_ids_list = [order_id[0] for order_id in orders_ids]
-            
-            if not order_ids_list:
-                logger.info("📦 Нет заказов для отправки в Bitrix24")
-                return True
-                
-            logger.info(f"📤 Найдено {len(order_ids_list)} заказов для отправки")
-            
-            success_count = 0
-            error_count = 0
-            failed_order_ids = []  # 🔥 Сохраняем ID неотправленных заказов
-            
-            # 🔥 ШАГ 2: Обрабатываем каждый заказ в отдельной сессии
-            for order_id in order_ids_list:
-                try:
-                    # Открываем новую сессию для каждого заказа
-                    with db.get_session() as order_session:
-                        order = order_session.query(Order).filter(
-                            Order.id == order_id
-                        ).first()
-                        
-                        if not order:
-                            logger.warning(f"Заказ {order_id} не найден")
-                            continue
-                        
-                        # Получаем пользователя в той же сессии
-                        user = order_session.query(User).filter(
-                            User.id == order.user_id
-                        ).first()
-                        
-                        if not user or not user.bitrix_id:
-                            logger.warning(f"❌ Пользователь для заказа {order_id} не найден или нет Bitrix ID")
-                            error_count += 1
-                            failed_order_ids.append(order_id)
-                            continue
-                        
-                        # Формируем данные для Bitrix
-                        order_data = {
-                            'bitrix_id': user.bitrix_id,
-                            'quantity': order.quantity,
-                            'target_date': str(order.target_date),
-                            'order_time': order.order_time or '09:00:00',
-                            'location': user.location or 'Офис'
-                        }
-                        
-                        # Отправляем в Bitrix
-                        bitrix_id = await self._create_bitrix_order(
-                            order_data, 
-                            user.crm_employee_id
-                        )
-                        
-                        if bitrix_id:
-                            # Обновляем заказ в той же сессии
-                            order.is_sent_to_bitrix = True
-                            order.bitrix_order_id = str(bitrix_id)
-                            order.updated_at = datetime.now()
-                            order_session.commit()
-                            success_count += 1
-                            logger.info(f"✅ УСПЕШНО: Заказ {order_id} -> Bitrix ID: {bitrix_id}")
-                        else:
-                            logger.error(f"❌ Не удалось создать заказ {order_id} в Bitrix")
-                            error_count += 1
-                            failed_order_ids.append(order_id)
-                            
-                except Exception as e:
-                    logger.error(f"❌ Ошибка обработки заказа {order_id}: {e}", exc_info=True)
-                    error_count += 1
-                    failed_order_ids.append(order_id)
-            
-            logger.info(f"📤 Итог отправки: Успешно: {success_count}, Ошибок: {error_count}")
-            
-            # 🔥 ШАГ 3: Сохраняем информацию о неотправленных заказах
-            if failed_order_ids:
-                # Сохраняем в атрибут экземпляра для последующего использования
-                self._last_failed_order_ids = failed_order_ids
-            
-            # # Синхронизация сотрудников
-            # logger.info("🔄 Пробуем синхронизировать сотрудников...")
-            # await self.sync_employees()
-            
-            return error_count == 0
-            
-        except Exception as e:
-            logger.error(f"❌ Критическая ошибка в _push_to_bitrix: {str(e)}", exc_info=True)
-            return False
+        if self._push_lock.locked():
+            logger.warning("⏳ _push_to_bitrix уже выполняется, пропускаем")
+            return True
+        async with self._push_lock:
+            try:
+                today = datetime.now(TIME_CONFIG.TIMEZONE).date().isoformat()
+
+                # 🔥 ШАГ 1: Получаем ID заказов (не объекты!)
+                with db.get_session() as session:
+                    orders_ids = session.query(Order.id).filter(
+                        Order.is_sent_to_bitrix == False,
+                        Order.is_cancelled == False,
+                        Order.target_date == today,
+                        Order.bitrix_order_id == None,
+                        Order.is_from_bitrix == False
+                    ).all()
+
+                    # Извлекаем только ID
+                    order_ids_list = [order_id[0] for order_id in orders_ids]
+
+                if not order_ids_list:
+                    logger.info("📦 Нет заказов для отправки в Bitrix24")
+                    return True
+
+                logger.info(f"📤 Найдено {len(order_ids_list)} заказов для отправки")
+
+                success_count = 0
+                error_count = 0
+                failed_order_ids = []  # 🔥 Сохраняем ID неотправленных заказов
+
+                # 🔥 ШАГ 2: Обрабатываем каждый заказ в отдельной сессии
+                for order_id in order_ids_list:
+                    try:
+                        # Открываем новую сессию для каждого заказа
+                        with db.get_session() as order_session:
+                            order = order_session.query(Order).filter(
+                                Order.id == order_id,
+                                Order.is_sent_to_bitrix == False,
+                                Order.bitrix_order_id == None,
+                            ).first()
+
+                            if not order:
+                                logger.info(f"Заказ {order_id} уже отправлен или не найден, пропускаем")
+                                continue
+
+                            # Получаем пользователя в той же сессии
+                            user = order_session.query(User).filter(
+                                User.id == order.user_id
+                            ).first()
+
+                            if not user or not user.bitrix_id:
+                                logger.warning(f"❌ Пользователь для заказа {order_id} не найден или нет Bitrix ID")
+                                error_count += 1
+                                failed_order_ids.append(order_id)
+                                continue
+
+                            # Формируем данные для Bitrix
+                            order_data = {
+                                'bitrix_id': user.bitrix_id,
+                                'quantity': order.quantity,
+                                'target_date': str(order.target_date),
+                                'order_time': order.order_time or '09:00:00',
+                                'location': user.location or 'Офис'
+                            }
+
+                            # Отправляем в Bitrix
+                            bitrix_id = await self._create_bitrix_order(
+                                order_data,
+                                user.crm_employee_id
+                            )
+
+                            if bitrix_id:
+                                # Обновляем заказ в той же сессии
+                                order.is_sent_to_bitrix = True
+                                order.bitrix_order_id = str(bitrix_id)
+                                order.updated_at = datetime.now()
+                                order_session.commit()
+                                success_count += 1
+                                logger.info(f"✅ УСПЕШНО: Заказ {order_id} -> Bitrix ID: {bitrix_id}")
+                            else:
+                                logger.error(f"❌ Не удалось создать заказ {order_id} в Bitrix")
+                                error_count += 1
+                                failed_order_ids.append(order_id)
+
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка обработки заказа {order_id}: {e}", exc_info=True)
+                        error_count += 1
+                        failed_order_ids.append(order_id)
+
+                logger.info(f"📤 Итог отправки: Успешно: {success_count}, Ошибок: {error_count}")
+
+                # 🔥 ШАГ 3: Сохраняем информацию о неотправленных заказах
+                if failed_order_ids:
+                    self._last_failed_order_ids = failed_order_ids
+
+                # # Синхронизация сотрудников
+                # logger.info("🔄 Пробуем синхронизировать сотрудников...")
+                # await self.sync_employees()
+
+                return error_count == 0
+
+            except Exception as e:
+                logger.error(f"❌ Критическая ошибка в _push_to_bitrix: {str(e)}", exc_info=True)
+                return False
 
     async def _create_bitrix_order(self, order_data: dict, user_crm_id: str = None) -> Optional[str]:
         """Создает заказ в Bitrix24 - ИСПРАВЛЕННАЯ ВЕРСИЯ"""

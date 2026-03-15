@@ -58,6 +58,10 @@ class BotConfig:
             self._token = os.getenv('BOT_TOKEN')
             if not self._token:
                 raise ValueError("Токен бота не указан в .env файле!")
+
+            self._proxy_url = os.getenv('PROXY_URL', '').strip() or None
+            if self._proxy_url:
+                logger.info(f"🔗 Прокси настроен: {self._proxy_url}")
                 
             admin_ids_str = os.getenv("ADMIN_IDS", "")
             logger.info(f"📋 ADMIN_IDS из os.getenv: '{admin_ids_str}'")
@@ -206,6 +210,10 @@ class BotConfig:
     @property
     def token(self) -> str:
         return self._token
+
+    @property
+    def proxy_url(self) -> str | None:
+        return self._proxy_url
 
     @property
     def admin_ids(self) -> list[int]:

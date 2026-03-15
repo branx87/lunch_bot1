@@ -46,13 +46,17 @@ class LunchBot:
             
             # 🔥 КАСТОМНЫЙ REQUEST С УВЕЛИЧЕННЫМИ ТАЙМАУТАМИ
             # read_timeout должен быть больше, чем polling_timeout Telegram (обычно 30-60 сек)
-            request = HTTPXRequest(
+            request_kwargs = dict(
                 connection_pool_size=8,
                 connect_timeout=10.0,
                 read_timeout=90.0,  # Увеличено для long polling
                 write_timeout=10.0,
-                pool_timeout=10.0
+                pool_timeout=10.0,
             )
+            if CONFIG.proxy_url:
+                request_kwargs['proxy'] = CONFIG.proxy_url
+                self.logger.info(f"Используем прокси: {CONFIG.proxy_url}")
+            request = HTTPXRequest(**request_kwargs)
             
             # ✅ УБРАЛИ connect_timeout, read_timeout и т.д. из ApplicationBuilder
             self.application = (
