@@ -5,6 +5,7 @@ import asyncio
 from telegram import Update, ReplyKeyboardRemove, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import ConversationHandler
 from telegram.ext import ContextTypes
+from telegram.error import NetworkError, TimedOut
 from datetime import datetime, timedelta
 
 from bot_keyboards import create_admin_reports_menu, create_main_menu_keyboard, create_report_type_menu, create_month_selection_keyboard
@@ -115,9 +116,14 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     - Информирует пользователя о проблеме
     Обрабатывает как ошибки в обработчиках, так и системные ошибки
     """
+    # Временные сетевые ошибки — не спамим админам, бот сам восстановится
+    if isinstance(context.error, (NetworkError, TimedOut)):
+        logger.warning(f"Временная сетевая ошибка: {context.error.__class__.__name__}")
+        return
+
     error = str(context.error)
     logger.error(f"Ошибка: {error}", exc_info=context.error)
-    
+
     for admin_id in CONFIG.admin_ids:
         try:
             await context.bot.send_message(
