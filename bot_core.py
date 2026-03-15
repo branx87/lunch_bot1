@@ -52,7 +52,6 @@ class LunchBot:
                 read_timeout=90.0,  # Увеличено для long polling
                 write_timeout=30.0,  # Увеличено для отправки файлов
                 pool_timeout=10.0,
-                httpx_kwargs={"http1": True, "http2": False},  # HTTP/2 конфликтует с Telegram при отправке файлов
             )
             if CONFIG.proxy_url:
                 request_kwargs['proxy'] = CONFIG.proxy_url
