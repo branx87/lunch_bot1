@@ -11,7 +11,7 @@ services:
     ports:
       - "5434:5432"
     volumes:
-      - /home/lunch_bot/lunch_bot/postgres_data:/var/lib/postgresql/data
+      - /home/erc_bot/lunch_bot/postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U bot_user -d lunch_bot"]
@@ -23,32 +23,28 @@ services:
     build:
       context: .
       args:
-        USER_ID: 599   # UID пользователя conteiner на хосте
-        GROUP_ID: 599  # GID пользователя conteiner на хосте
+        USER_ID: 599
+        GROUP_ID: 599
     container_name: lunch_bot
     working_dir: /app
     depends_on:
       postgres:
         condition: service_healthy
-    # Монтируем только то, что нужно
     volumes:
-      - /home/lunch_bot/lunch_bot/data/configs:/app/data/configs:rw
-      - /home/lunch_bot/lunch_bot/data/logs:/app/data/logs:rw
-      - /home/lunch_bot/lunch_bot/data/reports:/app/data/reports:rw
-      - /home/lunch_bot/lunch_bot/data/db:/app/data/db:rw
-      - /home/lunch_bot/lunch_bot/data/backups:/app/data/backups:rw
-      - .:/app:ro  # Код только для чтения
+      - /home/erc_bot/lunch_bot/data/configs:/app/data/configs:rw
+      - /home/erc_bot/lunch_bot/data/logs:/app/data/logs:rw
+      - /home/erc_bot/lunch_bot/data/reports:/app/data/reports:rw
+      - /home/erc_bot/lunch_bot/data/db:/app/data/db:rw
+      - /home/erc_bot/lunch_bot/data/backups:/app/data/backups:rw
+      - .:/app:ro
     environment:
       - TZ=Europe/Moscow
       - PYTHONUNBUFFERED=1
       - PUID=599
       - PGID=599
     env_file:
-      - /home/lunch_bot/lunch_bot/data/configs/.env
-    extra_hosts:
-      - "b24.epc.su:192.168.10.138"
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
+      - /home/erc_bot/lunch_bot/data/configs/.env
+    network_mode: host
     restart: unless-stopped
-    user: "599:599"  # Запускаем от имени conteiner
+    stop_grace_period: 30s
+    user: "599:599"
