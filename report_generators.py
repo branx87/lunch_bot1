@@ -9,10 +9,28 @@ from telegram.ext import ContextTypes
 import os
 import logging
 
+import asyncio
+from telegram.error import TimedOut, NetworkError
+
 from database import db
 from config import CONFIG
 from models import User, Order
 from sqlalchemy import text
+
+
+async def _send_document_with_retry(bot, chat_id, file_path, caption, filename, retries=3):
+    """Отправка документа с повторными попытками при сетевых ошибках"""
+    for attempt in range(1, retries + 1):
+        try:
+            with open(file_path, 'rb') as file:
+                await bot.send_document(chat_id=chat_id, document=file, caption=caption, filename=filename)
+            return
+        except (TimedOut, NetworkError) as e:
+            if attempt == retries:
+                raise
+            wait = attempt * 5
+            logger.warning(f"Ошибка отправки файла (попытка {attempt}/{retries}), повтор через {wait}с: {e}")
+            await asyncio.sleep(wait)
 
 from report_utils import ensure_reports_dir
 from settings import SETTINGS_CONFIG
@@ -302,13 +320,7 @@ async def export_accounting_report(
             f"💰 Сумма удержания: {format_currency(total_with_ndfl)} руб. (с НДФЛ)"
         )
 
-        with open(file_path, 'rb') as file:
-            await context.bot.send_document(
-                chat_id=update.effective_chat.id,
-                document=file,
-                caption=caption,
-                filename=file_name
-            )
+        await _send_document_with_retry(context.bot, update.effective_chat.id, file_path, caption, file_name)
 
         return file_path
 
@@ -514,13 +526,7 @@ async def export_monthly_report(
         else:
             caption = f"📅 Админ отчет за период {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n🍽 Всего порций: {total}"
         
-        with open(file_path, 'rb') as file:
-            await context.bot.send_document(
-                chat_id=update.effective_chat.id,
-                document=file,
-                caption=caption,
-                filename=file_name
-            )
+        await _send_document_with_retry(context.bot, update.effective_chat.id, file_path, caption, file_name)
 
     except Forbidden:
         raise
