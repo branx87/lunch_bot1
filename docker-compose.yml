@@ -11,7 +11,7 @@ services:
     ports:
       - "5434:5432"
     volumes:
-      - /home/erc_bot/lunch_bot/postgres_data:/var/lib/postgresql/data
+      - ./postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U bot_user -d lunch_bot"]
@@ -31,11 +31,11 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - /home/erc_bot/lunch_bot/data/configs:/app/data/configs:rw
-      - /home/erc_bot/lunch_bot/data/logs:/app/data/logs:rw
-      - /home/erc_bot/lunch_bot/data/reports:/app/data/reports:rw
-      - /home/erc_bot/lunch_bot/data/db:/app/data/db:rw
-      - /home/erc_bot/lunch_bot/data/backups:/app/data/backups:rw
+      - ./data/configs:/app/data/configs:rw
+      - ./data/logs:/app/data/logs:rw
+      - ./data/reports:/app/data/reports:rw
+      - ./data/db:/app/data/db:rw
+      - ./data/backups:/app/data/backups:rw
       - .:/app:ro
     environment:
       - TZ=Europe/Moscow
@@ -43,8 +43,70 @@ services:
       - PUID=599
       - PGID=599
     env_file:
-      - /home/erc_bot/lunch_bot/data/configs/.env
-    network_mode: host
+      - ./data/configs/.env
+    # network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 30s
+    user: "599:599"
+
+  # Max bot — закомментирован, т.к. Max требует юрлицо для создания бота.
+  # Раскомментировать когда Max откроет доступ физлицам.
+  # max_bot:
+  #   build:
+  #     context: .
+  #     args:
+  #       USER_ID: 599
+  #       GROUP_ID: 599
+  #   container_name: max_bot
+  #   working_dir: /app
+  #   command: python -m max_bot.main
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   volumes:
+  #     - ./data/configs:/app/data/configs:rw
+  #     - ./data/logs:/app/data/logs:rw
+  #     - ./data/reports:/app/data/reports:rw
+  #     - ./data/db:/app/data/db:rw
+  #     - .:/app:ro
+  #   environment:
+  #     - TZ=Europe/Moscow
+  #     - PYTHONUNBUFFERED=1
+  #     - PUID=599
+  #     - PGID=599
+  #   env_file:
+  #     - ./data/configs/.env
+  #   network_mode: host
+  #   restart: unless-stopped
+  #   stop_grace_period: 30s
+  #   user: "599:599"
+
+  vk_bot:
+    build:
+      context: .
+      args:
+        USER_ID: 599
+        GROUP_ID: 599
+    container_name: vk_bot
+    working_dir: /app
+    command: python -m vk_bot.main
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./data/configs:/app/data/configs:rw
+      - ./data/logs:/app/data/logs:rw
+      - ./data/reports:/app/data/reports:rw
+      - ./data/db:/app/data/db:rw
+      - .:/app:ro
+    environment:
+      - TZ=Europe/Moscow
+      - PYTHONUNBUFFERED=1
+      - PUID=599
+      - PGID=599
+    env_file:
+      - ./data/configs/.env
+    # network_mode: host
     restart: unless-stopped
     stop_grace_period: 30s
     user: "599:599"

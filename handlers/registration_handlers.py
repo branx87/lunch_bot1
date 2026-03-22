@@ -73,35 +73,8 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return PHONE
 
 
-def is_valid_phone(phone: str) -> bool:
-    """Проверяет, является ли строка валидным номером телефона"""
-    if not phone:
-        return False
-    
-    # Удаляем все символы, кроме цифр и +
-    cleaned = ''.join(c for c in phone if c.isdigit() or c == '+')
-    
-    # Проверяем длину (минимум 10 цифр для российских номеров)
-    digits = [c for c in cleaned if c.isdigit()]
-    return len(digits) >= 10
-
-
-def normalize_phone(phone: str) -> str:
-    """Нормализует номер телефона к стандартному формату"""
-    if not phone:
-        return ""
-    
-    # Оставляем только цифры и +
-    cleaned = ''.join(c for c in phone if c.isdigit() or c == '+')
-    
-    # Если номер начинается с 8, заменяем на +7
-    if cleaned.startswith('8'):
-        cleaned = '+7' + cleaned[1:]
-    # Если номер начинается с 7, добавляем +
-    elif cleaned.startswith('7') and not cleaned.startswith('+7'):
-        cleaned = '+' + cleaned
-    
-    return cleaned
+# Re-export from services
+from services.user_service import is_valid_phone, normalize_phone
 
 async def get_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """

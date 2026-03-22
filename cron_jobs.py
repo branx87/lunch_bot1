@@ -197,17 +197,17 @@ class CronManager:
                 ).distinct().count()
                 logger.info(f"Пользователей с заказами на сегодня: {users_with_orders}")
 
-                # Основной запрос для получения telegram_id
+                # Основной запрос — получаем telegram_id, max_id и vk_id
                 users_without_orders = session.execute(text("""
-                    SELECT u.telegram_id 
+                    SELECT u.telegram_id, u.max_id, u.vk_id
                     FROM users u
-                    WHERE u.is_verified = TRUE 
+                    WHERE u.is_verified = TRUE
                     AND u.is_deleted = FALSE
                     AND u.notifications_enabled = TRUE
                     AND u.is_employee = TRUE
                     AND NOT EXISTS (
-                        SELECT 1 
-                        FROM orders o 
+                        SELECT 1
+                        FROM orders o
                         WHERE o.user_id = u.id
                         AND o.target_date = :today
                         AND o.is_cancelled = FALSE
@@ -215,9 +215,9 @@ class CronManager:
                         AND o.quantity > 0
                     )
                 """), {'today': today}).fetchall()
-                
+
                 logger.info(f"Найдено {len(users_without_orders)} пользователей без заказов")
-                
+
                 # Дополнительная отладочная информация
                 if len(users_without_orders) == 0 and total_users > 0 and users_with_orders < total_users:
                     logger.warning("""
@@ -226,31 +226,50 @@ class CronManager:
                         - С заказами на сегодня: %d
                         Проверьте данные в БД!
                     """, total_users, users_with_orders)
-                    
-                    # Выведем примеры пользователей для проверки
-                    sample_users = session.query(User.telegram_id, User.full_name).limit(5).all()
-                    logger.info(f"Пример пользователей: {sample_users}")
-                    
-                    sample_orders = session.query(Order.user_id, Order.target_date).filter(
-                        Order.target_date == today
-                    ).limit(5).all()
-                    logger.info(f"Пример заказов на сегодня: {sample_orders}")
+
+                reminder_text = (
+                    "⏰ <b>Не забудьте заказать обед!</b> 🍽\n\n"
+                    "Прием заказов открыт до 9:30.\n\n"
+                    "Чтобы отключить напоминания отправьте: /notifications_off"
+                )
 
                 for user in users_without_orders:
-                    user_id = user[0]
-                    try:
-                        await self.application.bot.send_message(
-                            chat_id=user_id,
-                            text=(
-                                "⏰ <b>Не забудьте заказать обед!</b> 🍽\n\n"
-                                "Прием заказов открыт до 9:30.\n\n"
-                                "Чтобы отключить напоминания отправьте: /notifications_off"
-                            ),
-                            parse_mode="HTML"
-                        )
-                        logger.debug(f"Напоминание отправлено пользователю {user_id}")
-                    except Exception as e:
-                        logger.error(f"Ошибка при отправке напоминания пользователю {user_id}: {e}")
+                    telegram_id, max_id, vk_id = user[0], user[1], user[2]
+
+                    # Send via Telegram
+                    if telegram_id:
+                        try:
+                            await self.application.bot.send_message(
+                                chat_id=telegram_id,
+                                text=reminder_text,
+                                parse_mode="HTML"
+                            )
+                            logger.debug(f"Telegram-напоминание отправлено: {telegram_id}")
+                        except Exception as e:
+                            logger.error(f"Ошибка Telegram-напоминания {telegram_id}: {e}")
+
+                    # Send via Max (закомментирован — требует юрлицо)
+                    # if max_id:
+                    #     try:
+                    #         from max_client import send_max_message
+                    #         plain_text = "⏰ Не забудьте заказать обед! 🍽\n\nПрием заказов открыт до 9:30."
+                    #         await send_max_message(max_id, plain_text)
+                    #         logger.debug(f"Max-напоминание отправлено: {max_id}")
+                    #     except Exception as e:
+                    #         logger.error(f"Ошибка Max-напоминания {max_id}: {e}")
+
+                    # Send via VK
+                    if vk_id:
+                        try:
+                            from vk_client import send_vk_message
+                            plain_text = (
+                                "⏰ Не забудьте заказать обед! 🍽\n\n"
+                                "Прием заказов открыт до 9:30."
+                            )
+                            await send_vk_message(vk_id, plain_text)
+                            logger.debug(f"VK-напоминание отправлено: {vk_id}")
+                        except Exception as e:
+                            logger.error(f"Ошибка VK-напоминания {vk_id}: {e}")
 
     async def _morning_reports(self):
         """Утренние отчеты"""

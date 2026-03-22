@@ -1,8 +1,26 @@
 import logging
 import asyncio
+import httpx
 from telegram.ext import ApplicationBuilder
 from telegram.request import HTTPXRequest
 from telegram.error import NetworkError, TimedOut
+
+
+class SocksHTTPXRequest(HTTPXRequest):
+    """HTTPXRequest that creates a simpler httpx.AsyncClient for SOCKS5 compatibility."""
+
+    def initialize(self) -> "asyncio.coroutine":
+        # Override: create AsyncClient with simple config that works with SOCKS5
+        proxy = self._client_kwargs.get("proxies")
+        timeout = self._client_kwargs.get("timeout", httpx.Timeout(30))
+        limits = self._client_kwargs.get("limits")
+        kwargs = {"timeout": timeout}
+        if proxy:
+            kwargs["proxies"] = proxy
+        if limits:
+            kwargs["limits"] = limits
+        self._client = httpx.AsyncClient(**kwargs)
+        return super(HTTPXRequest, self).initialize()  # call BaseRequest.initialize()
 
 
 class LunchBot:
@@ -48,14 +66,16 @@ class LunchBot:
             # read_timeout должен быть больше, чем polling_timeout Telegram (обычно 30-60 сек)
             request_kwargs = dict(
                 connection_pool_size=8,
-                connect_timeout=10.0,
-                read_timeout=90.0,  # Увеличено для long polling
-                write_timeout=30.0,  # Увеличено для отправки файлов
-                pool_timeout=10.0,
+                connect_timeout=30.0,   # Увеличено: SOCKS5 + TLS handshake
+                read_timeout=90.0,      # Увеличено для long polling
+                write_timeout=30.0,     # Увеличено для отправки файлов
+                pool_timeout=30.0,      # Увеличено для SOCKS5
             )
             if CONFIG.proxy_url:
-                request_kwargs['proxy'] = CONFIG.proxy_url
-                self.logger.info(f"Используем прокси: {CONFIG.proxy_url}")
+                # Прокси через env var — обход бага HTTPXRequest с SOCKS5+TLS
+                import os
+                os.environ['HTTPS_PROXY'] = CONFIG.proxy_url
+                self.logger.info(f"Используем прокси (env): {CONFIG.proxy_url}")
             request = HTTPXRequest(**request_kwargs)
             
             # ✅ УБРАЛИ connect_timeout, read_timeout и т.д. из ApplicationBuilder
@@ -82,6 +102,16 @@ class LunchBot:
             self.cron_manager = CronManager(self.application)
             await self.cron_manager.setup()
             
+            # DEBUG: логируем ВСЕ входящие обновления
+            from telegram.ext import TypeHandler
+            from telegram import Update as TgUpdate
+            async def _debug_log_update(update, context):
+                msg = getattr(update, 'message', None)
+                text = getattr(msg, 'text', '') if msg else ''
+                uid = getattr(getattr(update, 'effective_user', None), 'id', '?')
+                self.logger.info(f"📨 UPDATE: id={update.update_id} user={uid} text='{text}'")
+            self.application.add_handler(TypeHandler(TgUpdate, _debug_log_update), group=-2)
+
             self.logger.info("5. Импортируем middleware")
             from middleware import AccessControlHandler
             self.application.add_handler(AccessControlHandler(), group=-1)

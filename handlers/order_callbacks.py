@@ -19,23 +19,8 @@ from time_config import TIME_CONFIG
 
 logger = logging.getLogger(__name__)
 
-# В начале файла добавьте:
-QUANTITY_MAP = {
-    1: '821',
-    2: '822',
-    3: '823',
-    4: '824',
-    5: '825'
-}
-
-# И обратное преобразование (если нужно):
-BITRIX_QUANTITY_MAP = {
-    '821': 1,
-    '822': 2,
-    '823': 3,
-    '824': 4,
-    '825': 5
-}
+# Re-export from services
+from services.order_service import QUANTITY_MAP, BITRIX_QUANTITY_MAP
     
 async def handle_order_callback(query, now, user, context):
     """Обработчик оформления заказа с проверкой доступности заказов"""
@@ -396,21 +381,7 @@ async def handle_cancel_callback(query, now, user, context):
         logger.error(f"USER {user_id}: критическая ошибка в handle_cancel_callback: {e}", exc_info=True)
         await query.answer("⚠️ Произошла ошибка. Попробуйте снова.", show_alert=True)
 
-def can_modify_order(target_date):
-    """
-    Проверяет возможность изменения/отмены заказа:
-    - Для сегодняшней даты: до TIME_CONFIG.MODIFICATION_DEADLINE
-    - Для будущих дат: всегда можно
-    - Для заказов из Битрикс: нельзя
-    """
-    now = datetime.now(TIME_CONFIG.TIMEZONE)
-    
-    # Если заказ на сегодня
-    if target_date == now.date():
-        return now.time() < TIME_CONFIG.MODIFICATION_DEADLINE
-    
-    # Если заказ на будущее
-    return True
+# can_modify_order removed — use utils.can_modify_order (delegates to services.time_service)
         
 async def handle_confirm_callback(query, now, user, context):
     """

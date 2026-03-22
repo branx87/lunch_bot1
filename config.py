@@ -69,6 +69,16 @@ class BotConfig:
             self._admin_ids = self._parse_ids(admin_ids_str)
             self._provider_ids = self._parse_ids(os.getenv("PROVIDER_IDS", ""))
             self._accounting_ids = self._parse_ids(os.getenv("ACCOUNTING_IDS", ""))
+
+            # Max messenger IDs (закомментирован — требует юрлицо)
+            self._max_admin_ids = self._parse_ids(os.getenv("MAX_ADMIN_IDS", ""))
+            self._max_provider_ids = self._parse_ids(os.getenv("MAX_PROVIDER_IDS", ""))
+            self._max_accounting_ids = self._parse_ids(os.getenv("MAX_ACCOUNTING_IDS", ""))
+
+            # VK messenger IDs
+            self._vk_admin_ids = self._parse_ids(os.getenv("VK_ADMIN_IDS", ""))
+            self._vk_provider_ids = self._parse_ids(os.getenv("VK_PROVIDER_IDS", ""))
+            self._vk_accounting_ids = self._parse_ids(os.getenv("VK_ACCOUNTING_IDS", ""))
             
             # 🔥 НОВОЕ: Загрузка master_admin_id
             master_admin_str = os.getenv("MASTER_ADMIN_ID", "")
@@ -255,6 +265,30 @@ class BotConfig:
     @property
     def orders_enabled(self):
         return self._orders_enabled
+
+    @property
+    def max_admin_ids(self) -> list[int]:
+        return self._max_admin_ids
+
+    @property
+    def max_provider_ids(self) -> list[int]:
+        return self._max_provider_ids
+
+    @property
+    def max_accounting_ids(self) -> list[int]:
+        return self._max_accounting_ids
+
+    @property
+    def vk_admin_ids(self) -> list[int]:
+        return self._vk_admin_ids
+
+    @property
+    def vk_provider_ids(self) -> list[int]:
+        return self._vk_provider_ids
+
+    @property
+    def vk_accounting_ids(self) -> list[int]:
+        return self._vk_accounting_ids
 
 # Создаем глобальный экземпляр CONFIG
 try:

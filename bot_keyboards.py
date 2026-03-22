@@ -108,33 +108,5 @@ def get_user_role(user_id: int) -> Optional[str]:
     Определяет роль пользователя по его Telegram ID.
     Возвращает одно из: 'admin', 'provider', 'accountant', 'employee' или None.
     """
-    try:
-        # Проверяем кэшированные роли из конфига
-        if user_id in CONFIG.admin_ids:
-            logger.debug(f"User {user_id} identified as admin")
-            return 'admin'
-        if user_id in CONFIG.provider_ids:
-            logger.debug(f"User {user_id} identified as provider")
-            return 'provider'
-        if user_id in CONFIG.accounting_ids:
-            logger.debug(f"User {user_id} identified as accountant")
-            return 'accountant'
-
-        # 🔥 ИСПРАВЛЕНИЕ: Используем SQLAlchemy вместо cursor()
-        from models import User
-        user = db.session.query(User).filter(
-            User.telegram_id == user_id,
-            User.is_employee == True,
-            User.is_deleted == False
-        ).first()
-        
-        if user:
-            logger.debug(f"User {user_id} identified as employee")
-            return 'employee'
-        
-        logger.debug(f"User {user_id} has no recognized role")
-        return None
-
-    except Exception as e:
-        logger.error(f"Error determining role for user {user_id}: {e}")
-        return None
+    from services.user_service import get_user_role as _get_role, MESSENGER_TELEGRAM
+    return _get_role(user_id, MESSENGER_TELEGRAM, CONFIG)

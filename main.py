@@ -22,10 +22,12 @@ def setup_logging():
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[handler]
+        handlers=[handler, logging.StreamHandler()]
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("telegram").setLevel(logging.WARNING)
+    # DEBUG: временно включаем для диагностики polling
+    logging.getLogger("telegram.ext._updater").setLevel(logging.DEBUG)
+    logging.getLogger("telegram.ext._application").setLevel(logging.DEBUG)
 
 # Настраиваем логирование СРАЗУ
 setup_logging()
@@ -54,6 +56,12 @@ except Exception as e:
 try:
     Base.metadata.create_all(bind=db.engine)
     logger.info("✅ Таблицы базы данных инициализированы")
+    # Auto-migration: add max_id column if missing
+    try:
+        from migrate_add_max_id import migrate
+        migrate()
+    except Exception as e:
+        logger.warning(f"⚠️ Migration check: {e}")
 except Exception as e:
     logger.error(f"❌ Ошибка инициализации БД: {e}")
     sys.exit(1)

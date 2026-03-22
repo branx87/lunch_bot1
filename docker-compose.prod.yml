@@ -44,5 +44,50 @@ services:
       - "b24.epc.su:192.168.10.138"
     restart: unless-stopped
 
+  # Max bot — закомментирован (требует юрлицо)
+  # max_bot:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.prod
+  #   container_name: max_bot
+  #   working_dir: /app
+  #   command: python -m max_bot.main
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   volumes:
+  #     - ./data/configs:/app/data/configs
+  #     - /var/log/lunch_bot:/app/data/logs
+  #     - ./data/reports:/app/data/reports
+  #   environment:
+  #   - TZ=Europe/Moscow
+  #   - PYTHONUNBUFFERED=1
+  #   - DATABASE_URL=postgresql://bot_user:lunch_bot123456@postgres:5434/lunch_bot
+  #   extra_hosts:
+  #     - "b24.epc.su:192.168.10.138"
+  #   restart: unless-stopped
+
+  vk_bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    container_name: vk_bot
+    working_dir: /app
+    command: python -m vk_bot.main
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./data/configs:/app/data/configs
+      - /var/log/lunch_bot:/app/data/logs
+      - ./data/reports:/app/data/reports
+    environment:
+    - TZ=Europe/Moscow
+    - PYTHONUNBUFFERED=1
+    - DATABASE_URL=postgresql://bot_user:lunch_bot123456@postgres:5434/lunch_bot
+    extra_hosts:
+      - "b24.epc.su:192.168.10.138"
+    restart: unless-stopped
+
 volumes:
   postgres_data:
