@@ -12,119 +12,67 @@ from settings import SETTINGS_CONFIG
 from models import User, Order
 from time_config import TIME_CONFIG
 
+# Re-export from services for backwards compatibility
+from services.time_service import get_next_workday, can_modify_order as _can_modify_order
+from services.menu_service import get_menu_for_day as _get_menu_for_day, format_menu_text, DAYS_RU
+
 logger = logging.getLogger(__name__)
 
 # Состояния диалога (для handle_unregistered)
 PHONE = 0
 
-# def is_weekday(date=None):
-#     if date is None:
-#         date = datetime.now(CONFIG.timezone)
-#     return date.weekday() < 5  # 0-4 = пн-пт
-
-def get_next_workday(date=None):
-    if date is None:
-        date = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
-    
-    days_to_add = 1
-    if date.weekday() == 4:  # Пятница
-        days_to_add = 3  # Понедельник
-    elif date.weekday() == 5:  # Суббота
-        days_to_add = 2  # Понедельник
-    
-    return date + timedelta(days=days_to_add)
 
 def can_modify_order(target_date):
-    """Проверяет, можно ли изменять заказ на указанную дату"""
-    if not CONFIG.are_orders_accepted_now():  # Первая проверка!
-        return False
-    now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
-    
-    # Если target_date - строка, преобразуем в дату
-    if isinstance(target_date, str):
-        try:
-            target_date = datetime.strptime(target_date, "%Y-%m-%d").date()
-        except ValueError:
-            logger.error(f"Неверный формат даты: {target_date}")
-            return False
-    
-    # Заказы на выходные невозможны
-    if target_date.weekday() in TIME_CONFIG.WEEKEND_DAYS:  # ← ИСПРАВИТЬ
-        return False
-    
-    # Заказы на будущие дни (предзаказы) можно менять в любое время
-    if target_date > now.date():
-        return True
-    
-    # Заказы на сегодня можно менять только до MODIFICATION_DEADLINE
-    if target_date == now.date():
-        return now.time() < TIME_CONFIG.MODIFICATION_DEADLINE  # ← ИСПРАВИТЬ
-    
-    # Заказы на прошедшие дни нельзя менять
-    return False
+    """Wrapper that passes orders_enabled from CONFIG."""
+    return _can_modify_order(target_date, CONFIG.are_orders_accepted_now())
+
 
 def is_order_time_expired():
-    """Старая функция, оставляем для совместимости, но теперь она использует новую функцию"""
     return not can_modify_order(datetime.now(CONFIG.timezone).date())
 
+
 def get_order_time_restriction():
+    from services.time_service import is_weekend
     now = datetime.now(TIME_CONFIG.TIMEZONE)
-    current_hour = now.hour
-    
-    if not is_weekday(now):
+
+    if is_weekend(now):
         next_workday = get_next_workday(now)
         return f"⏳ Сегодня выходной. Вы можете оформить предварительный заказ на {next_workday.strftime('%d.%m')} (понедельник)"
-    
-    if current_hour >= 10:
+
+    if now.hour >= 10:
         next_workday = get_next_workday(now)
         return f"⏳ Прием заказов на сегодня завершен в 10:00. Вы можете оформить предварительный заказ на {next_workday.strftime('%d.%m')}"
-    
+
     return None
+
 
 def is_employee(full_name):
     normalized_input = ' '.join(full_name.strip().split()).lower()
     return normalized_input in CONFIG.staff_names
 
+
 def get_menu_for_day(day_offset=0):
-    now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
-    days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    target_date = (now + timedelta(days=day_offset)).date()
-    day_name = days[target_date.weekday()]
-    
-    # Проверяем, является ли день праздником
-    if target_date.strftime("%Y-%m-%d") in CONFIG.holidays:
-        return None, day_name
-    
-    return CONFIG.menu.get(day_name), day_name
+    """Legacy wrapper — returns (menu, day_name) for backward compat."""
+    menu, day_name, target_date = _get_menu_for_day(day_offset, CONFIG)
+    return menu, day_name
+
 
 def format_menu(menu, day_name, is_tomorrow=False):
+    """Legacy wrapper — computes target_date from day_name."""
     if not menu:
         return f"На {day_name} выходной! Меню не предусмотрено."
-    
-    # Получаем текущую дату и вычисляем дату для отображения
+
     now = datetime.now(TIME_CONFIG.TIMEZONE)
-    days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    
-    # Находим индекс текущего дня и вычисляем дату
     current_day_index = now.weekday()
-    target_day_index = days_ru.index(day_name)
-    
-    # Если день в будущем (например, среда при текущем понедельнике)
+    target_day_index = DAYS_RU.index(day_name)
+
     if target_day_index > current_day_index:
         days_diff = target_day_index - current_day_index
-    # Если день в прошлом (например, понедельник при текущей среде)
     else:
         days_diff = 7 - (current_day_index - target_day_index)
-    
+
     target_date = (now + timedelta(days=days_diff)).date()
-    date_str = target_date.strftime("%d.%m")
-    
-    return (
-        f"🍽 Меню на {day_name} ({date_str}):\n"
-        f"1. 🍲 Первое: {menu['first']}\n"
-        f"2. 🍛 Основное блюдо: {menu['main']}\n"
-        f"3. 🥗 Салат: {menu['salad']}"
-    )
+    return format_menu_text(menu, day_name, target_date)
 
 async def check_registration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """

@@ -18,6 +18,12 @@ watchdog==3.0.0
 pytz==2023.3
 yadisk>=3.0.0
 
-# HTTP (если используются)
-httpx==0.24.1
+# Max messenger bot (закомментирован — требует юрлицо)
+# maxapi
+
+# VK messenger bot
+vkbottle
+
+# HTTP
+httpx[socks]
 requests>=2.32.0
