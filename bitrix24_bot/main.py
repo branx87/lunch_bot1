@@ -99,7 +99,7 @@ def _check_token(request: Request) -> bool:
     if not _webhook_token:
         return True  # token not configured — skip check (dev mode)
     received = request.headers.get("X-Webhook-Token", "")
-    return secrets.compare_digest(_webhook_token, received)
+    return secrets.compare_digest(_webhook_token.encode(), received.encode())
 
 
 @app.post("/webhook/bot")
