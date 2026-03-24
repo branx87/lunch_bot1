@@ -23,6 +23,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from logging.handlers import RotatingFileHandler
 
+import secrets
+
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -89,6 +91,17 @@ async def health():
     return {"status": "ok"}
 
 
+_webhook_token = os.getenv("B24_WEBHOOK_TOKEN", "")
+
+
+def _check_token(request: Request) -> bool:
+    """Verify X-Webhook-Token header matches B24_WEBHOOK_TOKEN."""
+    if not _webhook_token:
+        return True  # token not configured — skip check (dev mode)
+    received = request.headers.get("X-Webhook-Token", "")
+    return secrets.compare_digest(_webhook_token, received)
+
+
 @app.post("/webhook/bot")
 async def handle_bot_webhook(request: Request):
     """
@@ -102,7 +115,10 @@ async def handle_bot_webhook(request: Request):
       data[PARAMS][COMMAND]=...          (keyboard buttons)
       data[PARAMS][COMMAND_PARAMS]=...
     """
-    # Respond to Bitrix24 immediately — processing happens in background
+    if not _check_token(request):
+        logger.warning(f"[B24Bot] Отклонён запрос с неверным токеном, IP={request.client.host}")
+        return JSONResponse(status_code=403, content={"error": "Forbidden"})
+
     try:
         form = await request.form()
 
