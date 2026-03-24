@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 MESSENGER_TELEGRAM = "telegram"
 MESSENGER_MAX = "max"
 MESSENGER_VK = "vk"
+MESSENGER_BITRIX24 = "bitrix24"
 
 
 def _get_messenger_column(messenger_type):
@@ -176,6 +177,13 @@ def get_user_role(messenger_id, messenger_type, config):
             if messenger_id in getattr(config, 'vk_provider_ids', []):
                 return 'provider'
             if messenger_id in getattr(config, 'vk_accounting_ids', []):
+                return 'accountant'
+        elif messenger_type == MESSENGER_BITRIX24:
+            if messenger_id in getattr(config, 'b24_admin_ids', []):
+                return 'admin'
+            if messenger_id in getattr(config, 'b24_provider_ids', []):
+                return 'provider'
+            if messenger_id in getattr(config, 'b24_accounting_ids', []):
                 return 'accountant'
 
         # Check DB for employee status

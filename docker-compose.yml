@@ -81,6 +81,37 @@ services:
   #   stop_grace_period: 30s
   #   user: "599:599"
 
+  bitrix24_bot:
+    build:
+      context: .
+      args:
+        USER_ID: 599
+        GROUP_ID: 599
+    container_name: bitrix24_bot
+    working_dir: /app
+    command: python -m bitrix24_bot.main
+    ports:
+      - "7777:7777"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./data/configs:/app/data/configs:rw
+      - ./data/logs:/app/data/logs:rw
+      - ./data/reports:/app/data/reports:rw
+      - ./data/db:/app/data/db:rw
+      - .:/app:ro
+    environment:
+      - TZ=Europe/Moscow
+      - PYTHONUNBUFFERED=1
+      - PUID=599
+      - PGID=599
+    env_file:
+      - ./data/configs/.env
+    restart: unless-stopped
+    stop_grace_period: 30s
+    user: "599:599"
+
   vk_bot:
     build:
       context: .

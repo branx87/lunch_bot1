@@ -79,6 +79,11 @@ class BotConfig:
             self._vk_admin_ids = self._parse_ids(os.getenv("VK_ADMIN_IDS", ""))
             self._vk_provider_ids = self._parse_ids(os.getenv("VK_PROVIDER_IDS", ""))
             self._vk_accounting_ids = self._parse_ids(os.getenv("VK_ACCOUNTING_IDS", ""))
+
+            # Bitrix24 messenger IDs
+            self._b24_admin_ids = self._parse_ids(os.getenv("B24_ADMIN_IDS", ""))
+            self._b24_provider_ids = self._parse_ids(os.getenv("B24_PROVIDER_IDS", ""))
+            self._b24_accounting_ids = self._parse_ids(os.getenv("B24_ACCOUNTING_IDS", ""))
             
             # 🔥 НОВОЕ: Загрузка master_admin_id
             master_admin_str = os.getenv("MASTER_ADMIN_ID", "")
@@ -289,6 +294,18 @@ class BotConfig:
     @property
     def vk_accounting_ids(self) -> list[int]:
         return self._vk_accounting_ids
+
+    @property
+    def b24_admin_ids(self) -> list[int]:
+        return self._b24_admin_ids
+
+    @property
+    def b24_provider_ids(self) -> list[int]:
+        return self._b24_provider_ids
+
+    @property
+    def b24_accounting_ids(self) -> list[int]:
+        return self._b24_accounting_ids
 
 # Создаем глобальный экземпляр CONFIG
 try:
