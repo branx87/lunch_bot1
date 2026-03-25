@@ -33,6 +33,14 @@ MAIN_KEYBOARD = [
     ],
 ]
 
+# Keyboard for admins — includes accounting report buttons
+ADMIN_KEYBOARD = MAIN_KEYBOARD + [
+    [
+        {"TEXT": "🧾 Ведомость за неделю", "COMMAND": "accounting_week",  "COMMAND_PARAMS": "", "BG_COLOR": "#5c7a3e", "TEXT_COLOR": "#fff"},
+        {"TEXT": "🧾 Ведомость за месяц",  "COMMAND": "accounting_month", "COMMAND_PARAMS": "", "BG_COLOR": "#5c7a3e", "TEXT_COLOR": "#fff"},
+    ],
+]
+
 # Text aliases → command name (lowercase)
 _TEXT_ALIASES = {
     "помощь": "help", "help": "help", "/help": "help",
@@ -40,6 +48,8 @@ _TEXT_ALIASES = {
     "за день": "report_day", "день": "report_day",
     "за неделю": "report_week", "неделя": "report_week",
     "за месяц": "report_month", "месяц": "report_month",
+    "ведомость за неделю": "accounting_week",
+    "ведомость за месяц": "accounting_month",
 }
 
 
@@ -73,12 +83,14 @@ async def handle_message(
     if not role or role == "employee":
         return [_msg("⛔ Доступ только для администраторов, поставщиков и бухгалтеров.")]
 
+    keyboard = ADMIN_KEYBOARD if role == "admin" else MAIN_KEYBOARD
+
     # Keyboard button command takes priority over typed text
     cmd = command or _TEXT_ALIASES.get(text.strip().lower(), "")
 
     try:
         if not cmd or cmd == "help":
-            return [_msg(_help_text(role), keyboard=MAIN_KEYBOARD)]
+            return [_msg(_help_text(role), keyboard=keyboard)]
         elif cmd == "orders_today":
             return await _orders_today(role)
         elif cmd == "report_day":
@@ -87,11 +99,15 @@ async def handle_message(
             return await _report_week(role)
         elif cmd == "report_month":
             return await _report_month(role)
+        elif cmd == "accounting_week":
+            return await _accounting_week()
+        elif cmd == "accounting_month":
+            return await _accounting_month()
         else:
-            return [_msg("Не понял команду. Используйте кнопки меню ниже.", keyboard=MAIN_KEYBOARD)]
+            return [_msg("Не понял команду. Используйте кнопки меню ниже.", keyboard=keyboard)]
     except Exception as e:
         logger.error(f"[B24Bot] Ошибка обработки команды '{cmd}': {e}", exc_info=True)
-        return [_msg("❌ Ошибка при формировании отчёта.", keyboard=MAIN_KEYBOARD)]
+        return [_msg("❌ Ошибка при формировании отчёта.", keyboard=keyboard)]
 
 
 # ------------------------------------------------------------------
@@ -145,12 +161,34 @@ async def _report_month(role: str) -> list[dict]:
     return await _send_period_report(role, first_day, today)
 
 
+async def _accounting_week() -> list[dict]:
+    today = datetime.now(CONFIG.timezone).date()
+    monday = today - timedelta(days=today.weekday())
+    return await _send_accounting_report(monday, today)
+
+
+async def _accounting_month() -> list[dict]:
+    today = datetime.now(CONFIG.timezone).date()
+    first_day = today.replace(day=1)
+    return await _send_accounting_report(first_day, today)
+
+
+async def _send_accounting_report(start_date, end_date) -> list[dict]:
+    file_path, file_name, caption = await _run_sync(
+        generate_accounting_report_file, start_date, end_date
+    )
+    if file_path:
+        return [_msg(caption, keyboard=ADMIN_KEYBOARD, file_path=file_path, file_name=file_name)]
+    return [_msg(caption, keyboard=ADMIN_KEYBOARD)]
+
+
 async def _send_period_report(role: str, start_date, end_date) -> list[dict]:
+    keyboard = ADMIN_KEYBOARD if role == "admin" else MAIN_KEYBOARD
     messages = []
 
     if role in ("admin", "provider"):
         text, total = await _run_sync(generate_provider_report_text, start_date, end_date)
-        messages.append(_msg(text, keyboard=MAIN_KEYBOARD))
+        messages.append(_msg(text, keyboard=keyboard))
 
     if role == "admin":
         file_path, file_name, caption = await _run_sync(
@@ -159,16 +197,16 @@ async def _send_period_report(role: str, start_date, end_date) -> list[dict]:
         if file_path:
             messages.append(_msg(caption, file_path=file_path, file_name=file_name))
         else:
-            messages.append(_msg(caption, keyboard=MAIN_KEYBOARD))
+            messages.append(_msg(caption, keyboard=keyboard))
 
     elif role == "accountant":
         file_path, file_name, caption = await _run_sync(
             generate_accounting_report_file, start_date, end_date
         )
         if file_path:
-            messages.append(_msg(caption, keyboard=MAIN_KEYBOARD, file_path=file_path, file_name=file_name))
+            messages.append(_msg(caption, keyboard=keyboard, file_path=file_path, file_name=file_name))
         else:
-            messages.append(_msg(caption, keyboard=MAIN_KEYBOARD))
+            messages.append(_msg(caption, keyboard=keyboard))
 
     return messages
 
@@ -180,6 +218,9 @@ def _help_text(role: str) -> str:
         lines.append("📊 [B]за день[/B] — сводка за сегодня")
         lines.append("📊 [B]за неделю[/B] — сводка за текущую неделю")
         lines.append("📊 [B]за месяц[/B] — сводка за текущий месяц")
+    if role == "admin":
+        lines.append("🧾 [B]ведомость за неделю[/B] — ведомость удержаний за неделю (Excel)")
+        lines.append("🧾 [B]ведомость за месяц[/B] — ведомость удержаний за месяц (Excel)")
     if role == "accountant":
         lines.append("📊 [B]за неделю[/B] — ведомость удержаний за неделю (Excel)")
         lines.append("📊 [B]за месяц[/B] — ведомость удержаний за месяц (Excel)")
