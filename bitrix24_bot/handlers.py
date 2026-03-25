@@ -130,7 +130,7 @@ async def handle_message(
 
     if raw == "заказы сегодня":
         _state.pop(dialog_id, None)
-        return await _do_orders_today()
+        return await _do_orders_today(role)
 
     # ---- SELECT PERIOD ----
     if step == STEP_PERIOD or raw in ("за сегодня", "за месяц"):
@@ -156,7 +156,7 @@ async def handle_message(
 
         if period == "day":
             _state.pop(dialog_id, None)
-            return await _do_report(rtype, "day", None, role)
+            return await _do_report(rtype, "day", role)
 
         # month — ask range
         _state[dialog_id] = {S_STEP: STEP_MONTH_RANGE, S_PERIOD: "month", S_RTYPE: rtype}
@@ -178,11 +178,11 @@ async def handle_message(
 
         if raw in ("текущий месяц", "текущий"):
             _state.pop(dialog_id, None)
-            return await _do_report(rtype, "month_current", None, role)
+            return await _do_report(rtype, "month_current", role)
 
         if raw in ("прошлый месяц", "прошлый"):
             _state.pop(dialog_id, None)
-            return await _do_report(rtype, "month_prev", None, role)
+            return await _do_report(rtype, "month_prev", role)
 
         return [_msg("Используйте кнопки ниже:", keyboard=KB_MONTH_RANGE)]
 
@@ -207,13 +207,13 @@ def _parse_rtype(raw: str, role: str) -> str | None:
     return None
 
 
-async def _do_orders_today() -> list[dict]:
+async def _do_orders_today(role: str) -> list[dict]:
     today = datetime.now(CONFIG.timezone).date()
     text, _ = await _run_sync(generate_provider_report_text, today, today)
-    return [_msg(text)]
+    return [_msg(text, keyboard=_main_kb(role))]
 
 
-async def _do_report(rtype: str, period: str, _unused, role: str) -> list[dict]:
+async def _do_report(rtype: str, period: str, role: str) -> list[dict]:
     """Generate report for given type and period."""
     now   = datetime.now(CONFIG.timezone)
     today = now.date()
@@ -260,7 +260,14 @@ async def _do_report(rtype: str, period: str, _unused, role: str) -> list[dict]:
         else:
             messages.append(_msg(caption))
 
-    return messages or [_msg("Нет данных за выбранный период.")]
+    if not messages:
+        return [_msg("Нет данных за выбранный период.", keyboard=_main_kb(role))]
+
+    # Attach main keyboard to the last message
+    last = messages[-1]
+    if "keyboard" not in last:
+        last["keyboard"] = _main_kb(role)
+    return messages
 
 
 def _help_text(role: str) -> str:
