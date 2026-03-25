@@ -118,7 +118,8 @@ async def handle_message(
     # Global resets
     if raw in ("главное меню", "/start", "start", "помощь", "help", "/help"):
         _state.pop(dialog_id, None)
-        return [_msg(_help_text(role), keyboard=_main_kb(role), replace=True)]
+        # Always send fresh message — clears nav cache on PHP side
+        return [_msg(_help_text(role), keyboard=_main_kb(role))]
 
     state = _state.get(dialog_id, {S_STEP: STEP_IDLE})
     step  = state.get(S_STEP, STEP_IDLE)
