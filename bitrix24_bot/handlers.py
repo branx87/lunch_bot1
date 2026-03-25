@@ -8,6 +8,7 @@ Each message: {"text": "...", "keyboard": [...], "file_path": "...", "file_name"
 import asyncio
 import base64
 import logging
+import re
 from datetime import datetime, timedelta
 
 from config import CONFIG
@@ -280,9 +281,14 @@ def _help_text(role: str) -> str:
     return "\n".join(lines)
 
 
+def _md_to_b24(text: str) -> str:
+    """Convert Telegram Markdown (*bold*) to Bitrix24 BBCode ([B]bold[/B])."""
+    return re.sub(r'\*([^*]+)\*', r'[B]\1[/B]', text)
+
+
 def _msg(text: str, keyboard=None, file_path: str = None, file_name: str = None,
          replace: bool = False) -> dict:
-    m = {"text": text}
+    m = {"text": _md_to_b24(text)}
     if keyboard is not None:
         m["keyboard"] = keyboard
     if replace:
