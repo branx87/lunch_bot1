@@ -24,20 +24,20 @@ logger = logging.getLogger(__name__)
 # Keyboard shown after every response
 MAIN_KEYBOARD = [
     [
-        {"TEXT": "📋 Заказы сегодня", "COMMAND": "orders_today", "COMMAND_PARAMS": "", "BG_COLOR": "#29619b", "TEXT_COLOR": "#fff"},
-        {"TEXT": "📊 Отчёт за день",  "COMMAND": "report_day",   "COMMAND_PARAMS": "", "BG_COLOR": "#29619b", "TEXT_COLOR": "#fff"},
+        {"TEXT": "📋 Заказы сегодня", "ACTION": "SEND", "ACTION_VALUE": "заказы сегодня", "BG_COLOR": "#29619b", "TEXT_COLOR": "#fff"},
+        {"TEXT": "📊 Отчёт за день",  "ACTION": "SEND", "ACTION_VALUE": "за день",        "BG_COLOR": "#29619b", "TEXT_COLOR": "#fff"},
     ],
     [
-        {"TEXT": "📊 За неделю", "COMMAND": "report_week",  "COMMAND_PARAMS": "", "BG_COLOR": "#3b7abf", "TEXT_COLOR": "#fff"},
-        {"TEXT": "📊 За месяц",  "COMMAND": "report_month", "COMMAND_PARAMS": "", "BG_COLOR": "#3b7abf", "TEXT_COLOR": "#fff"},
+        {"TEXT": "📊 За неделю", "ACTION": "SEND", "ACTION_VALUE": "за неделю", "BG_COLOR": "#3b7abf", "TEXT_COLOR": "#fff"},
+        {"TEXT": "📊 За месяц",  "ACTION": "SEND", "ACTION_VALUE": "за месяц",  "BG_COLOR": "#3b7abf", "TEXT_COLOR": "#fff"},
     ],
 ]
 
 # Keyboard for admins — includes accounting report buttons
 ADMIN_KEYBOARD = MAIN_KEYBOARD + [
     [
-        {"TEXT": "🧾 Ведомость за неделю", "COMMAND": "accounting_week",  "COMMAND_PARAMS": "", "BG_COLOR": "#5c7a3e", "TEXT_COLOR": "#fff"},
-        {"TEXT": "🧾 Ведомость за месяц",  "COMMAND": "accounting_month", "COMMAND_PARAMS": "", "BG_COLOR": "#5c7a3e", "TEXT_COLOR": "#fff"},
+        {"TEXT": "🧾 Ведомость за неделю", "ACTION": "SEND", "ACTION_VALUE": "ведомость за неделю", "BG_COLOR": "#5c7a3e", "TEXT_COLOR": "#fff"},
+        {"TEXT": "🧾 Ведомость за месяц",  "ACTION": "SEND", "ACTION_VALUE": "ведомость за месяц",  "BG_COLOR": "#5c7a3e", "TEXT_COLOR": "#fff"},
     ],
 ]
 
