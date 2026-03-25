@@ -3,11 +3,12 @@ Bitrix24 bot entry point.
 Shares the same PostgreSQL database and business logic with Telegram and VK bots.
 
 Runs a FastAPI HTTP server that receives bot messages forwarded by the PHP relay
-on the Bitrix24 server (because Bitrix24 cannot reach the local network directly).
+on the Bitrix24 server. Returns response JSON — PHP sends it to the user
+via \Bitrix\Im\Bot::addMessage() (no REST API needed).
 
 Deploy:
   docker-compose up -d bitrix24_bot
-  → listens on B24_BOT_PORT (default 7778)
+  → listens on B24_BOT_PORT (default 7777)
 
 PHP relay on Bitrix server must point to:
   http://<this_host>:<port>/webhook/bot
@@ -15,6 +16,7 @@ PHP relay on Bitrix server must point to:
 import asyncio
 import logging
 import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -22,8 +24,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from logging.handlers import RotatingFileHandler
-
-import secrets
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -50,30 +50,11 @@ def _setup_logging():
 _setup_logging()
 logger = logging.getLogger(__name__)
 
-
-def _build_api():
-    """Create BitrixBotAPI from environment variables."""
-    from bitrix24_bot.api import BitrixBotAPI
-
-    rest_url = os.getenv("B24_REST_URL", "")
-    bot_id = int(os.getenv("B24_BOT_ID", "0"))
-    b24_user_id = int(os.getenv("B24_USER_ID", "0"))
-
-    if not rest_url or not bot_id:
-        logger.error("B24_REST_URL и B24_BOT_ID обязательны. Проверьте data/configs/.env")
-        sys.exit(1)
-
-    return BitrixBotAPI(rest_url=rest_url, bot_id=bot_id, b24_user_id=b24_user_id)
-
-
 app = FastAPI(title="Bitrix24 Lunch Bot", docs_url=None, redoc_url=None)
-_api = None  # initialized on startup
 
 
 @app.on_event("startup")
 async def on_startup():
-    global _api
-
     from database import db
     from models import Base
 
@@ -82,7 +63,6 @@ async def on_startup():
         sys.exit(1)
 
     Base.metadata.create_all(bind=db.engine)
-    _api = _build_api()
     logger.info("=== Bitrix24 bot started ===")
 
 
@@ -106,14 +86,17 @@ def _check_token(request: Request) -> bool:
 async def handle_bot_webhook(request: Request):
     """
     Receives bot messages from Bitrix24 (forwarded by PHP relay).
+    Returns JSON with response text/keyboard/file for PHP to send via Bot::addMessage().
 
-    Bitrix24 sends form-encoded data:
-      event=ONIMBOTMESSAGEADD
+    Input (form-encoded):
       data[PARAMS][DIALOG_ID]=...
       data[PARAMS][MESSAGE]=...
       data[PARAMS][FROM_USER_ID]=...
       data[PARAMS][COMMAND]=...          (keyboard buttons)
       data[PARAMS][COMMAND_PARAMS]=...
+
+    Output JSON:
+      {"messages": [{"text": "...", "keyboard": [...]}]}
     """
     if not _check_token(request):
         logger.warning(f"[B24Bot] Отклонён запрос с неверным токеном, IP={request.client.host}")
@@ -129,7 +112,7 @@ async def handle_bot_webhook(request: Request):
 
         dialog_id = params.get("DIALOG_ID", "")
         if not dialog_id:
-            return JSONResponse(content={"status": "ok"})
+            return JSONResponse(content={"messages": []})
 
         message = params.get("MESSAGE", "")
         command = params.get("COMMAND", "")
@@ -141,19 +124,19 @@ async def handle_bot_webhook(request: Request):
             f"text='{message[:50]}' dialog={dialog_id}"
         )
 
-        if _api is not None:
-            from bitrix24_bot.handlers import handle_message
-            asyncio.create_task(
-                handle_message(
-                    _api, dialog_id, from_user_id, message,
-                    command=command, command_params=command_params,
-                )
-            )
+        from bitrix24_bot.handlers import handle_message
+        messages = await handle_message(
+            dialog_id, from_user_id, message,
+            command=command, command_params=command_params,
+        )
+
+        return JSONResponse(content={"messages": messages})
 
     except Exception as e:
         logger.error(f"[B24Bot] Ошибка обработки запроса: {e}", exc_info=True)
-
-    return JSONResponse(content={"status": "ok"})
+        return JSONResponse(content={
+            "messages": [{"text": "❌ Ошибка при формировании отчёта."}]
+        })
 
 
 def main():

@@ -1,11 +1,14 @@
 """
 Bitrix24 bot command handlers.
 Uses the same services/report_service as Telegram and VK bots.
+
+Returns list of message dicts for PHP to send via \Bitrix\Im\Bot::addMessage().
+Each message: {"text": "...", "keyboard": [...], "file_path": "...", "file_name": "..."}
 """
 import asyncio
+import base64
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
 
 from config import CONFIG
 from database import db
@@ -15,7 +18,6 @@ from services.report_service import (
     generate_admin_report_file,
 )
 from services.user_service import get_user_role, MESSENGER_BITRIX24
-from bitrix24_bot.api import BitrixBotAPI
 
 logger = logging.getLogger(__name__)
 
@@ -41,120 +43,134 @@ _TEXT_ALIASES = {
 }
 
 
+def _msg(text: str, keyboard=None, file_path: str = None, file_name: str = None) -> dict:
+    """Build a message dict for the response."""
+    m = {"text": text}
+    if keyboard is not None:
+        m["keyboard"] = keyboard
+    if file_path and file_name:
+        try:
+            with open(file_path, "rb") as f:
+                m["file_base64"] = base64.b64encode(f.read()).decode("ascii")
+            m["file_name"] = file_name
+        except Exception as e:
+            logger.error(f"[B24Bot] Ошибка чтения файла {file_path}: {e}")
+    return m
+
+
 async def handle_message(
-    api: BitrixBotAPI,
     dialog_id: str,
     from_user_id: int,
     text: str,
     command: str = "",
     command_params: str = "",
-) -> None:
+) -> list[dict]:
     """
-    Entry point: process one incoming bot message and send response.
-    Runs in a background task so FastAPI responds to Bitrix immediately.
+    Process one incoming bot message.
+    Returns list of message dicts for PHP to send.
     """
     role = get_user_role(from_user_id, MESSENGER_BITRIX24, CONFIG)
     if not role or role == "employee":
-        await api.send_message(dialog_id, "⛔ Доступ только для администраторов, поставщиков и бухгалтеров.")
-        return
-
-    await api.send_typing(dialog_id)
+        return [_msg("⛔ Доступ только для администраторов, поставщиков и бухгалтеров.")]
 
     # Keyboard button command takes priority over typed text
     cmd = command or _TEXT_ALIASES.get(text.strip().lower(), "")
 
     try:
         if not cmd or cmd == "help":
-            await api.send_message(dialog_id, _help_text(role), keyboard=MAIN_KEYBOARD)
+            return [_msg(_help_text(role), keyboard=MAIN_KEYBOARD)]
         elif cmd == "orders_today":
-            await _orders_today(api, dialog_id, role)
+            return await _orders_today(role)
         elif cmd == "report_day":
-            await _report_day(api, dialog_id, role)
+            return await _report_day(role)
         elif cmd == "report_week":
-            await _report_week(api, dialog_id, role)
+            return await _report_week(role)
         elif cmd == "report_month":
-            await _report_month(api, dialog_id, role)
+            return await _report_month(role)
         else:
-            await api.send_message(
-                dialog_id,
-                "Не понял команду. Используйте кнопки меню ниже.",
-                keyboard=MAIN_KEYBOARD,
-            )
+            return [_msg("Не понял команду. Используйте кнопки меню ниже.", keyboard=MAIN_KEYBOARD)]
     except Exception as e:
         logger.error(f"[B24Bot] Ошибка обработки команды '{cmd}': {e}", exc_info=True)
-        await api.send_message(dialog_id, "❌ Ошибка при формировании отчёта.", keyboard=MAIN_KEYBOARD)
+        return [_msg("❌ Ошибка при формировании отчёта.", keyboard=MAIN_KEYBOARD)]
 
 
 # ------------------------------------------------------------------
 # Command implementations
 # ------------------------------------------------------------------
 
-async def _orders_today(api: BitrixBotAPI, dialog_id: str, role: str) -> None:
+async def _orders_today(role: str) -> list[dict]:
     today = datetime.now(CONFIG.timezone).date()
     text, total = await _run_sync(generate_provider_report_text, today, today)
-    await api.send_message(dialog_id, text, keyboard=MAIN_KEYBOARD)
+    return [_msg(text, keyboard=MAIN_KEYBOARD)]
 
 
-async def _report_day(api: BitrixBotAPI, dialog_id: str, role: str) -> None:
+async def _report_day(role: str) -> list[dict]:
     today = datetime.now(CONFIG.timezone).date()
+    messages = []
 
     if role in ("admin", "provider"):
         text, total = await _run_sync(generate_provider_report_text, today, today)
-        await api.send_message(dialog_id, text, keyboard=MAIN_KEYBOARD)
+        messages.append(_msg(text, keyboard=MAIN_KEYBOARD))
 
     if role == "admin":
         file_path, file_name, caption = await _run_sync(
             generate_admin_report_file, today, today, is_daily=True
         )
         if file_path:
-            await api.send_file(dialog_id, file_path, file_name, caption)
+            messages.append(_msg(caption, file_path=file_path, file_name=file_name))
         else:
-            await api.send_message(dialog_id, caption, keyboard=MAIN_KEYBOARD)
+            messages.append(_msg(caption, keyboard=MAIN_KEYBOARD))
 
     elif role == "accountant":
         file_path, file_name, caption = await _run_sync(
             generate_accounting_report_file, today, today
         )
-        await api.send_file(dialog_id, file_path, file_name, caption)
+        if file_path:
+            messages.append(_msg(caption, keyboard=MAIN_KEYBOARD, file_path=file_path, file_name=file_name))
+        else:
+            messages.append(_msg(caption, keyboard=MAIN_KEYBOARD))
+
+    return messages
 
 
-async def _report_week(api: BitrixBotAPI, dialog_id: str, role: str) -> None:
+async def _report_week(role: str) -> list[dict]:
     today = datetime.now(CONFIG.timezone).date()
     monday = today - timedelta(days=today.weekday())
-    await _send_period_report(api, dialog_id, role, monday, today)
+    return await _send_period_report(role, monday, today)
 
 
-async def _report_month(api: BitrixBotAPI, dialog_id: str, role: str) -> None:
+async def _report_month(role: str) -> list[dict]:
     today = datetime.now(CONFIG.timezone).date()
     first_day = today.replace(day=1)
-    await _send_period_report(api, dialog_id, role, first_day, today)
+    return await _send_period_report(role, first_day, today)
 
 
-async def _send_period_report(
-    api: BitrixBotAPI,
-    dialog_id: str,
-    role: str,
-    start_date,
-    end_date,
-) -> None:
+async def _send_period_report(role: str, start_date, end_date) -> list[dict]:
+    messages = []
+
     if role in ("admin", "provider"):
         text, total = await _run_sync(generate_provider_report_text, start_date, end_date)
-        await api.send_message(dialog_id, text, keyboard=MAIN_KEYBOARD)
+        messages.append(_msg(text, keyboard=MAIN_KEYBOARD))
 
     if role == "admin":
         file_path, file_name, caption = await _run_sync(
             generate_admin_report_file, start_date, end_date
         )
         if file_path:
-            await api.send_file(dialog_id, file_path, file_name, caption)
+            messages.append(_msg(caption, file_path=file_path, file_name=file_name))
         else:
-            await api.send_message(dialog_id, caption, keyboard=MAIN_KEYBOARD)
+            messages.append(_msg(caption, keyboard=MAIN_KEYBOARD))
 
     elif role == "accountant":
         file_path, file_name, caption = await _run_sync(
             generate_accounting_report_file, start_date, end_date
         )
-        await api.send_file(dialog_id, file_path, file_name, caption)
+        if file_path:
+            messages.append(_msg(caption, keyboard=MAIN_KEYBOARD, file_path=file_path, file_name=file_name))
+        else:
+            messages.append(_msg(caption, keyboard=MAIN_KEYBOARD))
+
+    return messages
 
 
 def _help_text(role: str) -> str:
