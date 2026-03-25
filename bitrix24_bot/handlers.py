@@ -21,40 +21,258 @@ from services.user_service import get_user_role, MESSENGER_BITRIX24
 
 logger = logging.getLogger(__name__)
 
-# Keyboard shown after every response
-MAIN_KEYBOARD = [
-    [
-        {"TEXT": "📋 Заказы сегодня", "ACTION": "SEND", "ACTION_VALUE": "заказы сегодня", "BG_COLOR": "#29619b", "TEXT_COLOR": "#fff"},
-        {"TEXT": "📊 Отчёт за день",  "ACTION": "SEND", "ACTION_VALUE": "за день",        "BG_COLOR": "#29619b", "TEXT_COLOR": "#fff"},
-    ],
-    [
-        {"TEXT": "📊 За неделю", "ACTION": "SEND", "ACTION_VALUE": "за неделю", "BG_COLOR": "#3b7abf", "TEXT_COLOR": "#fff"},
-        {"TEXT": "📊 За месяц",  "ACTION": "SEND", "ACTION_VALUE": "за месяц",  "BG_COLOR": "#3b7abf", "TEXT_COLOR": "#fff"},
-    ],
-]
+# ------------------------------------------------------------------
+# Dialog state storage: dialog_id → state dict
+# ------------------------------------------------------------------
 
-# Keyboard for admins — includes accounting report buttons
-ADMIN_KEYBOARD = MAIN_KEYBOARD + [
-    [
-        {"TEXT": "🧾 Ведомость за неделю", "ACTION": "SEND", "ACTION_VALUE": "ведомость за неделю", "BG_COLOR": "#5c7a3e", "TEXT_COLOR": "#fff"},
-        {"TEXT": "🧾 Ведомость за месяц",  "ACTION": "SEND", "ACTION_VALUE": "ведомость за месяц",  "BG_COLOR": "#5c7a3e", "TEXT_COLOR": "#fff"},
-    ],
-]
+_state: dict[str, dict] = {}
 
-# Text aliases → command name (lowercase)
-_TEXT_ALIASES = {
-    "помощь": "help", "help": "help", "/help": "help",
-    "заказы": "orders_today", "заказы сегодня": "orders_today", "сегодня": "orders_today",
-    "за день": "report_day", "день": "report_day",
-    "за неделю": "report_week", "неделя": "report_week",
-    "за месяц": "report_month", "месяц": "report_month",
-    "ведомость за неделю": "accounting_week",
-    "ведомость за месяц": "accounting_month",
-}
+# State keys
+S_STEP   = "step"       # current step name
+S_PERIOD = "period"     # "day" | "month_current" | "month_prev"
+S_RTYPE  = "rtype"      # "admin" | "accounting" | "provider"
+
+STEP_IDLE        = "idle"
+STEP_PERIOD      = "select_period"
+STEP_RTYPE       = "select_rtype"
+STEP_MONTH_RANGE = "select_month_range"
+
+# ------------------------------------------------------------------
+# Keyboards
+# ------------------------------------------------------------------
+
+def _kb(*rows):
+    """Build keyboard: list of button rows, each button is a dict."""
+    return list(rows)
+
+
+def _btn(text: str, value: str, bg: str = "#29619b") -> dict:
+    return {"TEXT": text, "ACTION": "SEND", "ACTION_VALUE": value,
+            "BG_COLOR": bg, "TEXT_COLOR": "#fff"}
+
+
+KB_MAIN_ADMIN = _kb(
+    [_btn("📊 Отчёты", "отчёты"), _btn("📋 Заказы сегодня", "заказы сегодня")],
+)
+
+KB_MAIN_PROVIDER = _kb(
+    [_btn("📋 Заказы сегодня", "заказы сегодня")],
+)
+
+KB_MAIN_ACCOUNTANT = _kb(
+    [_btn("📊 Отчёты", "отчёты")],
+)
+
+KB_PERIOD = _kb(
+    [_btn("📅 За сегодня", "за сегодня", "#3b7abf"),
+     _btn("📆 За месяц",   "за месяц",   "#3b7abf")],
+    [_btn("🏠 Главное меню", "главное меню", "#555")],
+)
+
+KB_RTYPE_ADMIN = _kb(
+    [_btn("👨‍💼 Админский",    "тип админский",    "#29619b"),
+     _btn("💰 Бухгалтерский", "тип бухгалтерский", "#5c7a3e"),
+     _btn("📦 Поставщика",    "тип поставщика",    "#7a5c3e")],
+    [_btn("🏠 Главное меню", "главное меню", "#555")],
+)
+
+KB_RTYPE_LIMITED = _kb(
+    [_btn("📊 Мой отчёт", "тип авто", "#29619b")],
+    [_btn("🏠 Главное меню", "главное меню", "#555")],
+)
+
+KB_MONTH_RANGE = _kb(
+    [_btn("📅 Текущий месяц", "текущий месяц", "#3b7abf"),
+     _btn("📆 Прошлый месяц", "прошлый месяц", "#3b7abf")],
+    [_btn("🏠 Главное меню", "главное меню", "#555")],
+)
+
+
+def _main_kb(role: str) -> list:
+    if role == "admin":
+        return KB_MAIN_ADMIN
+    elif role == "accountant":
+        return KB_MAIN_ACCOUNTANT
+    else:
+        return KB_MAIN_PROVIDER
+
+
+# ------------------------------------------------------------------
+# Entry point
+# ------------------------------------------------------------------
+
+async def handle_message(
+    dialog_id: str,
+    from_user_id: int,
+    text: str,
+    command: str = "",
+    command_params: str = "",
+) -> list[dict]:
+    role = get_user_role(from_user_id, MESSENGER_BITRIX24, CONFIG)
+    if not role or role == "employee":
+        return [_msg("⛔ Доступ только для администраторов, поставщиков и бухгалтеров.")]
+
+    # Use ACTION_VALUE (text) since buttons send text via ACTION=SEND
+    raw = text.strip().lower()
+
+    # Global resets
+    if raw in ("главное меню", "/start", "start", "помощь", "help", "/help"):
+        _state.pop(dialog_id, None)
+        return [_msg(_help_text(role), keyboard=_main_kb(role))]
+
+    state = _state.get(dialog_id, {S_STEP: STEP_IDLE})
+    step  = state.get(S_STEP, STEP_IDLE)
+
+    # Step routing
+    if raw in ("отчёты", "отчеты", "/reports"):
+        _state[dialog_id] = {S_STEP: STEP_PERIOD}
+        return [_msg("Выберите период:", keyboard=KB_PERIOD)]
+
+    if raw == "заказы сегодня":
+        _state.pop(dialog_id, None)
+        return await _do_orders_today()
+
+    # ---- SELECT PERIOD ----
+    if step == STEP_PERIOD or raw in ("за сегодня", "за месяц"):
+        if raw == "за сегодня":
+            _state[dialog_id] = {S_STEP: STEP_RTYPE, S_PERIOD: "day"}
+            kb = KB_RTYPE_ADMIN if role == "admin" else KB_RTYPE_LIMITED
+            return [_msg("Выберите тип отчёта:", keyboard=kb)]
+
+        if raw == "за месяц":
+            _state[dialog_id] = {S_STEP: STEP_MONTH_RANGE, S_PERIOD: "month"}
+            kb = KB_RTYPE_ADMIN if role == "admin" else KB_RTYPE_LIMITED
+            return [_msg("Выберите тип отчёта:", keyboard=kb)]
+
+        return [_msg("Используйте кнопки ниже:", keyboard=KB_PERIOD)]
+
+    # ---- SELECT REPORT TYPE ----
+    if step == STEP_RTYPE:
+        period = state.get(S_PERIOD, "day")
+        rtype  = _parse_rtype(raw, role)
+        if rtype is None:
+            kb = KB_RTYPE_ADMIN if role == "admin" else KB_RTYPE_LIMITED
+            return [_msg("Используйте кнопки ниже:", keyboard=kb)]
+
+        if period == "day":
+            _state.pop(dialog_id, None)
+            return await _do_report(rtype, "day", None, role)
+
+        # month — ask range
+        _state[dialog_id] = {S_STEP: STEP_MONTH_RANGE, S_PERIOD: "month", S_RTYPE: rtype}
+        return [_msg("Выберите период:", keyboard=KB_MONTH_RANGE)]
+
+    # ---- SELECT MONTH RANGE ----
+    if step == STEP_MONTH_RANGE:
+        rtype = state.get(S_RTYPE)
+        if rtype is None:
+            # rtype not chosen yet — maybe user came here via direct "за месяц"
+            rtype = _parse_rtype(raw, role)
+            if rtype is None:
+                # they're choosing range but rtype still unknown — ask type first
+                kb = KB_RTYPE_ADMIN if role == "admin" else KB_RTYPE_LIMITED
+                _state[dialog_id] = {S_STEP: STEP_RTYPE, S_PERIOD: "month"}
+                return [_msg("Выберите тип отчёта:", keyboard=kb)]
+            _state[dialog_id] = {S_STEP: STEP_MONTH_RANGE, S_PERIOD: "month", S_RTYPE: rtype}
+            return [_msg("Выберите период:", keyboard=KB_MONTH_RANGE)]
+
+        if raw in ("текущий месяц", "текущий"):
+            _state.pop(dialog_id, None)
+            return await _do_report(rtype, "month_current", None, role)
+
+        if raw in ("прошлый месяц", "прошлый"):
+            _state.pop(dialog_id, None)
+            return await _do_report(rtype, "month_prev", None, role)
+
+        return [_msg("Используйте кнопки ниже:", keyboard=KB_MONTH_RANGE)]
+
+    # ---- IDLE: unknown text ----
+    return [_msg(_help_text(role), keyboard=_main_kb(role))]
+
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+def _parse_rtype(raw: str, role: str) -> str | None:
+    """Map button text → internal report type. Auto-detect for non-admins."""
+    if raw in ("тип авто",):
+        return role  # accountant→"accounting" handled below
+    if raw == "тип админский":
+        return "admin"
+    if raw == "тип бухгалтерский":
+        return "accounting"
+    if raw == "тип поставщика":
+        return "provider"
+    return None
+
+
+async def _do_orders_today() -> list[dict]:
+    today = datetime.now(CONFIG.timezone).date()
+    text, _ = await _run_sync(generate_provider_report_text, today, today)
+    return [_msg(text)]
+
+
+async def _do_report(rtype: str, period: str, _unused, role: str) -> list[dict]:
+    """Generate report for given type and period."""
+    now   = datetime.now(CONFIG.timezone)
+    today = now.date()
+
+    if period == "day":
+        start_date = end_date = today
+    elif period == "month_current":
+        start_date = today.replace(day=1)
+        end_date   = today
+    else:  # month_prev
+        first_this = today.replace(day=1)
+        last_prev  = first_this - timedelta(days=1)
+        start_date = last_prev.replace(day=1)
+        end_date   = last_prev
+
+    # For non-admin roles, rtype is the role name — map to report type
+    if rtype == "accountant":
+        rtype = "accounting"
+    elif rtype == "provider":
+        rtype = "provider"
+
+    messages = []
+
+    if rtype in ("admin", "provider"):
+        text, _ = await _run_sync(generate_provider_report_text, start_date, end_date)
+        messages.append(_msg(text))
+
+    if rtype == "admin":
+        file_path, file_name, caption = await _run_sync(
+            generate_admin_report_file, start_date, end_date,
+            is_daily=(period == "day")
+        )
+        if file_path:
+            messages.append(_msg(caption, file_path=file_path, file_name=file_name))
+        else:
+            messages.append(_msg(caption))
+
+    elif rtype == "accounting":
+        file_path, file_name, caption = await _run_sync(
+            generate_accounting_report_file, start_date, end_date
+        )
+        if file_path:
+            messages.append(_msg(caption, file_path=file_path, file_name=file_name))
+        else:
+            messages.append(_msg(caption))
+
+    return messages or [_msg("Нет данных за выбранный период.")]
+
+
+def _help_text(role: str) -> str:
+    lines = ["[B]Бот отчётов ЕРС Обеды[/B]\n"]
+    if role in ("admin", "provider"):
+        lines.append("📋 [B]заказы сегодня[/B] — список заказов на сегодня по локациям")
+    if role in ("admin", "provider", "accountant"):
+        lines.append("📊 [B]отчёты[/B] — формирование отчётов")
+    return "\n".join(lines)
 
 
 def _msg(text: str, keyboard=None, file_path: str = None, file_name: str = None) -> dict:
-    """Build a message dict for the response."""
     m = {"text": text}
     if keyboard is not None:
         m["keyboard"] = keyboard
@@ -68,176 +286,15 @@ def _msg(text: str, keyboard=None, file_path: str = None, file_name: str = None)
     return m
 
 
-async def handle_message(
-    dialog_id: str,
-    from_user_id: int,
-    text: str,
-    command: str = "",
-    command_params: str = "",
-) -> list[dict]:
-    """
-    Process one incoming bot message.
-    Returns list of message dicts for PHP to send.
-    """
-    role = get_user_role(from_user_id, MESSENGER_BITRIX24, CONFIG)
-    if not role or role == "employee":
-        return [_msg("⛔ Доступ только для администраторов, поставщиков и бухгалтеров.")]
-
-    keyboard = ADMIN_KEYBOARD if role == "admin" else MAIN_KEYBOARD
-
-    # Keyboard button command takes priority over typed text
-    cmd = command or _TEXT_ALIASES.get(text.strip().lower(), "")
-
-    try:
-        if not cmd or cmd == "help":
-            return [_msg(_help_text(role), keyboard=keyboard)]
-        elif cmd == "orders_today":
-            return await _orders_today(role)
-        elif cmd == "report_day":
-            return await _report_day(role)
-        elif cmd == "report_week":
-            return await _report_week(role)
-        elif cmd == "report_month":
-            return await _report_month(role)
-        elif cmd == "accounting_week":
-            return await _accounting_week()
-        elif cmd == "accounting_month":
-            return await _accounting_month()
-        else:
-            return [_msg("Не понял команду. Используйте кнопки меню ниже.", keyboard=keyboard)]
-    except Exception as e:
-        logger.error(f"[B24Bot] Ошибка обработки команды '{cmd}': {e}", exc_info=True)
-        return [_msg("❌ Ошибка при формировании отчёта.", keyboard=keyboard)]
-
-
-# ------------------------------------------------------------------
-# Command implementations
-# ------------------------------------------------------------------
-
-async def _orders_today(role: str) -> list[dict]:
-    today = datetime.now(CONFIG.timezone).date()
-    text, total = await _run_sync(generate_provider_report_text, today, today)
-    return [_msg(text, keyboard=MAIN_KEYBOARD)]
-
-
-async def _report_day(role: str) -> list[dict]:
-    today = datetime.now(CONFIG.timezone).date()
-    messages = []
-
-    if role in ("admin", "provider"):
-        text, total = await _run_sync(generate_provider_report_text, today, today)
-        messages.append(_msg(text, keyboard=MAIN_KEYBOARD))
-
-    if role == "admin":
-        file_path, file_name, caption = await _run_sync(
-            generate_admin_report_file, today, today, is_daily=True
-        )
-        if file_path:
-            messages.append(_msg(caption, file_path=file_path, file_name=file_name))
-        else:
-            messages.append(_msg(caption, keyboard=MAIN_KEYBOARD))
-
-    elif role == "accountant":
-        file_path, file_name, caption = await _run_sync(
-            generate_accounting_report_file, today, today
-        )
-        if file_path:
-            messages.append(_msg(caption, keyboard=MAIN_KEYBOARD, file_path=file_path, file_name=file_name))
-        else:
-            messages.append(_msg(caption, keyboard=MAIN_KEYBOARD))
-
-    return messages
-
-
-async def _report_week(role: str) -> list[dict]:
-    today = datetime.now(CONFIG.timezone).date()
-    monday = today - timedelta(days=today.weekday())
-    return await _send_period_report(role, monday, today)
-
-
-async def _report_month(role: str) -> list[dict]:
-    today = datetime.now(CONFIG.timezone).date()
-    first_day = today.replace(day=1)
-    return await _send_period_report(role, first_day, today)
-
-
-async def _accounting_week() -> list[dict]:
-    today = datetime.now(CONFIG.timezone).date()
-    monday = today - timedelta(days=today.weekday())
-    return await _send_accounting_report(monday, today)
-
-
-async def _accounting_month() -> list[dict]:
-    today = datetime.now(CONFIG.timezone).date()
-    first_day = today.replace(day=1)
-    return await _send_accounting_report(first_day, today)
-
-
-async def _send_accounting_report(start_date, end_date) -> list[dict]:
-    file_path, file_name, caption = await _run_sync(
-        generate_accounting_report_file, start_date, end_date
-    )
-    if file_path:
-        return [_msg(caption, keyboard=ADMIN_KEYBOARD, file_path=file_path, file_name=file_name)]
-    return [_msg(caption, keyboard=ADMIN_KEYBOARD)]
-
-
-async def _send_period_report(role: str, start_date, end_date) -> list[dict]:
-    keyboard = ADMIN_KEYBOARD if role == "admin" else MAIN_KEYBOARD
-    messages = []
-
-    if role in ("admin", "provider"):
-        text, total = await _run_sync(generate_provider_report_text, start_date, end_date)
-        messages.append(_msg(text, keyboard=keyboard))
-
-    if role == "admin":
-        file_path, file_name, caption = await _run_sync(
-            generate_admin_report_file, start_date, end_date
-        )
-        if file_path:
-            messages.append(_msg(caption, file_path=file_path, file_name=file_name))
-        else:
-            messages.append(_msg(caption, keyboard=keyboard))
-
-    elif role == "accountant":
-        file_path, file_name, caption = await _run_sync(
-            generate_accounting_report_file, start_date, end_date
-        )
-        if file_path:
-            messages.append(_msg(caption, keyboard=keyboard, file_path=file_path, file_name=file_name))
-        else:
-            messages.append(_msg(caption, keyboard=keyboard))
-
-    return messages
-
-
-def _help_text(role: str) -> str:
-    lines = ["[B]Бот отчётов ЕРС Обеды[/B]\n"]
-    if role in ("admin", "provider"):
-        lines.append("📋 [B]заказы сегодня[/B] — список заказов на сегодня по локациям")
-        lines.append("📊 [B]за день[/B] — сводка за сегодня")
-        lines.append("📊 [B]за неделю[/B] — сводка за текущую неделю")
-        lines.append("📊 [B]за месяц[/B] — сводка за текущий месяц")
-    if role == "admin":
-        lines.append("🧾 [B]ведомость за неделю[/B] — ведомость удержаний за неделю (Excel)")
-        lines.append("🧾 [B]ведомость за месяц[/B] — ведомость удержаний за месяц (Excel)")
-    if role == "accountant":
-        lines.append("📊 [B]за неделю[/B] — ведомость удержаний за неделю (Excel)")
-        lines.append("📊 [B]за месяц[/B] — ведомость удержаний за месяц (Excel)")
-    return "\n".join(lines)
-
-
 # ------------------------------------------------------------------
 # Helper: run synchronous DB call in thread pool
 # ------------------------------------------------------------------
 
 def _run_in_session(fn, *args, **kwargs):
-    """Execute a report_service function that takes (start, end, session) or (start, end, session, **kw)."""
     with db.get_session() as session:
         return fn(*args, session, **kwargs)
 
 
 async def _run_sync(fn, *args, **kwargs):
-    """Run synchronous report_service function in a thread pool executor."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, lambda: _run_in_session(fn, *args, **kwargs))
