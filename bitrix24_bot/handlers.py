@@ -118,7 +118,7 @@ async def handle_message(
     # Global resets
     if raw in ("главное меню", "/start", "start", "помощь", "help", "/help"):
         _state.pop(dialog_id, None)
-        return [_msg(_help_text(role), keyboard=_main_kb(role))]
+        return [_msg(_help_text(role), keyboard=_main_kb(role), replace=True)]
 
     state = _state.get(dialog_id, {S_STEP: STEP_IDLE})
     step  = state.get(S_STEP, STEP_IDLE)
@@ -126,7 +126,7 @@ async def handle_message(
     # Step routing
     if raw in ("отчёты", "отчеты", "/reports"):
         _state[dialog_id] = {S_STEP: STEP_PERIOD}
-        return [_msg("Выберите период:", keyboard=KB_PERIOD)]
+        return [_msg("Выберите период:", keyboard=KB_PERIOD, replace=True)]
 
     if raw == "заказы сегодня":
         _state.pop(dialog_id, None)
@@ -137,14 +137,14 @@ async def handle_message(
         if raw == "за сегодня":
             _state[dialog_id] = {S_STEP: STEP_RTYPE, S_PERIOD: "day"}
             kb = KB_RTYPE_ADMIN if role == "admin" else KB_RTYPE_LIMITED
-            return [_msg("Выберите тип отчёта:", keyboard=kb)]
+            return [_msg("Выберите тип отчёта:", keyboard=kb, replace=True)]
 
         if raw == "за месяц":
             _state[dialog_id] = {S_STEP: STEP_MONTH_RANGE, S_PERIOD: "month"}
             kb = KB_RTYPE_ADMIN if role == "admin" else KB_RTYPE_LIMITED
-            return [_msg("Выберите тип отчёта:", keyboard=kb)]
+            return [_msg("Выберите тип отчёта:", keyboard=kb, replace=True)]
 
-        return [_msg("Используйте кнопки ниже:", keyboard=KB_PERIOD)]
+        return [_msg("Используйте кнопки ниже:", keyboard=KB_PERIOD, replace=True)]
 
     # ---- SELECT REPORT TYPE ----
     if step == STEP_RTYPE:
@@ -152,7 +152,7 @@ async def handle_message(
         rtype  = _parse_rtype(raw, role)
         if rtype is None:
             kb = KB_RTYPE_ADMIN if role == "admin" else KB_RTYPE_LIMITED
-            return [_msg("Используйте кнопки ниже:", keyboard=kb)]
+            return [_msg("Используйте кнопки ниже:", keyboard=kb, replace=True)]
 
         if period == "day":
             _state.pop(dialog_id, None)
@@ -160,7 +160,7 @@ async def handle_message(
 
         # month — ask range
         _state[dialog_id] = {S_STEP: STEP_MONTH_RANGE, S_PERIOD: "month", S_RTYPE: rtype}
-        return [_msg("Выберите период:", keyboard=KB_MONTH_RANGE)]
+        return [_msg("Выберите период:", keyboard=KB_MONTH_RANGE, replace=True)]
 
     # ---- SELECT MONTH RANGE ----
     if step == STEP_MONTH_RANGE:
@@ -174,7 +174,7 @@ async def handle_message(
                 _state[dialog_id] = {S_STEP: STEP_RTYPE, S_PERIOD: "month"}
                 return [_msg("Выберите тип отчёта:", keyboard=kb)]
             _state[dialog_id] = {S_STEP: STEP_MONTH_RANGE, S_PERIOD: "month", S_RTYPE: rtype}
-            return [_msg("Выберите период:", keyboard=KB_MONTH_RANGE)]
+            return [_msg("Выберите период:", keyboard=KB_MONTH_RANGE, replace=True)]
 
         if raw in ("текущий месяц", "текущий"):
             _state.pop(dialog_id, None)
@@ -184,7 +184,7 @@ async def handle_message(
             _state.pop(dialog_id, None)
             return await _do_report(rtype, "month_prev", role)
 
-        return [_msg("Используйте кнопки ниже:", keyboard=KB_MONTH_RANGE)]
+        return [_msg("Используйте кнопки ниже:", keyboard=KB_MONTH_RANGE, replace=True)]
 
     # ---- IDLE: unknown text ----
     return [_msg(_help_text(role), keyboard=_main_kb(role))]
@@ -279,10 +279,13 @@ def _help_text(role: str) -> str:
     return "\n".join(lines)
 
 
-def _msg(text: str, keyboard=None, file_path: str = None, file_name: str = None) -> dict:
+def _msg(text: str, keyboard=None, file_path: str = None, file_name: str = None,
+         replace: bool = False) -> dict:
     m = {"text": text}
     if keyboard is not None:
         m["keyboard"] = keyboard
+    if replace:
+        m["replace"] = True
     if file_path and file_name:
         try:
             with open(file_path, "rb") as f:
