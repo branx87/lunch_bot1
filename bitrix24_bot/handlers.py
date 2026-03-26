@@ -105,11 +105,23 @@ KB_MAIN_EMPLOYEE = _kb(
     [_btn("🍽 Меню", "меню")],
 )
 
-KB_SELECT_DAY = _kb(
-    [_btn("📅 На сегодня", "на сегодня", "#3b7abf"),
-     _btn("📅 На завтра",  "на завтра",  "#3b7abf")],
-    [_btn("🏠 Главное меню", "главное меню", "#555")],
-)
+def _build_select_day_kb() -> list:
+    """Строит клавиатуру выбора дня — только рабочие дни на 7 дней вперёд."""
+    from services.menu_service import get_week_menus
+    DAYS_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    week = get_week_menus(CONFIG)
+    buttons = []
+    for day in week:
+        if day["is_weekend"] or day["is_holiday"] or not day["menu"]:
+            continue
+        offset = day["day_offset"]
+        date_str = day["target_date"].strftime("%d.%m")
+        day_short = DAYS_SHORT[day["target_date"].weekday()]
+        label = f"{'Сегодня' if offset == 0 else 'Завтра' if offset == 1 else day_short} {date_str}"
+        buttons.append(_btn(f"📅 {label}", f"день {offset}", "#3b7abf"))
+    rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
+    rows.append([_btn("🏠 Главное меню", "главное меню", "#555")])
+    return _kb(*rows)
 
 
 def _main_kb(role: str) -> list:
@@ -438,7 +450,7 @@ def _do_create_order_db(user_db_id: int, day_offset: int, session) -> str:
     order, err = create_order(user_db_id, target_date, session, is_preliminary=(day_offset > 0))
     if err:
         return f"ℹ️ {err}"
-    session.commit()
+    # session.commit() не нужен — get_session() коммитит при выходе
     return f"✅ Заказ на {target_date.strftime('%d.%m')} оформлен — 1 порция."
 
 
@@ -451,7 +463,6 @@ def _do_cancel_order_db(user_db_id: int, target_date, session) -> str:
     order, err = cancel_order(user_db_id, target_date, session)
     if err:
         return f"ℹ️ {err}"
-    session.commit()
     return f"✅ Заказ на {target_date.strftime('%d.%m')} отменён."
 
 
@@ -466,11 +477,8 @@ def _do_modify_qty_db(user_db_id: int, day_offset: int, delta: int, session) -> 
     if err:
         return f"ℹ️ {err}"
     if new_qty == 0:
-        # Quantity went to 0 — cancel instead
         order.is_cancelled = True
-        session.commit()
         return f"✅ Заказ на {target_date.strftime('%d.%m')} отменён."
-    session.commit()
     return f"✅ Количество порций: {new_qty}."
 
 
@@ -493,11 +501,13 @@ async def _handle_employee(
     # ---- Заказать ----
     if raw == "заказать":
         _state[dialog_id] = {S_STEP: STEP_SELECT_DAY}
-        return [_msg("Выберите день:", keyboard=KB_SELECT_DAY, replace=True)]
+        return [_msg("Выберите день:", keyboard=_build_select_day_kb(), replace=True)]
 
-    if raw in ("на сегодня", "на завтра") or step in (STEP_SELECT_DAY, STEP_ORDER_VIEW):
-        if raw in ("на сегодня", "на завтра"):
-            day_offset = 0 if raw == "на сегодня" else 1
+    # Parse "день N" button (day selection)
+    _day_match = re.match(r'^день (\d)$', raw)
+    if _day_match or step in (STEP_SELECT_DAY, STEP_ORDER_VIEW):
+        if _day_match:
+            day_offset = int(_day_match.group(1))
             _state[dialog_id] = {S_STEP: STEP_ORDER_VIEW, S_DAY: day_offset}
         else:
             day_offset = state.get(S_DAY, 0)
