@@ -493,6 +493,20 @@ async def _handle_employee(
     state: dict,
     step: str,
 ) -> list[dict]:
+    try:
+        return await _handle_employee_inner(dialog_id, from_user_id, raw, state, step)
+    except Exception as e:
+        logger.error(f"[B24Bot] _handle_employee error raw='{raw}' step='{step}': {e}", exc_info=True)
+        return [_msg(f"❌ Ошибка: {e}", keyboard=KB_MAIN_EMPLOYEE)]
+
+
+async def _handle_employee_inner(
+    dialog_id: str,
+    from_user_id: int,
+    raw: str,
+    state: dict,
+    step: str,
+) -> list[dict]:
     user_db_id = await _run_sync(_fetch_user_db_id, from_user_id)
     if not user_db_id:
         return [_msg("❌ Вы не найдены в базе данных. Обратитесь к администратору.",
