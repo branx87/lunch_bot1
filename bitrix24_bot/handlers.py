@@ -195,14 +195,16 @@ async def handle_message(
     step  = state.get(S_STEP, STEP_IDLE)
 
     # Employee routing — separate flow (also for admins who want to order)
-    _employee_cmds = {"заказать", "мои заказы", "меню", "заказать порцию",
-                      "добавить порцию", "убрать порцию", "отменить заказ"}
-    _employee_steps = {STEP_SELECT_DAY, STEP_ORDER_VIEW, STEP_MY_ORDERS}
+    _employee_root_cmds = {"заказать", "мои заказы", "меню"}
+    _employee_ctx_cmds  = {"заказать порцию", "добавить порцию", "убрать порцию", "отменить заказ"}
+    _employee_steps     = {STEP_SELECT_DAY, STEP_ORDER_VIEW, STEP_MY_ORDERS}
     _is_employee_action = (
-        raw in _employee_cmds or
-        step in _employee_steps or
-        re.match(r'^день \d+$', raw) or
-        raw.startswith("отменить заказ ")
+        raw in _employee_root_cmds or
+        (step in _employee_steps and (
+            raw in _employee_ctx_cmds or
+            bool(re.match(r'^день \d+$', raw)) or
+            raw.startswith("отменить заказ ")
+        ))
     )
     if role == "employee" or (role == "admin" and _is_employee_action):
         return await _handle_employee(dialog_id, from_user_id, raw, state, step, role)
