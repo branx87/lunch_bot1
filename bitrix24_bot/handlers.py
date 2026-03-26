@@ -59,7 +59,7 @@ def _kb(*rows):
 
 
 def _btn(text: str, value: str, bg: str = "#29619b") -> dict:
-    return {"TEXT": text, "ACTION": "COMMAND", "ACTION_VALUE": value,
+    return {"TEXT": text, "ACTION": "SEND", "ACTION_VALUE": value,
             "BG_COLOR": bg, "TEXT_COLOR": "#fff"}
 
 
@@ -182,9 +182,8 @@ async def handle_message(
     if not role:
         return [_msg("⛔ Вы не зарегистрированы в системе.")]
 
-    # ACTION=COMMAND buttons don't send visible text — value comes via 'command' field
-    # ACTION=SEND (legacy) or typed text comes via 'text' field
-    raw = (command or text).strip().lower()
+    # Use ACTION_VALUE (text) since buttons send text via ACTION=SEND
+    raw = text.strip().lower()
 
     # Global resets
     if raw in ("главное меню", "/start", "start", "помощь", "help", "/help"):
