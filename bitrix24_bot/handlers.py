@@ -423,6 +423,8 @@ def _fetch_order_view(user_db_id: int, day_offset: int, session) -> tuple:
     menu_text = format_menu_text(menu, day_name, target_date)
 
     order = get_order_for_date(user_db_id, target_date, session)
+    if order:
+        session.expunge(order)  # detach before session closes, keeps loaded attrs
 
     now = datetime.now(TIME_CONFIG.TIMEZONE)
     can_modify = (
@@ -434,7 +436,10 @@ def _fetch_order_view(user_db_id: int, day_offset: int, session) -> tuple:
 
 def _fetch_active_orders(user_db_id: int, session) -> list:
     now = datetime.now(TIME_CONFIG.TIMEZONE).date()
-    return get_active_orders(user_db_id, now, session)
+    orders = get_active_orders(user_db_id, now, session)
+    for o in orders:
+        session.expunge(o)  # detach before session closes
+    return orders
 
 
 def _do_create_order_db(user_db_id: int, day_offset: int, session) -> str:
