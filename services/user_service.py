@@ -19,6 +19,8 @@ def _get_messenger_column(messenger_type):
         return User.max_id
     if messenger_type == MESSENGER_VK:
         return User.vk_id
+    if messenger_type == MESSENGER_BITRIX24:
+        return User.bitrix_id
     return User.telegram_id
 
 
