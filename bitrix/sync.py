@@ -1310,7 +1310,8 @@ class BitrixSync:
                                 'quantity': order.quantity,
                                 'target_date': str(order.target_date),
                                 'order_time': order.order_time or '09:00:00',
-                                'location': user.location or 'Офис'
+                                'location': user.location or 'Офис',
+                                'local_order_id': order_id,
                             }
 
                             # Отправляем в Bitrix
@@ -1320,13 +1321,22 @@ class BitrixSync:
                             )
 
                             if bitrix_id:
-                                # Обновляем заказ в той же сессии
+                                from sqlalchemy.exc import IntegrityError
                                 order.is_sent_to_bitrix = True
                                 order.bitrix_order_id = str(bitrix_id)
                                 order.updated_at = datetime.now()
-                                order_session.commit()
-                                success_count += 1
-                                logger.info(f"✅ УСПЕШНО: Заказ {order_id} -> Bitrix ID: {bitrix_id}")
+                                try:
+                                    order_session.commit()
+                                    success_count += 1
+                                    logger.info(f"✅ УСПЕШНО: Заказ {order_id} -> Bitrix ID: {bitrix_id}")
+                                except IntegrityError:
+                                    order_session.rollback()
+                                    logger.error(
+                                        f"❌ Заказ {order_id}: Bitrix ID {bitrix_id} уже существует в БД. "
+                                        f"fast_bitrix24 вернул дублирующий ID — добавьте local_order_id в поля запроса."
+                                    )
+                                    error_count += 1
+                                    failed_order_ids.append(order_id)
                             else:
                                 logger.error(f"❌ Не удалось создать заказ {order_id} в Bitrix")
                                 error_count += 1
@@ -1406,7 +1416,10 @@ class BitrixSync:
                 'fields': {
                     'ufCrm45ObedyCount': quantity_map.get(order_data['quantity'], '821'),
                     'ufCrm45ObedyFrom': location_map.get(order_data.get('location', 'Офис'), '826'),
-                    'createdTime': created_time
+                    'createdTime': created_time,
+                    # Unique per order — prevents fast_bitrix24 from deduplicating
+                    # identical API calls when two orders share the same fields
+                    'sourceDescription': f"order_id:{order_data.get('local_order_id', '')}",
                 }
             }
 
