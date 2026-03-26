@@ -212,7 +212,19 @@ def _parse_rtype(raw: str, role: str) -> str | None:
 async def _do_orders_today(role: str) -> list[dict]:
     today = datetime.now(CONFIG.timezone).date()
     text, _ = await _run_sync(generate_provider_report_text, today, today)
-    return [_msg(text, keyboard=_main_kb(role))]
+    messages = [_msg(text)]
+
+    if role == "admin":
+        file_path, file_name, caption = await _run_sync(
+            generate_admin_report_file, today, today, is_daily=True
+        )
+        if file_path:
+            messages.append(_msg(caption, file_path=file_path, file_name=file_name))
+        else:
+            messages.append(_msg(caption))
+
+    messages[-1]["keyboard"] = _main_kb(role)
+    return messages
 
 
 async def _do_report(rtype: str, period: str, role: str) -> list[dict]:
