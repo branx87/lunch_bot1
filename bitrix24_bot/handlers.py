@@ -65,6 +65,8 @@ def _btn(text: str, value: str, bg: str = "#29619b") -> dict:
 
 KB_MAIN_ADMIN = _kb(
     [_btn("📊 Отчёты", "отчёты"), _btn("📋 Заказы сегодня", "заказы сегодня")],
+    [_btn("🛒 Заказать", "заказать", "#2a7a2a"), _btn("📋 Мои заказы", "мои заказы")],
+    [_btn("🍽 Меню", "меню")],
 )
 
 KB_MAIN_PROVIDER = _kb(
@@ -192,9 +194,18 @@ async def handle_message(
     state = _state.get(dialog_id, {S_STEP: STEP_IDLE})
     step  = state.get(S_STEP, STEP_IDLE)
 
-    # Employee routing — separate flow
-    if role == "employee":
-        return await _handle_employee(dialog_id, from_user_id, raw, state, step)
+    # Employee routing — separate flow (also for admins who want to order)
+    _employee_cmds = {"заказать", "мои заказы", "меню", "заказать порцию",
+                      "добавить порцию", "убрать порцию", "отменить заказ"}
+    _employee_steps = {STEP_SELECT_DAY, STEP_ORDER_VIEW, STEP_MY_ORDERS}
+    _is_employee_action = (
+        raw in _employee_cmds or
+        step in _employee_steps or
+        re.match(r'^день \d+$', raw) or
+        raw.startswith("отменить заказ ")
+    )
+    if role == "employee" or (role == "admin" and _is_employee_action):
+        return await _handle_employee(dialog_id, from_user_id, raw, state, step, role)
 
     # Step routing (admin / provider / accountant)
     if raw in ("отчёты", "отчеты", "/reports"):
@@ -357,15 +368,14 @@ async def _do_report(rtype: str, period: str, role: str) -> list[dict]:
 
 def _help_text(role: str) -> str:
     lines = ["[B]Бот ЕРС Обеды[/B]\n"]
-    if role == "employee":
+    if role in ("admin", "provider"):
+        lines.append("📋 [B]заказы сегодня[/B] — список заказов на сегодня по локациям")
+    if role in ("admin", "provider", "accountant"):
+        lines.append("📊 [B]отчёты[/B] — формирование отчётов")
+    if role in ("admin", "employee"):
         lines.append("🛒 [B]заказать[/B] — оформить заказ на обед")
         lines.append("📋 [B]мои заказы[/B] — посмотреть и отменить заказы")
         lines.append("🍽 [B]меню[/B] — меню на ближайшие дни")
-    else:
-        if role in ("admin", "provider"):
-            lines.append("📋 [B]заказы сегодня[/B] — список заказов на сегодня по локациям")
-        if role in ("admin", "provider", "accountant"):
-            lines.append("📊 [B]отчёты[/B] — формирование отчётов")
     return "\n".join(lines)
 
 
@@ -497,12 +507,13 @@ async def _handle_employee(
     raw: str,
     state: dict,
     step: str,
+    role: str = "employee",
 ) -> list[dict]:
     try:
-        return await _handle_employee_inner(dialog_id, from_user_id, raw, state, step)
+        return await _handle_employee_inner(dialog_id, from_user_id, raw, state, step, role)
     except Exception as e:
         logger.error(f"[B24Bot] _handle_employee error raw='{raw}' step='{step}': {e}", exc_info=True)
-        return [_msg(f"❌ Ошибка: {e}", keyboard=KB_MAIN_EMPLOYEE)]
+        return [_msg(f"❌ Ошибка: {e}", keyboard=_main_kb(role))]
 
 
 async def _handle_employee_inner(
@@ -511,11 +522,14 @@ async def _handle_employee_inner(
     raw: str,
     state: dict,
     step: str,
+    role: str = "employee",
 ) -> list[dict]:
     user_db_id = await _run_sync(_fetch_user_db_id, from_user_id)
     if not user_db_id:
         return [_msg("❌ Вы не найдены в базе данных. Обратитесь к администратору.",
-                     keyboard=KB_MAIN_EMPLOYEE)]
+                     keyboard=_main_kb(role))]
+
+    main_kb = _main_kb(role)
 
     # ---- Заказать ----
     if raw == "заказать":
@@ -582,7 +596,7 @@ async def _handle_employee_inner(
         _state[dialog_id] = {S_STEP: STEP_MY_ORDERS}
         orders = await _run_sync(_fetch_active_orders, user_db_id)
         if not orders:
-            return [_msg("У вас нет активных заказов.", keyboard=KB_MAIN_EMPLOYEE)]
+            return [_msg("У вас нет активных заказов.", keyboard=main_kb)]
         lines = ["[B]Ваши активные заказы:[/B]"]
         for o in orders:
             lines.append(f"• {o.target_date.strftime('%d.%m')} — {o.quantity} порц.")
@@ -594,13 +608,13 @@ async def _handle_employee_inner(
             from datetime import date as date_type
             target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         except ValueError:
-            return [_msg("❌ Неверный формат даты.", keyboard=KB_MAIN_EMPLOYEE)]
+            return [_msg("❌ Неверный формат даты.", keyboard=main_kb)]
 
         result = await _run_sync(_do_cancel_order_db, user_db_id, target_date)
         orders = await _run_sync(_fetch_active_orders, user_db_id)
         if not orders:
             _state.pop(dialog_id, None)
-            return [_msg(f"{result}\n\nАктивных заказов больше нет.", keyboard=KB_MAIN_EMPLOYEE)]
+            return [_msg(f"{result}\n\nАктивных заказов больше нет.", keyboard=main_kb)]
         lines = [result, "", "[B]Ваши активные заказы:[/B]"]
         for o in orders:
             lines.append(f"• {o.target_date.strftime('%d.%m')} — {o.quantity} порц.")
@@ -621,7 +635,7 @@ async def _handle_employee_inner(
                     f"\n[B]{day['day_name']} {date_str}[/B]\n"
                     f"🍲 {m['first']}\n🍛 {m['main']}\n🥗 {m['salad']}"
                 )
-        return [_msg("\n".join(lines), keyboard=KB_MAIN_EMPLOYEE)]
+        return [_msg("\n".join(lines), keyboard=main_kb)]
 
     # ---- Unknown ----
-    return [_msg(_help_text("employee"), keyboard=KB_MAIN_EMPLOYEE)]
+    return [_msg(_help_text("employee"), keyboard=main_kb)]
