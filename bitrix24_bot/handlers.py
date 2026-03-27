@@ -4,6 +4,10 @@ Uses the same services/report_service as Telegram and VK bots.
 
 Returns list of message dicts for PHP to send via \Bitrix\Im\Bot::addMessage().
 Each message: {"text": "...", "keyboard": [...], "file_path": "...", "file_name": "..."}
+
+Note: Bitrix24 web client renders only ACTION=SEND buttons. ACTION=COMMAND
+works only in mobile apps. With ACTION=SEND the button value appears as
+a chat message — this is an unavoidable Bitrix24 web-client limitation.
 """
 import asyncio
 import base64
@@ -36,11 +40,11 @@ logger = logging.getLogger(__name__)
 _state: dict[str, dict] = {}
 
 # State keys
-S_STEP        = "step"         # current step name
-S_PERIOD      = "period"       # "day" | "month_current" | "month_prev"
-S_RTYPE       = "rtype"        # "admin" | "accounting" | "provider"
-S_DAY         = "day"          # day_offset integer (0=today, 1=tomorrow)
-S_ORDER_DATES = "order_dates"  # list of ISO date strings for cancel buttons
+S_STEP        = "step"
+S_PERIOD      = "period"
+S_RTYPE       = "rtype"
+S_DAY         = "day"
+S_ORDER_DATES = "order_dates"
 
 STEP_IDLE        = "idle"
 STEP_PERIOD      = "select_period"
@@ -52,12 +56,11 @@ STEP_MY_ORDERS   = "my_orders"
 
 # ------------------------------------------------------------------
 # Keyboards
-# Button ACTION=COMMAND — triggers OnImbotCommandAdd without visible
-# text in chat. ACTION_VALUE must match a registered bot command.
+# ACTION=SEND: button value appears as chat text (Bitrix24 web limitation).
+# Values are short Russian phrases so the chat text looks natural.
 # ------------------------------------------------------------------
 
 def _kb(*rows):
-    """Build keyboard: list of button rows, each button is a dict."""
     return list(rows)
 
 
@@ -67,47 +70,47 @@ def _btn(text: str, value: str, bg: str = "#29619b") -> dict:
 
 
 KB_MAIN_ADMIN = _kb(
-    [_btn("📊 Отчёты", "reports"), _btn("📋 Заказы сегодня", "orders_today")],
-    [_btn("🛒 Заказать", "order", "#2a7a2a"), _btn("📋 Мои заказы", "my_orders")],
-    [_btn("🍽 Меню", "menu")],
+    [_btn("📊 Отчёты", "отчёты"), _btn("📋 Заказы сегодня", "заказы сегодня")],
+    [_btn("🛒 Заказать", "заказать", "#2a7a2a"), _btn("📋 Мои заказы", "мои заказы")],
+    [_btn("🍽 Меню", "меню")],
 )
 
 KB_MAIN_PROVIDER = _kb(
-    [_btn("📋 Заказы сегодня", "orders_today")],
+    [_btn("📋 Заказы сегодня", "заказы сегодня")],
 )
 
 KB_MAIN_ACCOUNTANT = _kb(
-    [_btn("📊 Отчёты", "reports")],
+    [_btn("📊 Отчёты", "отчёты")],
 )
 
 KB_PERIOD = _kb(
-    [_btn("📅 За сегодня", "period_day",   "#3b7abf"),
-     _btn("📆 За месяц",   "period_month", "#3b7abf")],
-    [_btn("🏠 Главное меню", "main_menu", "#555")],
+    [_btn("📅 За сегодня", "за сегодня", "#3b7abf"),
+     _btn("📆 За месяц",   "за месяц",   "#3b7abf")],
+    [_btn("🏠 Главное меню", "главное меню", "#555")],
 )
 
 KB_RTYPE_ADMIN = _kb(
-    [_btn("👨‍💼 Админский",    "rtype_admin",       "#29619b"),
-     _btn("💰 Бухгалтерский", "rtype_accounting",  "#5c7a3e"),
-     _btn("📦 Поставщика",    "rtype_provider",    "#7a5c3e")],
-    [_btn("🏠 Главное меню", "main_menu", "#555")],
+    [_btn("👨‍💼 Админский",    "тип админский",    "#29619b"),
+     _btn("💰 Бухгалтерский", "тип бухгалтерский", "#5c7a3e"),
+     _btn("📦 Поставщика",    "тип поставщика",    "#7a5c3e")],
+    [_btn("🏠 Главное меню", "главное меню", "#555")],
 )
 
 KB_RTYPE_LIMITED = _kb(
-    [_btn("📊 Мой отчёт", "rtype_auto", "#29619b")],
-    [_btn("🏠 Главное меню", "main_menu", "#555")],
+    [_btn("📊 Мой отчёт", "тип авто", "#29619b")],
+    [_btn("🏠 Главное меню", "главное меню", "#555")],
 )
 
 KB_MONTH_RANGE = _kb(
-    [_btn("📅 Текущий месяц", "month_current", "#3b7abf"),
-     _btn("📆 Прошлый месяц", "month_prev",    "#3b7abf")],
-    [_btn("🏠 Главное меню", "main_menu", "#555")],
+    [_btn("📅 Текущий месяц", "текущий месяц", "#3b7abf"),
+     _btn("📆 Прошлый месяц", "прошлый месяц", "#3b7abf")],
+    [_btn("🏠 Главное меню", "главное меню", "#555")],
 )
 
 KB_MAIN_EMPLOYEE = _kb(
-    [_btn("🛒 Заказать", "order", "#2a7a2a"),
-     _btn("📋 Мои заказы", "my_orders")],
-    [_btn("🍽 Меню", "menu")],
+    [_btn("🛒 Заказать", "заказать", "#2a7a2a"),
+     _btn("📋 Мои заказы", "мои заказы")],
+    [_btn("🍽 Меню", "меню")],
 )
 
 
@@ -124,9 +127,9 @@ def _build_select_day_kb() -> list:
         date_str = day["target_date"].strftime("%d.%m")
         day_short = DAYS_SHORT[day["target_date"].weekday()]
         label = f"{'Сегодня' if offset == 0 else 'Завтра' if offset == 1 else day_short} {date_str}"
-        buttons.append(_btn(f"📅 {label}", f"day_{offset}", "#3b7abf"))
+        buttons.append(_btn(f"📅 {label}", f"день {offset}", "#3b7abf"))
     rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
-    rows.append([_btn("🏠 Главное меню", "main_menu", "#555")])
+    rows.append([_btn("🏠 Главное меню", "главное меню", "#555")])
     return _kb(*rows)
 
 
@@ -145,15 +148,15 @@ def _order_view_kb(has_order: bool, can_modify: bool) -> list:
     rows = []
     if not has_order:
         if can_modify:
-            rows.append([_btn("✅ Заказать 1 порцию", "order_portion", "#2a7a2a")])
+            rows.append([_btn("✅ Заказать 1 порцию", "заказать порцию", "#2a7a2a")])
     else:
         if can_modify:
             rows.append([
-                _btn("➕ Добавить порцию", "add_portion",    "#2a7a2a"),
-                _btn("➖ Убрать порцию",   "remove_portion", "#7a5c3e"),
+                _btn("➕ Добавить порцию", "добавить порцию", "#2a7a2a"),
+                _btn("➖ Убрать порцию",   "убрать порцию",   "#7a5c3e"),
             ])
-            rows.append([_btn("❌ Отменить заказ", "cancel_order", "#7a2a2a")])
-    rows.append([_btn("🏠 Главное меню", "main_menu", "#555")])
+            rows.append([_btn("❌ Отменить заказ", "отменить заказ", "#7a2a2a")])
+    rows.append([_btn("🏠 Главное меню", "главное меню", "#555")])
     return _kb(*rows)
 
 
@@ -163,10 +166,10 @@ def _my_orders_kb(orders: list) -> list:
         date_str = order.target_date.strftime("%d.%m")
         rows.append([_btn(
             f"❌ Отменить {date_str} ({order.quantity} порц.)",
-            f"cancel_{i}",
+            f"отменить {i}",
             "#7a2a2a",
         )])
-    rows.append([_btn("🏠 Главное меню", "main_menu", "#555")])
+    rows.append([_btn("🏠 Главное меню", "главное меню", "#555")])
     return _kb(*rows)
 
 
@@ -185,49 +188,48 @@ async def handle_message(
     if not role:
         return [_msg("⛔ Вы не зарегистрированы в системе.")]
 
-    # ACTION=SEND sends button value as text; typed input also comes via text
     raw = (text or command).strip().lower()
 
     # Global resets
-    if raw in ("main_menu", "главное меню", "/start", "start", "помощь", "help", "/help"):
+    if raw in ("главное меню", "/start", "start", "помощь", "help", "/help"):
         _state.pop(dialog_id, None)
         return [_msg(_help_text(role), keyboard=_main_kb(role))]
 
     state = _state.get(dialog_id, {S_STEP: STEP_IDLE})
     step  = state.get(S_STEP, STEP_IDLE)
 
-    # Employee routing — separate flow (also for admins who want to order)
-    _employee_root_cmds = {"order", "my_orders", "menu"}
-    _employee_ctx_cmds  = {"order_portion", "add_portion", "remove_portion", "cancel_order"}
+    # Employee routing (also for admins ordering)
+    _employee_root_cmds = {"заказать", "мои заказы", "меню"}
+    _employee_ctx_cmds  = {"заказать порцию", "добавить порцию", "убрать порцию", "отменить заказ"}
     _employee_steps     = {STEP_SELECT_DAY, STEP_ORDER_VIEW, STEP_MY_ORDERS}
     _is_employee_action = (
         raw in _employee_root_cmds or
         (step in _employee_steps and (
             raw in _employee_ctx_cmds or
-            bool(re.match(r'^day_\d+$', raw)) or
-            bool(re.match(r'^cancel_\d+$', raw))
+            bool(re.match(r'^день \d+$', raw)) or
+            bool(re.match(r'^отменить \d+$', raw))
         ))
     )
     if role == "employee" or (role == "admin" and _is_employee_action):
         return await _handle_employee(dialog_id, from_user_id, raw, state, step, role)
 
-    # Step routing (admin / provider / accountant)
-    if raw in ("reports", "отчёты", "отчеты", "/reports"):
+    # Admin / provider / accountant routing
+    if raw in ("отчёты", "отчеты", "/reports"):
         _state[dialog_id] = {S_STEP: STEP_PERIOD}
         return [_msg("Выберите период:", keyboard=KB_PERIOD, replace=True)]
 
-    if raw == "orders_today":
+    if raw == "заказы сегодня":
         _state.pop(dialog_id, None)
         return await _do_orders_today(role)
 
     # ---- SELECT PERIOD ----
-    if step == STEP_PERIOD or raw in ("period_day", "period_month"):
-        if raw == "period_day":
+    if step == STEP_PERIOD or raw in ("за сегодня", "за месяц"):
+        if raw == "за сегодня":
             _state[dialog_id] = {S_STEP: STEP_RTYPE, S_PERIOD: "day"}
             kb = KB_RTYPE_ADMIN if role == "admin" else KB_RTYPE_LIMITED
             return [_msg("Выберите тип отчёта:", keyboard=kb, replace=True)]
 
-        if raw == "period_month":
+        if raw == "за месяц":
             _state[dialog_id] = {S_STEP: STEP_MONTH_RANGE, S_PERIOD: "month"}
             kb = KB_RTYPE_ADMIN if role == "admin" else KB_RTYPE_LIMITED
             return [_msg("Выберите тип отчёта:", keyboard=kb, replace=True)]
@@ -246,7 +248,6 @@ async def handle_message(
             _state.pop(dialog_id, None)
             return await _do_report(rtype, "day", role)
 
-        # month — ask range
         _state[dialog_id] = {S_STEP: STEP_MONTH_RANGE, S_PERIOD: "month", S_RTYPE: rtype}
         return [_msg("Выберите период:", keyboard=KB_MONTH_RANGE, replace=True)]
 
@@ -262,17 +263,16 @@ async def handle_message(
             _state[dialog_id] = {S_STEP: STEP_MONTH_RANGE, S_PERIOD: "month", S_RTYPE: rtype}
             return [_msg("Выберите период:", keyboard=KB_MONTH_RANGE, replace=True)]
 
-        if raw == "month_current":
+        if raw in ("текущий месяц", "текущий"):
             _state.pop(dialog_id, None)
             return await _do_report(rtype, "month_current", role)
 
-        if raw == "month_prev":
+        if raw in ("прошлый месяц", "прошлый"):
             _state.pop(dialog_id, None)
             return await _do_report(rtype, "month_prev", role)
 
         return [_msg("Используйте кнопки ниже:", keyboard=KB_MONTH_RANGE, replace=True)]
 
-    # ---- IDLE: unknown text ----
     return [_msg(_help_text(role), keyboard=_main_kb(role))]
 
 
@@ -281,14 +281,13 @@ async def handle_message(
 # ------------------------------------------------------------------
 
 def _parse_rtype(raw: str, role: str) -> str | None:
-    """Map button command → internal report type."""
-    if raw == "rtype_auto":
+    if raw == "тип авто":
         return role
-    if raw == "rtype_admin":
+    if raw == "тип админский":
         return "admin"
-    if raw == "rtype_accounting":
+    if raw == "тип бухгалтерский":
         return "accounting"
-    if raw == "rtype_provider":
+    if raw == "тип поставщика":
         return "provider"
     return None
 
@@ -312,7 +311,6 @@ async def _do_orders_today(role: str) -> list[dict]:
 
 
 async def _do_report(rtype: str, period: str, role: str) -> list[dict]:
-    """Generate report for given type and period."""
     now   = datetime.now(CONFIG.timezone)
     today = now.date()
 
@@ -321,7 +319,7 @@ async def _do_report(rtype: str, period: str, role: str) -> list[dict]:
     elif period == "month_current":
         start_date = today.replace(day=1)
         end_date   = today
-    else:  # month_prev
+    else:
         first_this = today.replace(day=1)
         last_prev  = first_this - timedelta(days=1)
         start_date = last_prev.replace(day=1)
@@ -378,7 +376,6 @@ def _help_text(role: str) -> str:
 
 
 def _md_to_b24(text: str) -> str:
-    """Convert Telegram Markdown (*bold*) to Bitrix24 BBCode ([B]bold[/B])."""
     return re.sub(r'\*([^*]+)\*', r'[B]\1[/B]', text)
 
 
@@ -426,7 +423,6 @@ def _fetch_user_db_id(bitrix_user_id: int, session) -> int | None:
 
 
 def _fetch_order_view(user_db_id: int, day_offset: int, session) -> tuple:
-    """Returns (menu_text, order_or_None, target_date, can_modify)."""
     menu, day_name, target_date = get_menu_for_day(day_offset, CONFIG)
     menu_text = format_menu_text(menu, day_name, target_date)
 
@@ -529,12 +525,12 @@ async def _handle_employee_inner(
                      keyboard=main_kb)]
 
     # ---- Заказать ----
-    if raw == "order":
+    if raw == "заказать":
         _state[dialog_id] = {S_STEP: STEP_SELECT_DAY}
         return [_msg("Выберите день:", keyboard=_build_select_day_kb(), replace=True)]
 
-    # Parse "day_N" button (day selection)
-    _day_match = re.match(r'^day_(\d+)$', raw)
+    # Parse "день N" button
+    _day_match = re.match(r'^день (\d+)$', raw)
     if _day_match or step in (STEP_SELECT_DAY, STEP_ORDER_VIEW):
         if _day_match:
             day_offset = int(_day_match.group(1))
@@ -543,7 +539,7 @@ async def _handle_employee_inner(
             day_offset = state.get(S_DAY, 0)
 
         if step == STEP_ORDER_VIEW:
-            if raw == "order_portion":
+            if raw == "заказать порцию":
                 result = await _run_sync(_do_create_order_db, user_db_id, day_offset)
                 menu_text, order, target_date, can_modify = await _run_sync(
                     _fetch_order_view, user_db_id, day_offset)
@@ -552,7 +548,7 @@ async def _handle_employee_inner(
                     text += f"\n[B]Заказано: {order.quantity} порц.[/B]"
                 return [_msg(text, keyboard=_order_view_kb(order is not None, can_modify), replace=True)]
 
-            if raw == "add_portion":
+            if raw == "добавить порцию":
                 result = await _run_sync(_do_modify_qty_db, user_db_id, day_offset, +1)
                 menu_text, order, target_date, can_modify = await _run_sync(
                     _fetch_order_view, user_db_id, day_offset)
@@ -561,7 +557,7 @@ async def _handle_employee_inner(
                     text += f"\n[B]Заказано: {order.quantity} порц.[/B]"
                 return [_msg(text, keyboard=_order_view_kb(order is not None and not order.is_cancelled, can_modify), replace=True)]
 
-            if raw == "remove_portion":
+            if raw == "убрать порцию":
                 result = await _run_sync(_do_modify_qty_db, user_db_id, day_offset, -1)
                 menu_text, order, target_date, can_modify = await _run_sync(
                     _fetch_order_view, user_db_id, day_offset)
@@ -571,7 +567,7 @@ async def _handle_employee_inner(
                     text += f"\n[B]Заказано: {order.quantity} порц.[/B]"
                 return [_msg(text, keyboard=_order_view_kb(has_order, can_modify), replace=True)]
 
-            if raw == "cancel_order":
+            if raw == "отменить заказ":
                 menu, day_name, target_date = get_menu_for_day(day_offset, CONFIG)
                 result = await _run_sync(_do_cancel_order_db, user_db_id, target_date)
                 menu_text, order, target_date, can_modify = await _run_sync(
@@ -579,7 +575,7 @@ async def _handle_employee_inner(
                 text = f"{menu_text}\n\n{result}"
                 return [_msg(text, keyboard=_order_view_kb(False, can_modify), replace=True)]
 
-        # Show day view (new day selected or refresh)
+        # Show day view
         menu_text, order, target_date, can_modify = await _run_sync(
             _fetch_order_view, user_db_id, day_offset)
         status = f"\n[B]Заказано: {order.quantity} порц.[/B]" if order else "\n[B]Заказ не оформлен[/B]"
@@ -588,7 +584,7 @@ async def _handle_employee_inner(
         return [_msg(f"{menu_text}{status}", keyboard=_order_view_kb(order is not None, can_modify), replace=True)]
 
     # ---- Мои заказы ----
-    if raw == "my_orders":
+    if raw == "мои заказы":
         orders = await _run_sync(_fetch_active_orders, user_db_id)
         if not orders:
             _state.pop(dialog_id, None)
@@ -600,8 +596,8 @@ async def _handle_employee_inner(
             lines.append(f"• {o.target_date.strftime('%d.%m')} — {o.quantity} порц.")
         return [_msg("\n".join(lines), keyboard=_my_orders_kb(orders))]
 
-    # Cancel by index (from my_orders screen)
-    _cancel_match = re.match(r'^cancel_(\d+)$', raw)
+    # Cancel by index
+    _cancel_match = re.match(r'^отменить (\d+)$', raw)
     if step == STEP_MY_ORDERS and _cancel_match:
         idx = int(_cancel_match.group(1))
         order_dates = state.get(S_ORDER_DATES, [])
@@ -622,7 +618,7 @@ async def _handle_employee_inner(
         return [_msg("\n".join(lines), keyboard=_my_orders_kb(orders), replace=True)]
 
     # ---- Меню ----
-    if raw == "menu":
+    if raw == "меню":
         from services.menu_service import get_week_menus
         week = get_week_menus(CONFIG)
         lines = ["[B]Меню на ближайшие дни:[/B]"]
@@ -638,5 +634,4 @@ async def _handle_employee_inner(
                 )
         return [_msg("\n".join(lines), keyboard=main_kb)]
 
-    # ---- Unknown ----
     return [_msg(_help_text(role), keyboard=main_kb)]
