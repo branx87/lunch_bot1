@@ -516,16 +516,17 @@ class BitrixSync:
         params = {
             'entityTypeId': 1222,
             'select': [
-                'id', 
+                'id',
                 'ufCrm45_1751956286',  # 🔥 Новое поле (bitrix_id)
                 'ufCrm45_1743599470',  # 🔥 Старое поле (crm_employee_id)
-                'ufCrm45ObedyCount', 
-                'ufCrm45ObedyFrom', 
-                'ufCrm45_1744188327370', 
-                'createdTime', 
-                'createdBy', 
-                'updatedBy', 
-                'assignedById'
+                'ufCrm45ObedyCount',
+                'ufCrm45ObedyFrom',
+                'ufCrm45_1744188327370',
+                'createdTime',
+                'createdBy',
+                'updatedBy',
+                'assignedById',
+                'sourceDescription',  # local_order_id для защиты от дублей
             ],
             'filter': {
                 '>=createdTime': f'{start_date}T00:00:00+03:00',
@@ -897,31 +898,52 @@ class BitrixSync:
         try:
             bitrix_id = str(order.get('bitrix_id', ''))
             target_date = str(order.get('date', datetime.now().strftime('%Y-%m-%d')))
-            
-            with db.get_session() as session:
-                # 🔥 ЗАКОММЕНТИРУЙ ЭТУ ПРОВЕРКУ - ОНА МЕШАЕТ!
-                # existing_order = session.query(Order).filter(
-                #     Order.user_id == user_id,
-                #     Order.target_date == target_date
-                # ).first()
-                # 
-                # if existing_order:
-                #     logger.warning(f"⚠️ Заказ для пользователя {user_id} на дату {target_date} уже существует! Пропускаем дубликат.")
-                #     return False
 
-                # 🔥 ОСТАВЬ ТОЛЬКО проверку по bitrix_order_id
+            if not bitrix_id:
+                logger.error("Не указан bitrix_id для заказа")
+                return False
+
+            with db.get_session() as session:
+                # Проверка по bitrix_order_id
                 if bitrix_id:
                     existing_order = session.query(Order).filter(
                         Order.bitrix_order_id == bitrix_id
                     ).first()
-                    
+
                     if existing_order:
                         logger.warning(f"⚠️ Заказ с Bitrix ID {bitrix_id} уже существует! Пропускаем дубликат.")
                         return False
 
-                if not bitrix_id:
-                    logger.error("Не указан bitrix_id для заказа")
-                    return False
+                # Защита от дублей: если заказ создан ботом (sourceDescription = "order_id:XXXX"),
+                # линкуем с существующим локальным заказом вместо создания нового.
+                source_desc = order.get('sourceDescription', '') or ''
+                if source_desc.startswith('order_id:'):
+                    try:
+                        local_order_id = int(source_desc.split(':', 1)[1])
+                        local_order = session.query(Order).filter(
+                            Order.id == local_order_id,
+                            Order.bitrix_order_id == None,
+                        ).first()
+                        if local_order:
+                            local_order.bitrix_order_id = bitrix_id
+                            local_order.is_sent_to_bitrix = True
+                            local_order.updated_at = datetime.now()
+                            session.commit()
+                            logger.info(
+                                f"✅ Привязан локальный заказ {local_order_id} к Bitrix ID {bitrix_id} "
+                                f"(через sourceDescription при синхронизации)"
+                            )
+                            return True
+                        # local_order_id существует но уже имеет bitrix_order_id — пропускаем создание дубля
+                        linked_order = session.query(Order).filter(Order.id == local_order_id).first()
+                        if linked_order:
+                            logger.info(
+                                f"ℹ️ Заказ {local_order_id} уже привязан к Bitrix ID {linked_order.bitrix_order_id}, "
+                                f"пропускаем создание дубля для Bitrix ID {bitrix_id}"
+                            )
+                            return True
+                    except (ValueError, IndexError):
+                        pass  # Некорректный формат sourceDescription — продолжаем стандартное создание
 
                 # Создаем новый заказ
                 new_order = Order(
@@ -1314,18 +1336,19 @@ class BitrixSync:
                                 'local_order_id': order_id,
                             }
 
-                            # Защита от дублей: проверяем, не был ли заказ уже создан в Bitrix
-                            existing_bitrix_id = await self._find_bitrix_order_by_local_id(
-                                order_id, str(order.target_date)
+                            # Защита от дублей: проверяем, есть ли уже заказ в Bitrix для этого пользователя на сегодня
+                            existing_bitrix_id = await self._find_existing_bitrix_order(
+                                order_data, user.crm_employee_id
                             )
                             if existing_bitrix_id:
                                 logger.warning(
-                                    f"⚠️ Заказ {order_id} уже существует в Bitrix (ID: {existing_bitrix_id}), "
-                                    f"пропускаем создание и привязываем локально."
+                                    f"⚠️ Заказ {order_id}: в Bitrix уже есть заказ для этого пользователя "
+                                    f"на {order_data['target_date']} (Bitrix ID: {existing_bitrix_id}). "
+                                    f"Привязываем без создания нового."
                                 )
                                 bitrix_id = existing_bitrix_id
                             else:
-                                # Отправляем в Bitrix
+                                # Создаём новый заказ в Bitrix
                                 bitrix_id = await self._create_bitrix_order(
                                     order_data,
                                     user.crm_employee_id
@@ -1477,18 +1500,26 @@ class BitrixSync:
             logger.error(f"❌ Ошибка создания заказа в Bitrix: {str(e)}", exc_info=True)
             return None
 
-    async def _find_bitrix_order_by_local_id(self, local_order_id: int, target_date: str) -> Optional[str]:
-        """Поиск уже существующего заказа в Bitrix по local_order_id в поле sourceDescription.
-        Используется для защиты от дублей перед созданием нового заказа."""
+    async def _find_existing_bitrix_order(self, order_data: dict, crm_employee_id: str = None) -> Optional[str]:
+        """Ищет заказ в Bitrix для данного пользователя на данную дату.
+        Возвращает Bitrix ID если заказ уже существует, иначе None."""
         try:
+            target_date = order_data['target_date']
+            user_bitrix_id = order_data['bitrix_id']
+
+            filter_params = {
+                '>=createdTime': f'{target_date}T00:00:00+03:00',
+                '<=createdTime': f'{target_date}T23:59:59+03:00',
+            }
+            if crm_employee_id:
+                filter_params['ufCrm45_1743599470'] = crm_employee_id
+            else:
+                filter_params['ufCrm45_1751956286'] = user_bitrix_id
+
             params = {
                 'entityTypeId': 1222,
-                'select': ['id', 'sourceDescription'],
-                'filter': {
-                    '>=createdTime': f'{target_date}T00:00:00+03:00',
-                    '<=createdTime': f'{target_date}T23:59:59+03:00',
-                    'sourceDescription': f'order_id:{local_order_id}',
-                }
+                'select': ['id'],
+                'filter': filter_params,
             }
             result = await asyncio.wait_for(
                 self.bx.get_all('crm.item.list', params),
@@ -1496,11 +1527,11 @@ class BitrixSync:
             )
             if result:
                 bitrix_id = str(result[0]['id'])
-                logger.info(f"🔍 Найден существующий заказ в Bitrix для заказа {local_order_id}: Bitrix ID {bitrix_id}")
+                logger.info(f"🔍 Найден существующий заказ в Bitrix для пользователя {user_bitrix_id} на {target_date}: Bitrix ID {bitrix_id}")
                 return bitrix_id
             return None
         except Exception as e:
-            logger.warning(f"⚠️ Не удалось проверить существование заказа {local_order_id} в Bitrix: {e}")
+            logger.warning(f"⚠️ Не удалось проверить существование заказа в Bitrix: {e}")
             return None
 
     async def _get_user_name_by_bitrix_id(self, bitrix_id: str) -> Optional[str]:
