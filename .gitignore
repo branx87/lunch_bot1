@@ -60,6 +60,7 @@ config.ini
 ### System files ###
 .DS_Store
 Thumbs.db
+.claude
 
 ### Backup and temp files ###
 backup/
@@ -73,6 +74,7 @@ temp/
 ### Data directory (database, logs, backups, configs) ###
 data/*
 PostgreSQL/*
+postgres_data/*
 
 ### Custom directories ###
 Мусор и прочее/

@@ -1314,11 +1314,22 @@ class BitrixSync:
                                 'local_order_id': order_id,
                             }
 
-                            # Отправляем в Bitrix
-                            bitrix_id = await self._create_bitrix_order(
-                                order_data,
-                                user.crm_employee_id
+                            # Защита от дублей: проверяем, не был ли заказ уже создан в Bitrix
+                            existing_bitrix_id = await self._find_bitrix_order_by_local_id(
+                                order_id, str(order.target_date)
                             )
+                            if existing_bitrix_id:
+                                logger.warning(
+                                    f"⚠️ Заказ {order_id} уже существует в Bitrix (ID: {existing_bitrix_id}), "
+                                    f"пропускаем создание и привязываем локально."
+                                )
+                                bitrix_id = existing_bitrix_id
+                            else:
+                                # Отправляем в Bitrix
+                                bitrix_id = await self._create_bitrix_order(
+                                    order_data,
+                                    user.crm_employee_id
+                                )
 
                             if bitrix_id:
                                 from sqlalchemy.exc import IntegrityError
@@ -1331,10 +1342,30 @@ class BitrixSync:
                                     logger.info(f"✅ УСПЕШНО: Заказ {order_id} -> Bitrix ID: {bitrix_id}")
                                 except IntegrityError:
                                     order_session.rollback()
+                                    # Заказ УЖЕ создан в Bitrix, но этот Bitrix ID занят другим локальным заказом.
+                                    # Помечаем как отправленный чтобы избежать создания дубликатов в Bitrix при повторных попытках.
+                                    conflict_order = order_session.query(Order).filter(
+                                        Order.bitrix_order_id == str(bitrix_id),
+                                        Order.id != order_id
+                                    ).first()
+                                    conflict_id = conflict_order.id if conflict_order else "неизвестен"
                                     logger.error(
-                                        f"❌ Заказ {order_id}: Bitrix ID {bitrix_id} уже существует в БД. "
-                                        f"fast_bitrix24 вернул дублирующий ID — добавьте local_order_id в поля запроса."
+                                        f"❌ Заказ {order_id}: Bitrix ID {bitrix_id} уже занят заказом {conflict_id} в локальной БД. "
+                                        f"Заказ создан в Bitrix, но не привязан локально — требуется ручное разрешение конфликта."
                                     )
+                                    # Помечаем как отправленный без bitrix_order_id чтобы остановить retry-цикл
+                                    try:
+                                        order.is_sent_to_bitrix = True
+                                        order.bitrix_order_id = None
+                                        order.updated_at = datetime.now()
+                                        order_session.commit()
+                                        logger.warning(
+                                            f"⚠️ Заказ {order_id} помечен как отправленный (без Bitrix ID) "
+                                            f"для предотвращения дубликатов. Bitrix ID {bitrix_id} требует ручной привязки."
+                                        )
+                                    except Exception as mark_err:
+                                        order_session.rollback()
+                                        logger.error(f"❌ Не удалось пометить заказ {order_id} как отправленный: {mark_err}")
                                     error_count += 1
                                     failed_order_ids.append(order_id)
                             else:
@@ -1445,7 +1476,33 @@ class BitrixSync:
         except Exception as e:
             logger.error(f"❌ Ошибка создания заказа в Bitrix: {str(e)}", exc_info=True)
             return None
-        
+
+    async def _find_bitrix_order_by_local_id(self, local_order_id: int, target_date: str) -> Optional[str]:
+        """Поиск уже существующего заказа в Bitrix по local_order_id в поле sourceDescription.
+        Используется для защиты от дублей перед созданием нового заказа."""
+        try:
+            params = {
+                'entityTypeId': 1222,
+                'select': ['id', 'sourceDescription'],
+                'filter': {
+                    '>=createdTime': f'{target_date}T00:00:00+03:00',
+                    '<=createdTime': f'{target_date}T23:59:59+03:00',
+                    'sourceDescription': f'order_id:{local_order_id}',
+                }
+            }
+            result = await asyncio.wait_for(
+                self.bx.get_all('crm.item.list', params),
+                timeout=15.0
+            )
+            if result:
+                bitrix_id = str(result[0]['id'])
+                logger.info(f"🔍 Найден существующий заказ в Bitrix для заказа {local_order_id}: Bitrix ID {bitrix_id}")
+                return bitrix_id
+            return None
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось проверить существование заказа {local_order_id} в Bitrix: {e}")
+            return None
+
     async def _get_user_name_by_bitrix_id(self, bitrix_id: str) -> Optional[str]:
         """Получает имя пользователя по его Bitrix ID"""
         try:
