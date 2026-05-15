@@ -48,6 +48,7 @@ STEP_MONTH_RANGE = "select_month_range"
 STEP_SELECT_DAY  = "select_day"
 STEP_ORDER_VIEW  = "order_view"
 STEP_MY_ORDERS   = "my_orders"
+STEP_STATS       = "stats_period"
 
 # ------------------------------------------------------------------
 # Keyboards
@@ -88,6 +89,12 @@ KB_MAIN_EMPLOYEE = _kb(
 KB_PERIOD = _kb(
     [_btn("📅 За сегодня", "за сегодня", "#3b7abf"),
      _btn("📆 За месяц",   "за месяц",   "#3b7abf")],
+    [_btn("🏠 Главное меню", "главное меню", "#555")],
+)
+
+KB_STATS_PERIOD = _kb(
+    [_btn("📅 Текущий месяц", "статистика текущий месяц", "#3b7abf"),
+     _btn("📆 Прошлый месяц", "статистика прошлый месяц", "#555")],
     [_btn("🏠 Главное меню", "главное меню", "#555")],
 )
 
@@ -209,9 +216,10 @@ async def handle_message(
     step  = state.get(S_STEP, STEP_IDLE)
 
     # Employee ordering commands
-    _employee_root = {"заказать", "мои заказы", "меню", "быстрый заказ", "меню на сегодня", "меню на неделю", "статистика за месяц"}
+    _employee_root = {"заказать", "мои заказы", "меню", "быстрый заказ", "меню на сегодня", "меню на неделю",
+                       "статистика за месяц", "статистика текущий месяц", "статистика прошлый месяц"}
     _employee_ctx  = {"заказать порцию", "добавить порцию", "убрать порцию", "отменить заказ"}
-    _employee_steps = {STEP_SELECT_DAY, STEP_ORDER_VIEW, STEP_MY_ORDERS}
+    _employee_steps = {STEP_SELECT_DAY, STEP_ORDER_VIEW, STEP_MY_ORDERS, STEP_STATS}
 
     _is_employee_action = (
         raw in _employee_root or
@@ -382,8 +390,8 @@ def _help_text(role: str) -> str:
         lines.append("📊 [B]отчёты[/B] — формирование отчётов")
     if role in ("admin", "employee"):
         lines.append("✅ [B]быстрый заказ[/B] — заказать 1 порцию на сегодня")
-        lines.append("🛒 [B]заказать[/B] — оформить заказ на любой день")
         lines.append("📋 [B]мои заказы[/B] — посмотреть и отменить заказы")
+        lines.append("📊 [B]статистика за месяц[/B] — сводка заказов за месяц")
         lines.append("🍽 [B]меню на сегодня[/B] — меню и управление заказом на сегодня")
         lines.append("📅 [B]меню на неделю[/B] — меню и заказы на ближайшие дни")
     return "\n".join(lines)
@@ -680,20 +688,33 @@ async def _handle_employee_inner(
             lines.append(f"• {o.target_date.strftime('%d.%m')} — {o.quantity} порц.")
         return [_msg("\n".join(lines), keyboard=_my_orders_kb(orders), replace=True)]
 
-    # ---- Статистика за месяц ----
+    # ---- Статистика за месяц: выбор периода ----
     if raw == "статистика за месяц":
+        _state[dialog_id] = {S_STEP: STEP_STATS}
+        return [_msg("Выберите период:", keyboard=KB_STATS_PERIOD, replace=True)]
+
+    # ---- Статистика: показать результат ----
+    if raw in ("статистика текущий месяц", "статистика прошлый месяц"):
         now_local = datetime.now(TIME_CONFIG.TIMEZONE)
-        start_date = now_local.replace(day=1).date()
-        end_date = now_local.date()
-        stats = await _run_sync(
-            lambda session: get_user_monthly_stats(user_db_id, start_date, end_date, session))
         month_names = {
             1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
             5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
             9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь",
         }
+        if raw == "статистика текущий месяц":
+            start_date = now_local.replace(day=1).date()
+            end_date   = now_local.date()
+            label = f"{month_names[now_local.month]} {now_local.year}"
+        else:
+            first_this = now_local.replace(day=1)
+            last_prev  = (first_this - timedelta(days=1))
+            start_date = last_prev.replace(day=1).date()
+            end_date   = last_prev.date()
+            label = f"{month_names[last_prev.month]} {last_prev.year}"
+        stats = await _run_sync(
+            lambda session: get_user_monthly_stats(user_db_id, start_date, end_date, session))
         text = (
-            f"[B]📊 Статистика за {month_names[now_local.month]} {now_local.year}:[/B]\n\n"
+            f"[B]📊 Статистика за {label}:[/B]\n\n"
             f"🍽 Всего обедов: {stats['total']}\n"
             f"✅ Выполненные: {stats['completed']}\n"
             f"⏳ Предстоящие: {stats['upcoming']}"
