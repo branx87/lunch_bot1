@@ -17,6 +17,7 @@ from models import User
 from services.order_service import (
     get_order_for_date, get_active_orders,
     create_order, cancel_order, modify_quantity,
+    get_user_monthly_stats,
 )
 from services.menu_service import get_menu_for_day, format_menu_text, get_week_menus
 from services.report_service import (
@@ -65,8 +66,8 @@ def _btn(text: str, value: str, bg: str = "#29619b") -> dict:
 
 KB_MAIN_ADMIN = _kb(
     [_btn("📊 Отчёты", "отчёты"), _btn("📋 Заказы сегодня", "заказы сегодня")],
-    [_btn("✅ Быстрый заказ", "быстрый заказ", "#2a7a2a"), _btn("🛒 Заказать", "заказать", "#29619b")],
-    [_btn("📋 Мои заказы", "мои заказы")],
+    [_btn("✅ Быстрый заказ", "быстрый заказ", "#2a7a2a")],
+    [_btn("📋 Мои заказы", "мои заказы"), _btn("📊 Статистика за месяц", "статистика за месяц", "#555")],
     [_btn("🍽 Меню на сегодня", "меню на сегодня", "#3b7abf"), _btn("📅 Меню на неделю", "меню на неделю", "#3b7abf")],
 )
 
@@ -79,8 +80,8 @@ KB_MAIN_ACCOUNTANT = _kb(
 )
 
 KB_MAIN_EMPLOYEE = _kb(
-    [_btn("✅ Быстрый заказ", "быстрый заказ", "#2a7a2a"), _btn("🛒 Заказать", "заказать", "#29619b")],
-    [_btn("📋 Мои заказы", "мои заказы")],
+    [_btn("✅ Быстрый заказ", "быстрый заказ", "#2a7a2a")],
+    [_btn("📋 Мои заказы", "мои заказы"), _btn("📊 Статистика за месяц", "статистика за месяц", "#555")],
     [_btn("🍽 Меню на сегодня", "меню на сегодня", "#3b7abf"), _btn("📅 Меню на неделю", "меню на неделю", "#3b7abf")],
 )
 
@@ -208,7 +209,7 @@ async def handle_message(
     step  = state.get(S_STEP, STEP_IDLE)
 
     # Employee ordering commands
-    _employee_root = {"заказать", "мои заказы", "меню", "быстрый заказ", "меню на сегодня", "меню на неделю"}
+    _employee_root = {"заказать", "мои заказы", "меню", "быстрый заказ", "меню на сегодня", "меню на неделю", "статистика за месяц"}
     _employee_ctx  = {"заказать порцию", "добавить порцию", "убрать порцию", "отменить заказ"}
     _employee_steps = {STEP_SELECT_DAY, STEP_ORDER_VIEW, STEP_MY_ORDERS}
 
@@ -678,6 +679,27 @@ async def _handle_employee_inner(
         for o in orders:
             lines.append(f"• {o.target_date.strftime('%d.%m')} — {o.quantity} порц.")
         return [_msg("\n".join(lines), keyboard=_my_orders_kb(orders), replace=True)]
+
+    # ---- Статистика за месяц ----
+    if raw == "статистика за месяц":
+        now_local = datetime.now(TIME_CONFIG.TIMEZONE)
+        start_date = now_local.replace(day=1).date()
+        end_date = now_local.date()
+        stats = await _run_sync(
+            lambda session: get_user_monthly_stats(user_db_id, start_date, end_date, session))
+        month_names = {
+            1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+            5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+            9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь",
+        }
+        text = (
+            f"[B]📊 Статистика за {month_names[now_local.month]} {now_local.year}:[/B]\n\n"
+            f"🍽 Всего обедов: {stats['total']}\n"
+            f"✅ Выполненные: {stats['completed']}\n"
+            f"⏳ Предстоящие: {stats['upcoming']}"
+        )
+        _state.pop(dialog_id, None)
+        return [_msg(text, keyboard=main_kb, replace=True)]
 
     # Cancel by date: "отменить DD.MM"
     _cancel_match = re.match(r'^отменить (\d{2}\.\d{2})$', raw)
