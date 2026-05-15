@@ -18,7 +18,7 @@ from services.order_service import (
     get_order_for_date, get_active_orders,
     create_order, cancel_order, modify_quantity,
 )
-from services.menu_service import get_menu_for_day, format_menu_text
+from services.menu_service import get_menu_for_day, format_menu_text, get_week_menus
 from services.report_service import (
     generate_provider_report_text,
     generate_accounting_report_file,
@@ -65,8 +65,9 @@ def _btn(text: str, value: str, bg: str = "#29619b") -> dict:
 
 KB_MAIN_ADMIN = _kb(
     [_btn("📊 Отчёты", "отчёты"), _btn("📋 Заказы сегодня", "заказы сегодня")],
-    [_btn("🛒 Заказать", "заказать", "#2a7a2a"), _btn("📋 Мои заказы", "мои заказы")],
-    [_btn("🍽 Меню", "меню")],
+    [_btn("✅ Быстрый заказ", "быстрый заказ", "#2a7a2a"), _btn("🛒 Заказать", "заказать", "#29619b")],
+    [_btn("📋 Мои заказы", "мои заказы")],
+    [_btn("🍽 Меню на сегодня", "меню на сегодня", "#3b7abf"), _btn("📅 Меню на неделю", "меню на неделю", "#3b7abf")],
 )
 
 KB_MAIN_PROVIDER = _kb(
@@ -78,8 +79,9 @@ KB_MAIN_ACCOUNTANT = _kb(
 )
 
 KB_MAIN_EMPLOYEE = _kb(
-    [_btn("🛒 Заказать", "заказать", "#2a7a2a"), _btn("📋 Мои заказы", "мои заказы")],
-    [_btn("🍽 Меню", "меню")],
+    [_btn("✅ Быстрый заказ", "быстрый заказ", "#2a7a2a"), _btn("🛒 Заказать", "заказать", "#29619b")],
+    [_btn("📋 Мои заказы", "мои заказы")],
+    [_btn("🍽 Меню на сегодня", "меню на сегодня", "#3b7abf"), _btn("📅 Меню на неделю", "меню на неделю", "#3b7abf")],
 )
 
 KB_PERIOD = _kb(
@@ -141,6 +143,21 @@ def _order_view_kb(has_order: bool, can_modify: bool) -> list:
     return _kb(*rows)
 
 
+def _week_day_order_kb(day_offset: int, has_order: bool, can_modify: bool, qty: int = 0) -> list:
+    rows = []
+    if not has_order:
+        if can_modify:
+            rows.append([_btn("✅ Заказать", f"заказать день {day_offset}", "#2a7a2a")])
+    else:
+        if can_modify:
+            rows.append([
+                _btn("➕ Добавить", f"добавить день {day_offset}", "#2a7a2a"),
+                _btn("➖ Убрать",   f"убрать день {day_offset}",   "#7a5c3e"),
+            ])
+            rows.append([_btn(f"❌ Отменить ({qty} порц.)", f"отменить день {day_offset}", "#7a2a2a")])
+    return rows
+
+
 def _my_orders_kb(orders: list) -> list:
     rows = []
     for order in orders:
@@ -191,12 +208,13 @@ async def handle_message(
     step  = state.get(S_STEP, STEP_IDLE)
 
     # Employee ordering commands
-    _employee_root = {"заказать", "мои заказы", "меню"}
+    _employee_root = {"заказать", "мои заказы", "меню", "быстрый заказ", "меню на сегодня", "меню на неделю"}
     _employee_ctx  = {"заказать порцию", "добавить порцию", "убрать порцию", "отменить заказ"}
     _employee_steps = {STEP_SELECT_DAY, STEP_ORDER_VIEW, STEP_MY_ORDERS}
 
     _is_employee_action = (
         raw in _employee_root or
+        bool(re.match(r'^(заказать|добавить|убрать|отменить) день \d+$', raw)) or
         (step in _employee_steps and (
             raw in _employee_ctx or
             bool(re.match(r'^день \d+$', raw)) or
@@ -362,9 +380,11 @@ def _help_text(role: str) -> str:
     if role in ("admin", "provider", "accountant"):
         lines.append("📊 [B]отчёты[/B] — формирование отчётов")
     if role in ("admin", "employee"):
-        lines.append("🛒 [B]заказать[/B] — оформить заказ на обед")
+        lines.append("✅ [B]быстрый заказ[/B] — заказать 1 порцию на сегодня")
+        lines.append("🛒 [B]заказать[/B] — оформить заказ на любой день")
         lines.append("📋 [B]мои заказы[/B] — посмотреть и отменить заказы")
-        lines.append("🍽 [B]меню[/B] — меню на ближайшие дни")
+        lines.append("🍽 [B]меню на сегодня[/B] — меню и управление заказом на сегодня")
+        lines.append("📅 [B]меню на неделю[/B] — меню и заказы на ближайшие дни")
     return "\n".join(lines)
 
 
@@ -466,6 +486,33 @@ def _do_cancel_order_db(user_db_id: int, target_date, session) -> str:
     return f"✅ Заказ на {target_date.strftime('%d.%m')} отменён."
 
 
+def _fetch_week_order_status(user_db_id: int, work_days: list, session) -> list:
+    now_local = datetime.now(TIME_CONFIG.TIMEZONE)
+    results = []
+    for day in work_days:
+        offset      = day["day_offset"]
+        target_date = day["target_date"]
+        menu_text   = format_menu_text(day["menu"], day["day_name"], target_date)
+        order       = get_order_for_date(user_db_id, target_date, session)
+        has_order   = order is not None
+        can_modify  = (
+            target_date > now_local.date() or
+            (target_date == now_local.date() and now_local.time() < TIME_CONFIG.MODIFICATION_DEADLINE)
+        )
+        qty = order.quantity if has_order else 0
+        if order:
+            session.expunge(order)
+        results.append({
+            "offset":      offset,
+            "target_date": target_date,
+            "menu_text":   menu_text,
+            "has_order":   has_order,
+            "can_modify":  can_modify,
+            "qty":         qty,
+        })
+    return results
+
+
 def _do_modify_qty_db(user_db_id: int, day_offset: int, delta: int, session) -> str:
     menu, day_name, target_date = get_menu_for_day(day_offset, CONFIG)
     now = datetime.now(TIME_CONFIG.TIMEZONE)
@@ -515,6 +562,50 @@ async def _handle_employee_inner(
     if not user_db_id:
         return [_msg("❌ Вы не найдены в базе данных. Обратитесь к администратору.",
                      keyboard=main_kb)]
+
+    # ---- Быстрый заказ ----
+    if raw == "быстрый заказ":
+        result = await _run_sync(_do_create_order_db, user_db_id, 0)
+        _state.pop(dialog_id, None)
+        return [_msg(result, keyboard=main_kb, replace=True)]
+
+    # ---- Меню на сегодня ----
+    if raw == "меню на сегодня":
+        day_offset = 0
+        _state[dialog_id] = {S_STEP: STEP_ORDER_VIEW, S_DAY: day_offset}
+        menu_text, order, target_date, can_modify = await _run_sync(
+            _fetch_order_view, user_db_id, day_offset)
+        status = f"\n[B]Заказано: {order.quantity} порц.[/B]" if order else "\n[B]Заказ не оформлен[/B]"
+        if not can_modify:
+            status += "\n⏰ Приём/изменение заказов закрыт"
+        return [_msg(f"{menu_text}{status}",
+                     keyboard=_order_view_kb(order is not None, can_modify), replace=True)]
+
+    # ---- Меню на неделю / Меню (обратная совместимость) ----
+    if raw in ("меню на неделю", "меню"):
+        week = get_week_menus(CONFIG)
+        work_days = [d for d in week if not d["is_weekend"] and not d["is_holiday"] and d["menu"]]
+        if not work_days:
+            return [_msg("Меню на текущую неделю отсутствует.", keyboard=main_kb, replace=True)]
+        day_statuses = await _run_sync(_fetch_week_order_status, user_db_id, work_days)
+        _state.pop(dialog_id, None)
+        messages = []
+        for i, st in enumerate(day_statuses):
+            text = st["menu_text"]
+            if st["has_order"]:
+                text += f"\n\n[B]🛒 Заказано: {st['qty']} порц.[/B]"
+            kb_rows = _week_day_order_kb(st["offset"], st["has_order"], st["can_modify"], st["qty"])
+            if i == len(day_statuses) - 1:
+                kb_rows = kb_rows + [[_btn("🏠 Главное меню", "главное меню", "#555")]]
+            messages.append(_msg(text, keyboard=kb_rows if kb_rows else None))
+        return messages
+
+    # ---- Прямые действия из недельного меню: "заказать/добавить/убрать/отменить день N" ----
+    _direct_match = re.match(r'^(заказать|добавить|убрать|отменить) день (\d+)$', raw)
+    if _direct_match:
+        action     = _direct_match.group(1)
+        day_offset = int(_direct_match.group(2))
+        return await _handle_direct_day_action(dialog_id, user_db_id, action, day_offset, role)
 
     # ---- Заказать ----
     if raw == "заказать":
@@ -609,21 +700,31 @@ async def _handle_employee_inner(
             lines.append(f"• {o.target_date.strftime('%d.%m')} — {o.quantity} порц.")
         return [_msg("\n".join(lines), keyboard=_my_orders_kb(orders), replace=True)]
 
-    # ---- Меню ----
-    if raw == "меню":
-        from services.menu_service import get_week_menus
-        week = get_week_menus(CONFIG)
-        lines = ["[B]Меню на ближайшие дни:[/B]"]
-        for day in week:
-            if day["is_weekend"] or day["is_holiday"]:
-                continue
-            date_str = day["target_date"].strftime("%d.%m")
-            m = day["menu"]
-            if m:
-                lines.append(
-                    f"\n[B]{day['day_name']} {date_str}[/B]\n"
-                    f"🍲 {m['first']}\n🍛 {m['main']}\n🥗 {m['salad']}"
-                )
-        return [_msg("\n".join(lines), keyboard=main_kb)]
-
     return [_msg(_help_text(role), keyboard=main_kb)]
+
+
+async def _handle_direct_day_action(
+    dialog_id: str,
+    user_db_id: int,
+    action: str,
+    day_offset: int,
+    role: str,
+) -> list[dict]:
+    if action == "заказать":
+        result = await _run_sync(_do_create_order_db, user_db_id, day_offset)
+    elif action == "добавить":
+        result = await _run_sync(_do_modify_qty_db, user_db_id, day_offset, +1)
+    elif action == "убрать":
+        result = await _run_sync(_do_modify_qty_db, user_db_id, day_offset, -1)
+    else:  # отменить
+        _, _, target_date = get_menu_for_day(day_offset, CONFIG)
+        result = await _run_sync(_do_cancel_order_db, user_db_id, target_date)
+
+    _state[dialog_id] = {S_STEP: STEP_ORDER_VIEW, S_DAY: day_offset}
+    menu_text, order, target_date, can_modify = await _run_sync(
+        _fetch_order_view, user_db_id, day_offset)
+    has_order = order is not None
+    text = f"{menu_text}\n\n{result}"
+    if has_order:
+        text += f"\n[B]Заказано: {order.quantity} порц.[/B]"
+    return [_msg(text, keyboard=_order_view_kb(has_order, can_modify), replace=True)]
