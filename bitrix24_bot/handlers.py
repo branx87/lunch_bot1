@@ -185,7 +185,7 @@ async def handle_message(
     # Global resets
     if raw in ("главное меню", "/start", "start", "помощь", "help", "/help"):
         _state.pop(dialog_id, None)
-        return [_msg(_help_text(role), keyboard=_main_kb(role))]
+        return [_msg(_help_text(role), keyboard=_main_kb(role), replace=True)]
 
     state = _state.get(dialog_id, {S_STEP: STEP_IDLE})
     step  = state.get(S_STEP, STEP_IDLE)
@@ -581,12 +581,12 @@ async def _handle_employee_inner(
         orders = await _run_sync(_fetch_active_orders, user_db_id)
         if not orders:
             _state.pop(dialog_id, None)
-            return [_msg("У вас нет активных заказов.", keyboard=main_kb)]
+            return [_msg("У вас нет активных заказов.", keyboard=main_kb, replace=True)]
         _state[dialog_id] = {S_STEP: STEP_MY_ORDERS}
         lines = ["[B]Ваши активные заказы:[/B]"]
         for o in orders:
             lines.append(f"• {o.target_date.strftime('%d.%m')} — {o.quantity} порц.")
-        return [_msg("\n".join(lines), keyboard=_my_orders_kb(orders))]
+        return [_msg("\n".join(lines), keyboard=_my_orders_kb(orders), replace=True)]
 
     # Cancel by date: "отменить DD.MM"
     _cancel_match = re.match(r'^отменить (\d{2}\.\d{2})$', raw)
