@@ -1477,11 +1477,7 @@ class BitrixSync:
                 }
             }
 
-            # 🔥 ПРИОРИТЕТ: используем CRM employee_id если есть
-            if crm_employee_id:
-                params['fields']['ufCrm45_1743599470'] = crm_employee_id
-            else:
-                params['fields']['ufCrm45_1751956286'] = user_id
+            params['fields']['ufCrm45_1751956286'] = user_id
 
             result = await self.bx.call('crm.item.add', params)
             
@@ -1511,10 +1507,7 @@ class BitrixSync:
                 '>=createdTime': f'{target_date}T00:00:00+03:00',
                 '<=createdTime': f'{target_date}T23:59:59+03:00',
             }
-            if crm_employee_id:
-                filter_params['ufCrm45_1743599470'] = crm_employee_id
-            else:
-                filter_params['ufCrm45_1751956286'] = user_bitrix_id
+            filter_params['ufCrm45_1751956286'] = user_bitrix_id
 
             params = {
                 'entityTypeId': 1222,
