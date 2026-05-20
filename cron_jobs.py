@@ -35,10 +35,9 @@ class CronManager:
         self.scheduler = AsyncIOScheduler(timezone=TIME_CONFIG.TIMEZONE)
         self._calendar_cache: dict = {}  # Кэш производственного календаря
 
-        from fast_bitrix24 import Bitrix
-        b24_webhook = os.getenv('BITRIX_WEBHOOK', '')
+        b24_webhook = os.getenv('BITRIX_WEBHOOK', '').rstrip('/')
         self._b24_bot_id = int(os.getenv('B24_BOT_ID', '0'))
-        self._b24_bx = Bitrix(b24_webhook) if b24_webhook and self._b24_bot_id else None
+        self._b24_webhook = b24_webhook if b24_webhook and self._b24_bot_id else ''
 
     async def is_workday(self, date: datetime) -> bool:
         """Проверяет, является ли день рабочим (включая производственный календарь РФ)"""
@@ -278,8 +277,9 @@ class CronManager:
                             logger.error(f"Ошибка VK-напоминания {vk_id}: {e}")
 
                     # Send via Bitrix24
-                    if bitrix_id and self._b24_bx:
+                    if bitrix_id and self._b24_webhook:
                         try:
+                            import httpx
                             kb = [[{
                                 "TEXT": "🔕 Отключить напоминания",
                                 "ACTION": "SEND",
@@ -287,13 +287,21 @@ class CronManager:
                                 "BG_COLOR": "#555",
                                 "TEXT_COLOR": "#fff",
                             }]]
-                            await self._b24_bx.call('imbot.message.add', {
-                                'BOT_ID': self._b24_bot_id,
-                                'DIALOG_ID': bitrix_id,
-                                'MESSAGE': "⏰ Не забудьте заказать обед! 🍽\n\nПрием заказов открыт до 9:30.",
-                                'KEYBOARD': kb,
-                            })
-                            logger.debug(f"Bitrix24-напоминание отправлено: {bitrix_id}")
+                            async with httpx.AsyncClient(timeout=10.0) as client:
+                                resp = await client.post(
+                                    f"{self._b24_webhook}/imbot.message.add",
+                                    json={
+                                        'BOT_ID': self._b24_bot_id,
+                                        'DIALOG_ID': bitrix_id,
+                                        'MESSAGE': "⏰ Не забудьте заказать обед! 🍽\n\nПрием заказов открыт до 9:30.",
+                                        'KEYBOARD': kb,
+                                    }
+                                )
+                            result = resp.json()
+                            if isinstance(result, dict) and 'error' in result:
+                                logger.error(f"Ошибка Bitrix24-напоминания {bitrix_id}: {result}")
+                            else:
+                                logger.debug(f"Bitrix24-напоминание отправлено: {bitrix_id}")
                         except Exception as e:
                             logger.error(f"Ошибка Bitrix24-напоминания {bitrix_id}: {e}")
 
