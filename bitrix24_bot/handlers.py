@@ -70,6 +70,7 @@ KB_MAIN_ADMIN = _kb(
     [_btn("✅ Быстрый заказ", "быстрый заказ", "#2a7a2a")],
     [_btn("📋 Мои заказы", "мои заказы"), _btn("📊 Статистика за месяц", "статистика за месяц", "#555")],
     [_btn("🍽 Меню на сегодня", "меню на сегодня", "#3b7abf"), _btn("📅 Меню на неделю", "меню на неделю", "#3b7abf")],
+    [_btn("🔔 Уведомления", "уведомления", "#555")],
 )
 
 KB_MAIN_PROVIDER = _kb(
@@ -84,6 +85,7 @@ KB_MAIN_EMPLOYEE = _kb(
     [_btn("✅ Быстрый заказ", "быстрый заказ", "#2a7a2a")],
     [_btn("📋 Мои заказы", "мои заказы"), _btn("📊 Статистика за месяц", "статистика за месяц", "#555")],
     [_btn("🍽 Меню на сегодня", "меню на сегодня", "#3b7abf"), _btn("📅 Меню на неделю", "меню на неделю", "#3b7abf")],
+    [_btn("🔔 Уведомления", "уведомления", "#555")],
 )
 
 KB_PERIOD = _kb(
@@ -179,6 +181,18 @@ def _my_orders_kb(orders: list) -> list:
     return _kb(*rows)
 
 
+def _notifications_kb(enabled: bool) -> list:
+    if enabled:
+        return _kb(
+            [_btn("🔕 Отключить напоминания", "уведомления отключить", "#7a2a2a")],
+            [_btn("🏠 Главное меню", "главное меню", "#555")],
+        )
+    return _kb(
+        [_btn("🔔 Включить напоминания", "уведомления включить", "#2a7a2a")],
+        [_btn("🏠 Главное меню", "главное меню", "#555")],
+    )
+
+
 def _main_kb(role: str) -> list:
     if role == "admin":
         return KB_MAIN_ADMIN
@@ -217,7 +231,8 @@ async def handle_message(
 
     # Employee ordering commands
     _employee_root = {"заказать", "мои заказы", "меню", "быстрый заказ", "меню на сегодня", "меню на неделю",
-                       "статистика за месяц", "статистика текущий месяц", "статистика прошлый месяц"}
+                       "статистика за месяц", "статистика текущий месяц", "статистика прошлый месяц",
+                       "уведомления", "уведомления отключить", "уведомления включить"}
     _employee_ctx  = {"заказать порцию", "добавить порцию", "убрать порцию", "отменить заказ"}
     _employee_steps = {STEP_SELECT_DAY, STEP_ORDER_VIEW, STEP_MY_ORDERS, STEP_STATS}
 
@@ -436,6 +451,19 @@ async def _run_sync(fn, *args, **kwargs):
 # Employee DB helpers
 # ------------------------------------------------------------------
 
+def _get_notifications_state(user_db_id: int, session) -> bool:
+    user = session.query(User).filter(User.id == user_db_id).first()
+    return user.notifications_enabled if user else True
+
+
+def _set_notifications(user_db_id: int, enabled: bool, session) -> bool:
+    user = session.query(User).filter(User.id == user_db_id).first()
+    if user:
+        user.notifications_enabled = enabled
+        session.commit()
+    return enabled
+
+
 def _fetch_user_db_id(bitrix_user_id: int, session) -> int | None:
     user = session.query(User).filter(
         User.bitrix_id == bitrix_user_id,
@@ -571,6 +599,21 @@ async def _handle_employee_inner(
     if not user_db_id:
         return [_msg("❌ Вы не найдены в базе данных. Обратитесь к администратору.",
                      keyboard=main_kb)]
+
+    # ---- Уведомления ----
+    if raw == "уведомления":
+        enabled = await _run_sync(_get_notifications_state, user_db_id)
+        state_text = "[B]включены[/B] 🔔" if enabled else "[B]отключены[/B] 🔕"
+        return [_msg(f"Напоминания о заказе {state_text}",
+                     keyboard=_notifications_kb(enabled), replace=True)]
+
+    if raw == "уведомления отключить":
+        await _run_sync(_set_notifications, user_db_id, False)
+        return [_msg("🔕 Напоминания отключены.", keyboard=_notifications_kb(False), replace=True)]
+
+    if raw == "уведомления включить":
+        await _run_sync(_set_notifications, user_db_id, True)
+        return [_msg("🔔 Напоминания включены.", keyboard=_notifications_kb(True), replace=True)]
 
     # ---- Быстрый заказ ----
     if raw == "быстрый заказ":

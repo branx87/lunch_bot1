@@ -4,6 +4,7 @@ from database import db
 from config import CONFIG
 from datetime import datetime, timedelta
 import logging
+import os
 from telegram.ext import Application
 from models import User, Order
 from sqlalchemy import text
@@ -33,6 +34,11 @@ class CronManager:
         self.application = application
         self.scheduler = AsyncIOScheduler(timezone=TIME_CONFIG.TIMEZONE)
         self._calendar_cache: dict = {}  # Кэш производственного календаря
+
+        from fast_bitrix24 import Bitrix
+        b24_webhook = os.getenv('BITRIX_WEBHOOK', '')
+        self._b24_bot_id = int(os.getenv('B24_BOT_ID', '0'))
+        self._b24_bx = Bitrix(b24_webhook) if b24_webhook and self._b24_bot_id else None
 
     async def is_workday(self, date: datetime) -> bool:
         """Проверяет, является ли день рабочим (включая производственный календарь РФ)"""
@@ -197,9 +203,9 @@ class CronManager:
                 ).distinct().count()
                 logger.info(f"Пользователей с заказами на сегодня: {users_with_orders}")
 
-                # Основной запрос — получаем telegram_id, max_id и vk_id
+                # Основной запрос — получаем telegram_id, max_id, vk_id и bitrix_id
                 users_without_orders = session.execute(text("""
-                    SELECT u.telegram_id, u.max_id, u.vk_id
+                    SELECT u.telegram_id, u.max_id, u.vk_id, u.bitrix_id
                     FROM users u
                     WHERE u.is_verified = TRUE
                     AND u.is_deleted = FALSE
@@ -234,7 +240,7 @@ class CronManager:
                 )
 
                 for user in users_without_orders:
-                    telegram_id, max_id, vk_id = user[0], user[1], user[2]
+                    telegram_id, max_id, vk_id, bitrix_id = user[0], user[1], user[2], user[3]
 
                     # Send via Telegram
                     if telegram_id:
@@ -270,6 +276,26 @@ class CronManager:
                             logger.debug(f"VK-напоминание отправлено: {vk_id}")
                         except Exception as e:
                             logger.error(f"Ошибка VK-напоминания {vk_id}: {e}")
+
+                    # Send via Bitrix24
+                    if bitrix_id and self._b24_bx:
+                        try:
+                            kb = [[{
+                                "TEXT": "🔕 Отключить напоминания",
+                                "ACTION": "SEND",
+                                "ACTION_VALUE": "уведомления отключить",
+                                "BG_COLOR": "#555",
+                                "TEXT_COLOR": "#fff",
+                            }]]
+                            await self._b24_bx.call('imbot.message.add', {
+                                'BOT_ID': self._b24_bot_id,
+                                'DIALOG_ID': bitrix_id,
+                                'MESSAGE': "⏰ Не забудьте заказать обед! 🍽\n\nПрием заказов открыт до 9:30.",
+                                'KEYBOARD': kb,
+                            })
+                            logger.debug(f"Bitrix24-напоминание отправлено: {bitrix_id}")
+                        except Exception as e:
+                            logger.error(f"Ошибка Bitrix24-напоминания {bitrix_id}: {e}")
 
     async def _morning_reports(self):
         """Утренние отчеты"""
