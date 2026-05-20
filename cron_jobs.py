@@ -35,9 +35,9 @@ class CronManager:
         self.scheduler = AsyncIOScheduler(timezone=TIME_CONFIG.TIMEZONE)
         self._calendar_cache: dict = {}  # Кэш производственного календаря
 
-        b24_webhook = os.getenv('BITRIX_WEBHOOK', '').rstrip('/')
         self._b24_bot_id = int(os.getenv('B24_BOT_ID', '0'))
-        self._b24_webhook = b24_webhook if b24_webhook and self._b24_bot_id else ''
+        self._b24_php_sender_url = os.getenv('B24_PHP_SENDER_URL', '')
+        self._b24_webhook_token = os.getenv('B24_WEBHOOK_TOKEN', '')
 
     async def is_workday(self, date: datetime) -> bool:
         """Проверяет, является ли день рабочим (включая производственный календарь РФ)"""
@@ -277,7 +277,7 @@ class CronManager:
                             logger.error(f"Ошибка VK-напоминания {vk_id}: {e}")
 
                     # Send via Bitrix24
-                    if bitrix_id and self._b24_webhook:
+                    if bitrix_id and self._b24_php_sender_url and self._b24_bot_id:
                         try:
                             import httpx
                             kb = [[{
@@ -289,16 +289,17 @@ class CronManager:
                             }]]
                             async with httpx.AsyncClient(timeout=10.0) as client:
                                 resp = await client.post(
-                                    f"{self._b24_webhook}/imbot.message.add",
+                                    self._b24_php_sender_url,
                                     json={
-                                        'BOT_ID': self._b24_bot_id,
-                                        'DIALOG_ID': bitrix_id,
-                                        'MESSAGE': "⏰ Не забудьте заказать обед! 🍽\n\nПрием заказов открыт до 9:30.",
-                                        'KEYBOARD': kb,
-                                    }
+                                        'bot_id': self._b24_bot_id,
+                                        'dialog_id': str(bitrix_id),
+                                        'message': "⏰ Не забудьте заказать обед! 🍽\n\nПрием заказов открыт до 9:30.",
+                                        'keyboard': kb,
+                                    },
+                                    headers={'X-Webhook-Token': self._b24_webhook_token},
                                 )
                             result = resp.json()
-                            if isinstance(result, dict) and 'error' in result:
+                            if not result.get('ok'):
                                 logger.error(f"Ошибка Bitrix24-напоминания {bitrix_id}: {result}")
                             else:
                                 logger.debug(f"Bitrix24-напоминание отправлено: {bitrix_id}")
