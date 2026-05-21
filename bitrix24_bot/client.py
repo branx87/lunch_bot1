@@ -1,8 +1,8 @@
 """
-Direct Bitrix24 REST API client for proactive bot messages.
-Uses imbot.message.add — sends messages as the bot (not as a REST user).
+Bitrix24 REST API client for proactive messages via im.message.add.
+Sends messages as the REST API user (not as a bot application).
 
-Requires env: B24_REST_URL, B24_BOT_ID
+Requires env: B24_REST_URL
 """
 import asyncio
 import logging
@@ -14,22 +14,18 @@ logger = logging.getLogger(__name__)
 
 
 class BitrixBotClient:
-    """Sends proactive messages from the bot via imbot.message.add REST API."""
+    """Sends proactive messages via im.message.add REST API (as REST user)."""
 
-    def __init__(self, rest_url: str, bot_id: int) -> None:
+    def __init__(self, rest_url: str) -> None:
         self._rest_url = rest_url.rstrip("/")
-        self._bot_id = bot_id
 
     @classmethod
     def from_env(cls) -> "BitrixBotClient":
-        return cls(
-            rest_url=os.getenv("B24_REST_URL", ""),
-            bot_id=int(os.getenv("B24_BOT_ID", "0")),
-        )
+        return cls(rest_url=os.getenv("B24_REST_URL", ""))
 
     @property
     def is_configured(self) -> bool:
-        return bool(self._rest_url and self._bot_id)
+        return bool(self._rest_url)
 
     async def send_message(
         self,
@@ -40,18 +36,17 @@ class BitrixBotClient:
         retries: int = 3,
     ) -> bool:
         """
-        Send a message to a Bitrix24 dialog as the bot.
+        Send a message to a Bitrix24 dialog.
 
         dialog_id: Bitrix24 user ID (str) for private chats, or "chatN" for group chats.
         keyboard: list of rows, each row is a list of button dicts.
         """
         if not self.is_configured:
-            logger.warning("[B24Client] Не настроен (нет B24_REST_URL или B24_BOT_ID)")
+            logger.warning("[B24Client] Не настроен (нет B24_REST_URL)")
             return False
 
-        url = f"{self._rest_url}/imbot.message.add.json"
+        url = f"{self._rest_url}/im.message.add.json"
         payload: dict = {
-            "BOT_ID": self._bot_id,
             "DIALOG_ID": dialog_id,
             "MESSAGE": text,
         }
