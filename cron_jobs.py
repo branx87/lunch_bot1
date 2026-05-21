@@ -4,7 +4,6 @@ from database import db
 from config import CONFIG
 from datetime import datetime, timedelta
 import logging
-import os
 from telegram.ext import Application
 from models import User, Order
 from sqlalchemy import text
@@ -35,9 +34,8 @@ class CronManager:
         self.scheduler = AsyncIOScheduler(timezone=TIME_CONFIG.TIMEZONE)
         self._calendar_cache: dict = {}  # Кэш производственного календаря
 
-        self._b24_bot_id = int(os.getenv('B24_BOT_ID', '0'))
-        self._b24_php_sender_url = os.getenv('B24_PHP_SENDER_URL', '')
-        self._b24_webhook_token = os.getenv('B24_WEBHOOK_TOKEN', '')
+        from bitrix24_bot.client import BitrixBotClient
+        self._b24_client = BitrixBotClient.from_env()
 
     async def is_workday(self, date: datetime) -> bool:
         """Проверяет, является ли день рабочим (включая производственный календарь РФ)"""
@@ -204,7 +202,8 @@ class CronManager:
 
                 # Основной запрос — получаем telegram_id, max_id, vk_id и bitrix_id
                 users_without_orders = session.execute(text("""
-                    SELECT u.telegram_id, u.max_id, u.vk_id, u.bitrix_id
+                    SELECT u.telegram_id, u.max_id, u.vk_id, u.bitrix_id,
+                           EXISTS (SELECT 1 FROM orders o2 WHERE o2.user_id = u.id) AS has_any_order
                     FROM users u
                     WHERE u.is_verified = TRUE
                     AND u.is_deleted = FALSE
@@ -239,7 +238,9 @@ class CronManager:
                 )
 
                 for user in users_without_orders:
-                    telegram_id, max_id, vk_id, bitrix_id = user[0], user[1], user[2], user[3]
+                    telegram_id, max_id, vk_id, bitrix_id, has_any_order = (
+                        user[0], user[1], user[2], user[3], user[4]
+                    )
 
                     # Send via Telegram
                     if telegram_id:
@@ -276,35 +277,24 @@ class CronManager:
                         except Exception as e:
                             logger.error(f"Ошибка VK-напоминания {vk_id}: {e}")
 
-                    # Send via Bitrix24
-                    if bitrix_id and self._b24_php_sender_url and self._b24_bot_id:
-                        try:
-                            import httpx
-                            kb = [[{
-                                "TEXT": "🔕 Отключить напоминания",
-                                "ACTION": "SEND",
-                                "ACTION_VALUE": "уведомления отключить",
-                                "BG_COLOR": "#555",
-                                "TEXT_COLOR": "#fff",
-                            }]]
-                            async with httpx.AsyncClient(timeout=10.0) as client:
-                                resp = await client.post(
-                                    self._b24_php_sender_url,
-                                    json={
-                                        'bot_id': self._b24_bot_id,
-                                        'dialog_id': str(bitrix_id),
-                                        'message': "⏰ Не забудьте заказать обед! 🍽\n\nПрием заказов открыт до 9:30.",
-                                        'keyboard': kb,
-                                    },
-                                    headers={'X-Webhook-Token': self._b24_webhook_token},
-                                )
-                            result = resp.json()
-                            if not result.get('ok'):
-                                logger.error(f"Ошибка Bitrix24-напоминания {bitrix_id}: {result}")
-                            else:
-                                logger.debug(f"Bitrix24-напоминание отправлено: {bitrix_id}")
-                        except Exception as e:
-                            logger.error(f"Ошибка Bitrix24-напоминания {bitrix_id}: {e}")
+                    # Send via Bitrix24 — только пользователям, у которых есть история заказов
+                    if bitrix_id and self._b24_client.is_configured and has_any_order:
+                        kb = [[{
+                            "TEXT": "🔕 Отключить напоминания",
+                            "ACTION": "SEND",
+                            "ACTION_VALUE": "уведомления отключить",
+                            "BG_COLOR": "#555",
+                            "TEXT_COLOR": "#fff",
+                        }]]
+                        ok = await self._b24_client.send_message(
+                            str(bitrix_id),
+                            "⏰ Не забудьте заказать обед! 🍽\n\nПрием заказов открыт до 9:30.",
+                            keyboard=kb,
+                        )
+                        if ok:
+                            logger.debug(f"Bitrix24-напоминание отправлено: {bitrix_id}")
+                        else:
+                            logger.error(f"Ошибка Bitrix24-напоминания {bitrix_id}")
 
     async def _morning_reports(self):
         """Утренние отчеты"""
