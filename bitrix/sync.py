@@ -1343,18 +1343,26 @@ class BitrixSync:
                             if existing_bitrix_id:
                                 # Нашли существующий заказ в Bitrix для этого пользователя на эту дату.
                                 # Проверяем, не принадлежит ли он отменённому локальному заказу.
+                                # Читаем нужные поля ДО выхода из сессии, чтобы избежать DetachedInstanceError
+                                existing_local_order_id = None
+                                existing_local_cancelled = False
+                                existing_local_quantity = 0
                                 with db.get_session() as check_session:
                                     existing_local_order = check_session.query(Order).filter(
                                         Order.bitrix_order_id == str(existing_bitrix_id)
                                     ).first()
+                                    if existing_local_order:
+                                        existing_local_order_id = existing_local_order.id
+                                        existing_local_cancelled = existing_local_order.is_cancelled
+                                        existing_local_quantity = existing_local_order.quantity
                                     
-                                if existing_local_order and existing_local_order.is_cancelled:
+                                if existing_local_order_id and existing_local_cancelled:
                                     # Старый заказ отменён — обновляем существующий заказ в Bitrix
                                     # (меняем количество, снимаем отмену) и привязываем новый локальный заказ
                                     logger.info(
-                                        f"🔄 Заказ {order_id}: старый заказ {existing_local_order.id} отменён. "
+                                        f"🔄 Заказ {order_id}: старый заказ {existing_local_order_id} отменён. "
                                         f"Обновляем существующий заказ в Bitrix (ID: {existing_bitrix_id}) "
-                                        f"с новыми данми (количество: {order_data['quantity']})"
+                                        f"с новыми данными (количество: {order_data['quantity']})"
                                     )
                                     update_success = await self._update_bitrix_order(
                                         existing_bitrix_id,
@@ -1373,13 +1381,13 @@ class BitrixSync:
                                     else:
                                         logger.error(f"❌ Заказ {order_id}: не удалось обновить Bitrix заказ {existing_bitrix_id}")
                                         bitrix_id = None
-                                elif existing_local_order and not existing_local_order.is_cancelled:
+                                elif existing_local_order_id and not existing_local_cancelled:
                                     # Старый заказ активен — обновляем его количество в Bitrix
                                     # и привязываем новый локальный заказ к этому же Bitrix ID
                                     logger.info(
-                                        f"🔄 Заказ {order_id}: старый заказ {existing_local_order.id} активен. "
+                                        f"🔄 Заказ {order_id}: старый заказ {existing_local_order_id} активен. "
                                         f"Обновляем количество в Bitrix (ID: {existing_bitrix_id}) "
-                                        f"с {existing_local_order.quantity} на {order_data['quantity']}"
+                                        f"с {existing_local_quantity} на {order_data['quantity']}"
                                     )
                                     update_success = await self._update_bitrix_order(
                                         existing_bitrix_id,
