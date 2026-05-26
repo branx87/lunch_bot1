@@ -1341,12 +1341,69 @@ class BitrixSync:
                                 order_data, user.crm_employee_id
                             )
                             if existing_bitrix_id:
-                                logger.warning(
-                                    f"⚠️ Заказ {order_id}: в Bitrix уже есть заказ для этого пользователя "
-                                    f"на {order_data['target_date']} (Bitrix ID: {existing_bitrix_id}). "
-                                    f"Привязываем без создания нового."
-                                )
-                                bitrix_id = existing_bitrix_id
+                                # Нашли существующий заказ в Bitrix для этого пользователя на эту дату.
+                                # Проверяем, не принадлежит ли он отменённому локальному заказу.
+                                with db.get_session() as check_session:
+                                    existing_local_order = check_session.query(Order).filter(
+                                        Order.bitrix_order_id == str(existing_bitrix_id)
+                                    ).first()
+                                    
+                                if existing_local_order and existing_local_order.is_cancelled:
+                                    # Старый заказ отменён — обновляем существующий заказ в Bitrix
+                                    # (меняем количество, снимаем отмену) и привязываем новый локальный заказ
+                                    logger.info(
+                                        f"🔄 Заказ {order_id}: старый заказ {existing_local_order.id} отменён. "
+                                        f"Обновляем существующий заказ в Bitrix (ID: {existing_bitrix_id}) "
+                                        f"с новыми данми (количество: {order_data['quantity']})"
+                                    )
+                                    update_success = await self._update_bitrix_order(
+                                        existing_bitrix_id,
+                                        {
+                                            'quantity': order_data['quantity'],
+                                            'location': order_data.get('location', 'Офис'),
+                                            'is_cancelled': False,
+                                            'target_date': order_data['target_date'],
+                                            'order_time': order_data['order_time'],
+                                        },
+                                        user.crm_employee_id
+                                    )
+                                    if update_success:
+                                        bitrix_id = existing_bitrix_id
+                                        logger.info(f"✅ Заказ {order_id}: Bitrix заказ {existing_bitrix_id} обновлён, привязываем к новому локальному заказу")
+                                    else:
+                                        logger.error(f"❌ Заказ {order_id}: не удалось обновить Bitrix заказ {existing_bitrix_id}")
+                                        bitrix_id = None
+                                elif existing_local_order and not existing_local_order.is_cancelled:
+                                    # Старый заказ активен — обновляем его количество в Bitrix
+                                    # и привязываем новый локальный заказ к этому же Bitrix ID
+                                    logger.info(
+                                        f"🔄 Заказ {order_id}: старый заказ {existing_local_order.id} активен. "
+                                        f"Обновляем количество в Bitrix (ID: {existing_bitrix_id}) "
+                                        f"с {existing_local_order.quantity} на {order_data['quantity']}"
+                                    )
+                                    update_success = await self._update_bitrix_order(
+                                        existing_bitrix_id,
+                                        {
+                                            'quantity': order_data['quantity'],
+                                            'location': order_data.get('location', 'Офис'),
+                                        },
+                                        user.crm_employee_id
+                                    )
+                                    if update_success:
+                                        bitrix_id = existing_bitrix_id
+                                        logger.info(f"✅ Заказ {order_id}: Bitrix заказ {existing_bitrix_id} обновлён (количество), привязываем новый локальный заказ")
+                                    else:
+                                        logger.error(f"❌ Заказ {order_id}: не удалось обновить Bitrix заказ {existing_bitrix_id}")
+                                        bitrix_id = None
+                                else:
+                                    # Не нашли локальный заказ с таким Bitrix ID — возможно, заказ создан напрямую в Bitrix
+                                    # Привязываем без создания нового
+                                    logger.warning(
+                                        f"⚠️ Заказ {order_id}: в Bitrix уже есть заказ для этого пользователя "
+                                        f"на {order_data['target_date']} (Bitrix ID: {existing_bitrix_id}). "
+                                        f"Локальный заказ не найден. Привязываем без создания нового."
+                                    )
+                                    bitrix_id = existing_bitrix_id
                             else:
                                 # Создаём новый заказ в Bitrix
                                 bitrix_id = await self._create_bitrix_order(
@@ -1365,32 +1422,65 @@ class BitrixSync:
                                     logger.info(f"✅ УСПЕШНО: Заказ {order_id} -> Bitrix ID: {bitrix_id}")
                                 except IntegrityError:
                                     order_session.rollback()
-                                    # Заказ УЖЕ создан в Bitrix, но этот Bitrix ID занят другим локальным заказом.
-                                    # Помечаем как отправленный чтобы избежать создания дубликатов в Bitrix при повторных попытках.
+                                    # Bitrix ID уже занят другим локальным заказом.
+                                    # Пытаемся разрешить конфликт: если старый заказ отменён — отвязываем его
                                     conflict_order = order_session.query(Order).filter(
                                         Order.bitrix_order_id == str(bitrix_id),
                                         Order.id != order_id
                                     ).first()
-                                    conflict_id = conflict_order.id if conflict_order else "неизвестен"
-                                    logger.error(
-                                        f"❌ Заказ {order_id}: Bitrix ID {bitrix_id} уже занят заказом {conflict_id} в локальной БД. "
-                                        f"Заказ создан в Bitrix, но не привязан локально — требуется ручное разрешение конфликта."
-                                    )
-                                    # Помечаем как отправленный без bitrix_order_id чтобы остановить retry-цикл
-                                    try:
-                                        order.is_sent_to_bitrix = True
-                                        order.bitrix_order_id = None
-                                        order.updated_at = datetime.now()
-                                        order_session.commit()
-                                        logger.warning(
-                                            f"⚠️ Заказ {order_id} помечен как отправленный (без Bitrix ID) "
-                                            f"для предотвращения дубликатов. Bitrix ID {bitrix_id} требует ручной привязки."
+                                    if conflict_order and conflict_order.is_cancelled:
+                                        # Старый заказ отменён — отвязываем Bitrix ID от него и привязываем к новому
+                                        logger.info(
+                                            f"🔄 Разрешение конфликта: отвязываем Bitrix ID {bitrix_id} "
+                                            f"от отменённого заказа {conflict_order.id} и привязываем к {order_id}"
                                         )
-                                    except Exception as mark_err:
-                                        order_session.rollback()
-                                        logger.error(f"❌ Не удалось пометить заказ {order_id} как отправленный: {mark_err}")
-                                    error_count += 1
-                                    failed_order_ids.append(order_id)
+                                        conflict_order.bitrix_order_id = None
+                                        order.bitrix_order_id = str(bitrix_id)
+                                        order.is_sent_to_bitrix = True
+                                        order.updated_at = datetime.now()
+                                        try:
+                                            order_session.commit()
+                                            success_count += 1
+                                            logger.info(f"✅ УСПЕШНО (конфликт разрешён): Заказ {order_id} -> Bitrix ID: {bitrix_id}")
+                                        except Exception as resolve_err:
+                                            order_session.rollback()
+                                            logger.error(f"❌ Не удалось разрешить конфликт для заказа {order_id}: {resolve_err}")
+                                            # Помечаем как отправленный без bitrix_order_id чтобы остановить retry-цикл
+                                            try:
+                                                order.is_sent_to_bitrix = True
+                                                order.bitrix_order_id = None
+                                                order.updated_at = datetime.now()
+                                                order_session.commit()
+                                                logger.warning(
+                                                    f"⚠️ Заказ {order_id} помечен как отправленный (без Bitrix ID) "
+                                                    f"для предотвращения дубликатов. Bitrix ID {bitrix_id} требует ручной привязки."
+                                                )
+                                            except Exception as mark_err:
+                                                order_session.rollback()
+                                                logger.error(f"❌ Не удалось пометить заказ {order_id} как отправленный: {mark_err}")
+                                            error_count += 1
+                                            failed_order_ids.append(order_id)
+                                    else:
+                                        conflict_id = conflict_order.id if conflict_order else "неизвестен"
+                                        logger.error(
+                                            f"❌ Заказ {order_id}: Bitrix ID {bitrix_id} уже занят заказом {conflict_id} в локальной БД. "
+                                            f"Заказ создан в Bitrix, но не привязан локально — требуется ручное разрешение конфликта."
+                                        )
+                                        # Помечаем как отправленный без bitrix_order_id чтобы остановить retry-цикл
+                                        try:
+                                            order.is_sent_to_bitrix = True
+                                            order.bitrix_order_id = None
+                                            order.updated_at = datetime.now()
+                                            order_session.commit()
+                                            logger.warning(
+                                                f"⚠️ Заказ {order_id} помечен как отправленный (без Bitrix ID) "
+                                                f"для предотвращения дубликатов. Bitrix ID {bitrix_id} требует ручной привязки."
+                                            )
+                                        except Exception as mark_err:
+                                            order_session.rollback()
+                                            logger.error(f"❌ Не удалось пометить заказ {order_id} как отправленный: {mark_err}")
+                                        error_count += 1
+                                        failed_order_ids.append(order_id)
                             else:
                                 logger.error(f"❌ Не удалось создать заказ {order_id} в Bitrix")
                                 error_count += 1
@@ -1495,6 +1585,92 @@ class BitrixSync:
         except Exception as e:
             logger.error(f"❌ Ошибка создания заказа в Bitrix: {str(e)}", exc_info=True)
             return None
+
+    async def _update_bitrix_order(self, bitrix_id: str, order_data: dict, user_crm_id: str = None) -> bool:
+        """Обновляет существующий заказ в Bitrix24 (количество, статус отмены).
+        Используется когда пользователь отменил заказ и создал новый на ту же дату,
+        или изменил количество порций после отправки в Bitrix."""
+        try:
+            quantity_map = {1: '821', 2: '822', 3: '823', 4: '824', 5: '825'}
+            location_map = {
+                'Офис': '826',
+                'ПЦ 1': '827',
+                'ПЦ 2': '828',
+                'Склад': '1063'
+            }
+
+            fields = {}
+            
+            # Обновляем количество, если передано
+            if 'quantity' in order_data:
+                fields['ufCrm45ObedyCount'] = quantity_map.get(order_data['quantity'], '821')
+            
+            # Обновляем локацию, если передана
+            if 'location' in order_data:
+                fields['ufCrm45ObedyFrom'] = location_map.get(order_data['location'], '826')
+            
+            # Обновляем статус отмены, если передан
+            if 'is_cancelled' in order_data:
+                # 1061 = "Да" (заказ принят, не отменён), 1062 = "Нет" (заказ отменён)
+                fields['ufCrm45_1744188327370'] = '1062' if order_data['is_cancelled'] else '1061'
+            
+            # Обновляем время, если передано
+            if 'target_date' in order_data and 'order_time' in order_data:
+                target_date = order_data['target_date']
+                order_time = order_data['order_time']
+                if ':' in order_time and order_time.count(':') == 1:
+                    order_time = order_time + ':00'
+                fields['createdTime'] = f"{target_date}T{order_time}+03:00"
+            
+            if not fields:
+                logger.warning(f"⚠️ Нет полей для обновления заказа {bitrix_id} в Bitrix")
+                return False
+
+            params = {
+                'entityTypeId': 1222,
+                'id': int(bitrix_id),
+                'fields': fields,
+            }
+
+            result = await self.bx.call('crm.item.update', params)
+            
+            if result:
+                logger.info(f"✅ Успешно обновлён заказ в Bitrix: {bitrix_id}, поля: {list(fields.keys())}")
+                await asyncio.sleep(0.5)
+                return True
+            else:
+                logger.error(f"❌ Пустой ответ при обновлении заказа {bitrix_id} в Bitrix")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка обновления заказа {bitrix_id} в Bitrix: {str(e)}", exc_info=True)
+            return False
+
+    async def _cancel_bitrix_order(self, bitrix_id: str) -> bool:
+        """Отменяет заказ в Bitrix24, устанавливая статус 'Нет' (отменён).
+        Вызывается при отмене заказа пользователем в боте, если заказ уже был отправлен в Bitrix."""
+        try:
+            params = {
+                'entityTypeId': 1222,
+                'id': int(bitrix_id),
+                'fields': {
+                    'ufCrm45_1744188327370': '1062',  # "Нет" - заказ отменён
+                },
+            }
+
+            result = await self.bx.call('crm.item.update', params)
+            
+            if result:
+                logger.info(f"✅ Успешно отменён заказ в Bitrix: {bitrix_id}")
+                await asyncio.sleep(0.5)
+                return True
+            else:
+                logger.error(f"❌ Пустой ответ при отмене заказа {bitrix_id} в Bitrix")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка отмены заказа {bitrix_id} в Bitrix: {str(e)}", exc_info=True)
+            return False
 
     async def _find_existing_bitrix_order(self, order_data: dict, crm_employee_id: str = None) -> Optional[str]:
         """Ищет заказ в Bitrix для данного пользователя на данную дату.

@@ -105,6 +105,19 @@ async def cancel_order(query, user_db_id, target_date, now):
         order.is_cancelled = True
         order.order_time = now.strftime("%H:%M:%S")
         db.session.commit()
+
+        # 🔥 Если заказ уже отправлен в Bitrix — отменяем его там тоже
+        if order.bitrix_order_id:
+            try:
+                from bitrix.sync import BitrixSync
+                sync = BitrixSync()
+                cancelled_in_bitrix = await sync._cancel_bitrix_order(order.bitrix_order_id)
+                if cancelled_in_bitrix:
+                    logger.info(f"✅ Заказ {order.id}: отменён в Bitrix (ID: {order.bitrix_order_id})")
+                else:
+                    logger.warning(f"⚠️ Заказ {order.id}: не удалось отменить в Bitrix (ID: {order.bitrix_order_id})")
+            except Exception as e:
+                logger.error(f"❌ Заказ {order.id}: ошибка при отмене в Bitrix: {e}")
     
     # После отмены просто обновляем представление дня
     day_offset = (target_date - now.date()).days
@@ -154,6 +167,19 @@ async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE
             order.is_cancelled = True
             order.order_time = now.strftime("%H:%M:%S")
             db.session.commit()
+
+            # 🔥 Если заказ уже отправлен в Bitrix — отменяем его там тоже
+            if order.bitrix_order_id:
+                try:
+                    from bitrix.sync import BitrixSync
+                    sync = BitrixSync()
+                    cancelled_in_bitrix = await sync._cancel_bitrix_order(order.bitrix_order_id)
+                    if cancelled_in_bitrix:
+                        logger.info(f"✅ Заказ {order.id}: отменён в Bitrix (ID: {order.bitrix_order_id})")
+                    else:
+                        logger.warning(f"⚠️ Заказ {order.id}: не удалось отменить в Bitrix (ID: {order.bitrix_order_id})")
+                except Exception as e:
+                    logger.error(f"❌ Заказ {order.id}: ошибка при отмене в Bitrix: {e}")
 
         # Обновляем представление дня (а не показываем список заказов)
         await refresh_day_view(query, day_offset, user_db_id, now)
