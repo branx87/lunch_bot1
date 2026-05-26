@@ -352,19 +352,39 @@ async def handle_cancel_callback(query, now, user, context):
     
 
         # Отменяем заказ через SQLAlchemy
-        order.is_cancelled = True
-        order.order_time = now.strftime("%H:%M:%S")
         db.session.commit()
 
-        # 🔥 Если заказ уже отправлен в Bitrix — отменяем его там тоже
-        if order.bitrix_order_id:
+        # 🔥 Отменяем заказ в Bitrix
+        bitrix_id_to_cancel = order.bitrix_order_id
+        if not bitrix_id_to_cancel and order.is_from_bitrix == 1:
+            # Заказ из Bitrix, но bitrix_order_id не сохранён локально.
+            # Пытаемся найти его в Bitrix по пользователю и дате.
             try:
                 sync = BitrixSync()
-                cancelled_in_bitrix = await sync._cancel_bitrix_order(order.bitrix_order_id)
-                if cancelled_in_bitrix:
-                    logger.info(f"✅ Заказ {order.id}: отменён в Bitrix (ID: {order.bitrix_order_id})")
+                order_data = {
+                    'target_date': str(target_date),
+                    'bitrix_id': user_record.bitrix_id,
+                }
+                found_bitrix_id = await sync._find_existing_bitrix_order(
+                    order_data,
+                    user_record.crm_employee_id if hasattr(user_record, 'crm_employee_id') else None
+                )
+                if found_bitrix_id:
+                    bitrix_id_to_cancel = found_bitrix_id
+                    logger.info(f"🔍 Заказ {order.id}: найден Bitrix ID {found_bitrix_id} для отмены")
                 else:
-                    logger.warning(f"⚠️ Заказ {order.id}: не удалось отменить в Bitrix (ID: {order.bitrix_order_id})")
+                    logger.warning(f"⚠️ Заказ {order.id}: не найден заказ в Bitrix для отмены")
+            except Exception as e:
+                logger.error(f"❌ Заказ {order.id}: ошибка при поиске Bitrix ID для отмены: {e}")
+
+        if bitrix_id_to_cancel:
+            try:
+                sync = BitrixSync()
+                cancelled_in_bitrix = await sync._cancel_bitrix_order(bitrix_id_to_cancel)
+                if cancelled_in_bitrix:
+                    logger.info(f"✅ Заказ {order.id}: отменён в Bitrix (ID: {bitrix_id_to_cancel})")
+                else:
+                    logger.warning(f"⚠️ Заказ {order.id}: не удалось отменить в Bitrix (ID: {bitrix_id_to_cancel})")
             except Exception as e:
                 logger.error(f"❌ Заказ {order.id}: ошибка при отмене в Bitrix: {e}")
         else:
