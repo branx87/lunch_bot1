@@ -346,11 +346,10 @@ async def handle_cancel_callback(query, now, user, context):
             logger.warning(f"USER {user_id}: заказ на {target_date} не найден")
             await query.answer("❌ Заказ не найден", show_alert=True)
             return
-            
-        if order.is_from_bitrix == 1:
-            logger.warning(f"USER {user_id}: попытка отменить заказ из Битрикс на {target_date}")
-            await query.answer("❌ Заказ создан в Битрикс, отмена невозможна", show_alert=True)
-            return
+            # Заказы из Bitrix теперь можно отменять (синхронизация с Bitrix через _cancel_bitrix_order)
+            if order.is_from_bitrix == 1:
+                logger.info(f"USER {user_id}: отмена заказа из Битрикс на {target_date} (разрешено)")
+    
 
         # Отменяем заказ через SQLAlchemy
         order.is_cancelled = True
@@ -452,10 +451,9 @@ async def modify_portion_count(query, now, user, context, delta):
             await query.answer("ℹ️ Заказ не найден")
             return
             
-        # Проверяем, не создан ли заказ в Битрикс
+        # Заказы из Bitrix теперь можно изменять (синхронизация с Bitrix через _update_bitrix_order)
         if order.is_from_bitrix == 1:
-            await query.answer("❌ Заказ создан в Битрикс, изменение невозможно", show_alert=True)
-            return
+            logger.info(f"USER {user.id}: изменение заказа из Битрикс на {target_date} (разрешено)")
             
         current_qty = order.quantity
         new_qty = current_qty + delta
@@ -475,6 +473,29 @@ async def modify_portion_count(query, now, user, context, delta):
         order.bitrix_quantity_id = new_bitrix_quantity_id
         order.updated_at = datetime.now()
         db.session.commit()
+
+        # 🔥 Если заказ уже отправлен в Bitrix — обновляем количество там тоже
+        if order.bitrix_order_id:
+            try:
+                # Получаем пользователя для crm_employee_id
+                user_record = db.session.query(User).filter(User.id == user_db_id).first()
+                sync = BitrixSync()
+                update_data = {
+                    'quantity': new_qty,
+                    'location': user_record.location if user_record and user_record.location else 'Офис',
+                }
+                crm_id = user_record.crm_employee_id if user_record else None
+                updated_in_bitrix = await sync._update_bitrix_order(
+                    int(order.bitrix_order_id),
+                    update_data,
+                    crm_id
+                )
+                if updated_in_bitrix:
+                    logger.info(f"✅ Заказ {order.id}: количество обновлено в Bitrix (ID: {order.bitrix_order_id}, порций: {new_qty})")
+                else:
+                    logger.warning(f"⚠️ Заказ {order.id}: не удалось обновить количество в Bitrix (ID: {order.bitrix_order_id})")
+            except Exception as e:
+                logger.error(f"❌ Заказ {order.id}: ошибка при обновлении количества в Bitrix: {e}")
 
         # Обновляем интерфейс
         await handle_change_callback(query, now, user, context)
