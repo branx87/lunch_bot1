@@ -1326,6 +1326,10 @@ class BitrixSync:
                                 failed_order_ids.append(order_id)
                                 continue
 
+                            # Сохраняем crm_employee_id в локальную переменную сразу,
+                            # чтобы избежать DetachedInstanceError при асинхронных вызовах
+                            crm_employee_id = user.crm_employee_id
+
                             # Формируем данные для Bitrix
                             order_data = {
                                 'bitrix_id': user.bitrix_id,
@@ -1338,7 +1342,7 @@ class BitrixSync:
 
                             # Защита от дублей: проверяем, есть ли уже заказ в Bitrix для этого пользователя на сегодня
                             existing_bitrix_id = await self._find_existing_bitrix_order(
-                                order_data, user.crm_employee_id
+                                order_data, crm_employee_id
                             )
                             if existing_bitrix_id:
                                 # Нашли существующий заказ в Bitrix для этого пользователя на эту дату.
@@ -1373,7 +1377,7 @@ class BitrixSync:
                                             'target_date': order_data['target_date'],
                                             'order_time': order_data['order_time'],
                                         },
-                                        user.crm_employee_id
+                                        crm_employee_id
                                     )
                                     if update_success:
                                         bitrix_id = existing_bitrix_id
@@ -1395,7 +1399,7 @@ class BitrixSync:
                                             'quantity': order_data['quantity'],
                                             'location': order_data.get('location', 'Офис'),
                                         },
-                                        user.crm_employee_id
+                                        crm_employee_id
                                     )
                                     if update_success:
                                         bitrix_id = existing_bitrix_id
@@ -1416,7 +1420,7 @@ class BitrixSync:
                                 # Создаём новый заказ в Bitrix
                                 bitrix_id = await self._create_bitrix_order(
                                     order_data,
-                                    user.crm_employee_id
+                                    crm_employee_id
                                 )
 
                             if bitrix_id:
