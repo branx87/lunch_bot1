@@ -346,16 +346,20 @@ async def handle_cancel_callback(query, now, user, context):
             logger.warning(f"USER {user_id}: заказ на {target_date} не найден")
             await query.answer("❌ Заказ не найден", show_alert=True)
             return
-            # Заказы из Bitrix теперь можно отменять (синхронизация с Bitrix через _cancel_bitrix_order)
-            if order.is_from_bitrix == 1:
-                logger.info(f"USER {user_id}: отмена заказа из Битрикс на {target_date} (разрешено)")
-    
+
+        # Заказы из Bitrix теперь можно отменять (синхронизация с Bitrix через _cancel_bitrix_order)
+        if order.is_from_bitrix == 1:
+            logger.info(f"USER {user_id}: отмена заказа из Битрикс на {target_date} (разрешено)")
+
+        # Сохраняем bitrix_order_id ДО commit, чтобы избежать detached-доступа
+        bitrix_id_to_cancel = order.bitrix_order_id
 
         # Отменяем заказ через SQLAlchemy
+        order.is_cancelled = True
+        order.order_time = now.strftime("%H:%M:%S")
         db.session.commit()
 
         # 🔥 Отменяем заказ в Bitrix
-        bitrix_id_to_cancel = order.bitrix_order_id
         if not bitrix_id_to_cancel and order.is_from_bitrix == 1:
             # Заказ из Bitrix, но bitrix_order_id не сохранён локально.
             # Пытаемся найти его в Bitrix по пользователю и дате.
