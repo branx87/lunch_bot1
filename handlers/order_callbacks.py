@@ -351,6 +351,12 @@ async def handle_cancel_callback(query, now, user, context):
         if order.is_from_bitrix == 1:
             logger.info(f"USER {user_id}: отмена заказа из Битрикс на {target_date} (разрешено)")
 
+        # 🔥 ПРИНУДИТЕЛЬНОЕ ОБНОВЛЕНИЕ объекта из БД, чтобы получить актуальный bitrix_order_id.
+        # Без этого SQLAlchemy может вернуть устаревшее значение из identity map сессии,
+        # если заказ был ранее создан в этой сессии, а bitrix_order_id был установлен
+        # в другой сессии (в _push_to_bitrix).
+        db.session.refresh(order)
+
         # Сохраняем bitrix_order_id ДО commit, чтобы избежать detached-доступа
         bitrix_id_to_cancel = order.bitrix_order_id
 
@@ -492,6 +498,10 @@ async def modify_portion_count(query, now, user, context, delta):
         # Маппинг количества порций на bitrix_quantity_id
         new_bitrix_quantity_id = QUANTITY_MAP.get(new_qty, '821')
 
+        # 🔥 Принудительно обновляем объект из БД, чтобы получить актуальный bitrix_order_id
+        db.session.refresh(order)
+        bitrix_id_to_update = order.bitrix_order_id
+
         # Обновляем заказ через SQLAlchemy
         order.quantity = new_qty
         order.bitrix_quantity_id = new_bitrix_quantity_id
@@ -499,7 +509,7 @@ async def modify_portion_count(query, now, user, context, delta):
         db.session.commit()
 
         # 🔥 Если заказ уже отправлен в Bitrix — обновляем количество там тоже
-        if order.bitrix_order_id:
+        if bitrix_id_to_update:
             try:
                 # Получаем пользователя для crm_employee_id
                 user_record = db.session.query(User).filter(User.id == user_db_id).first()
@@ -510,14 +520,14 @@ async def modify_portion_count(query, now, user, context, delta):
                 }
                 crm_id = user_record.crm_employee_id if user_record else None
                 updated_in_bitrix = await sync._update_bitrix_order(
-                    int(order.bitrix_order_id),
+                    int(bitrix_id_to_update),
                     update_data,
                     crm_id
                 )
                 if updated_in_bitrix:
-                    logger.info(f"✅ Заказ {order.id}: количество обновлено в Bitrix (ID: {order.bitrix_order_id}, порций: {new_qty})")
+                    logger.info(f"✅ Заказ {order.id}: количество обновлено в Bitrix (ID: {bitrix_id_to_update}, порций: {new_qty})")
                 else:
-                    logger.warning(f"⚠️ Заказ {order.id}: не удалось обновить количество в Bitrix (ID: {order.bitrix_order_id})")
+                    logger.warning(f"⚠️ Заказ {order.id}: не удалось обновить количество в Bitrix (ID: {bitrix_id_to_update})")
             except Exception as e:
                 logger.error(f"❌ Заказ {order.id}: ошибка при обновлении количества в Bitrix: {e}")
 

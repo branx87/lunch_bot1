@@ -333,20 +333,24 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.answer("❌ Заказ не найден", show_alert=True)
                     return
 
+                # 🔥 Принудительно обновляем объект из БД, чтобы получить актуальный bitrix_order_id
+                db.session.refresh(order)
+                bitrix_id_to_cancel = order.bitrix_order_id
+
                 order.is_cancelled = True
                 order.order_time = now.strftime("%H:%M:%S")
                 db.session.commit()
 
                 # 🔥 Если заказ уже отправлен в Bitrix — отменяем его там тоже
-                if order.bitrix_order_id:
+                if bitrix_id_to_cancel:
                     try:
                         from bitrix.sync import BitrixSync
                         sync = BitrixSync()
-                        cancelled_in_bitrix = await sync._cancel_bitrix_order(order.bitrix_order_id)
+                        cancelled_in_bitrix = await sync._cancel_bitrix_order(bitrix_id_to_cancel)
                         if cancelled_in_bitrix:
-                            logger.info(f"✅ Заказ {order.id}: отменён в Bitrix (ID: {order.bitrix_order_id})")
+                            logger.info(f"✅ Заказ {order.id}: отменён в Bitrix (ID: {bitrix_id_to_cancel})")
                         else:
-                            logger.warning(f"⚠️ Заказ {order.id}: не удалось отменить в Bitrix (ID: {order.bitrix_order_id})")
+                            logger.warning(f"⚠️ Заказ {order.id}: не удалось отменить в Bitrix (ID: {bitrix_id_to_cancel})")
                     except Exception as e:
                         logger.error(f"❌ Заказ {order.id}: ошибка при отмене в Bitrix: {e}")
 
@@ -611,20 +615,24 @@ async def handle_cancel_from_view(update: Update, context: ContextTypes.DEFAULT_
         ).first()
         
         if order:
+            # 🔥 Принудительно обновляем объект из БД, чтобы получить актуальный bitrix_order_id
+            db.session.refresh(order)
+            bitrix_id_to_cancel = order.bitrix_order_id
+
             order.is_cancelled = True
             order.order_time = now.isoformat()
             db.session.commit()
             
             # 🔥 Если заказ уже отправлен в Bitrix — отменяем его там тоже
-            if order.bitrix_order_id:
+            if bitrix_id_to_cancel:
                 try:
                     from bitrix.sync import BitrixSync
                     sync = BitrixSync()
-                    cancelled_in_bitrix = await sync._cancel_bitrix_order(order.bitrix_order_id)
+                    cancelled_in_bitrix = await sync._cancel_bitrix_order(bitrix_id_to_cancel)
                     if cancelled_in_bitrix:
-                        logger.info(f"✅ Заказ {order.id}: отменён в Bitrix (ID: {order.bitrix_order_id})")
+                        logger.info(f"✅ Заказ {order.id}: отменён в Bitrix (ID: {bitrix_id_to_cancel})")
                     else:
-                        logger.warning(f"⚠️ Заказ {order.id}: не удалось отменить в Bitrix (ID: {order.bitrix_order_id})")
+                        logger.warning(f"⚠️ Заказ {order.id}: не удалось отменить в Bitrix (ID: {bitrix_id_to_cancel})")
                 except Exception as e:
                     logger.error(f"❌ Заказ {order.id}: ошибка при отмене в Bitrix: {e}")
             else:

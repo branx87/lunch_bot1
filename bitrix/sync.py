@@ -1315,6 +1315,9 @@ class BitrixSync:
                                 logger.info(f"Заказ {order_id} уже отправлен или не найден, пропускаем")
                                 continue
 
+                            # 🔥 Принудительно обновляем объект из БД, чтобы получить актуальные данные
+                            order_session.refresh(order)
+
                             # Получаем пользователя в той же сессии
                             user = order_session.query(User).filter(
                                 User.id == order.user_id
