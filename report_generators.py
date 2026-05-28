@@ -1,5 +1,5 @@
 # ##report_generators.py
-from openpyxl.styles import Font
+from openpyxl.styles import Font, Border, Side
 from typing import Optional
 import openpyxl
 from datetime import datetime, date
@@ -448,14 +448,23 @@ async def export_monthly_report(
 
         # 🔥 ОСТАЛЬНАЯ ЛОГИКА ОСТАЕТСЯ ПРЕЖНЕЙ (создание листов по локациям, итоги и т.д.)
         # Создаем листы для каждой локации (объединяем "Офис" и "ПЦ 2")
+        
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
         for location in CONFIG.locations:
             if location == "ПЦ 2":
                 continue
                 
             ws = wb.create_sheet(location)
-            headers = ["Дата обеда", "Номер заказа", "Сотрудник", "Территориальный признак", "Подпись", "Кол-во обедов", "Источник заказа"]
+            # Без колонок "Номер заказа" и "Источник заказа"
+            headers = ["Дата обеда", "Сотрудник", "Территориальный признак", "Подпись", "Кол-во обедов"]
             ws.append(headers)
-            ws.auto_filter.ref = "A1:G1"
+            ws.auto_filter.ref = "A1:E1"
             
             # Для листа "Офис" включаем также заказы из "ПЦ 2"
             if location == "Офис":
@@ -471,13 +480,16 @@ async def export_monthly_report(
                     loc_orders_by_date[date_key] = []
                 loc_orders_by_date[date_key].append(row)
             
-            # Заполняем лист локации с номером заказа
+            # Заполняем лист локации без номера заказа и источника
             for date_key in sorted(loc_orders_by_date.keys()):
                 for row in loc_orders_by_date[date_key]:
                     target_date = row[0].strftime("%d.%m.%Y") if isinstance(row[0], date) else datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
-                    source = "Битрикс" if row[4] else "Бот"
-                    order_number = row[6] if row[6] is not None else ""
-                    ws.append([target_date, order_number, row[1], row[2], "", row[3], source])
+                    ws.append([target_date, row[1], row[2], "", row[3]])
+            
+            # Добавляем границы для всех ячеек с данными
+            for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
+                for cell in row_cells:
+                    cell.border = thin_border
         
         # Лист "Итоги"
         ws_summary = wb.create_sheet("Итоги")
