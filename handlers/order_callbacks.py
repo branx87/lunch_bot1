@@ -357,6 +357,11 @@ async def handle_cancel_callback(query, now, user, context):
         # в другой сессии (в _push_to_bitrix).
         db.session.refresh(order)
 
+        # 🔍 ДИАГНОСТИКА: проверяем состояние заказа ДО отмены
+        logger.info(f"🔍 DIAG cancel: order.id={order.id}, is_cancelled before={order.is_cancelled}, "
+                    f"bitrix_order_id={order.bitrix_order_id}, is_from_bitrix={order.is_from_bitrix}, "
+                    f"target_date={order.target_date}, session={id(db.session)}")
+
         # Сохраняем bitrix_order_id ДО commit, чтобы избежать detached-доступа
         bitrix_id_to_cancel = order.bitrix_order_id
 
@@ -364,6 +369,10 @@ async def handle_cancel_callback(query, now, user, context):
         order.is_cancelled = True
         order.order_time = now.strftime("%H:%M:%S")
         db.session.commit()
+
+        # 🔍 ДИАГНОСТИКА: проверяем что заказ отменён после commit
+        logger.info(f"🔍 DIAG cancel: after commit, is_cancelled={order.is_cancelled}, "
+                    f"bitrix_id_to_cancel={bitrix_id_to_cancel}")
 
         # 🔥 Отменяем заказ в Bitrix
         if not bitrix_id_to_cancel and order.is_from_bitrix == 1:
@@ -399,9 +408,11 @@ async def handle_cancel_callback(query, now, user, context):
                 logger.error(f"❌ Заказ {order.id}: ошибка при отмене в Bitrix: {e}")
         else:
             # 🔥 НЕМЕДЛЕННОЕ УДАЛЕНИЕ если условия подходят (только для неотправленных заказов)
+            logger.info(f"🔍 DIAG cancel: вызываем cancel_order_immediate_cleanup для order.id={order.id}")
             try:
                 sync = BitrixSync()
-                await sync.cancel_order_immediate_cleanup(order.id)
+                cleanup_result = await sync.cancel_order_immediate_cleanup(order.id)
+                logger.info(f"🔍 DIAG cancel: cancel_order_immediate_cleanup result={cleanup_result}")
             except Exception as e:
                 logger.error(f"❌ Заказ {order.id}: ошибка при cleanup: {e}")
 

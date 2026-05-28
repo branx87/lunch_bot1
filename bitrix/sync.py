@@ -2308,6 +2308,11 @@ class BitrixSync:
                 if not order:
                     logger.warning(f"Заказ {order_id} не найден")
                     return False
+                
+                # 🔍 ДИАГНОСТИКА: проверяем состояние заказа в новой сессии
+                logger.info(f"🔍 DIAG cleanup: order.id={order.id}, is_cancelled={order.is_cancelled}, "
+                            f"is_from_bitrix={order.is_from_bitrix}, bitrix_order_id={order.bitrix_order_id}, "
+                            f"target_date={order.target_date}, session={id(session)}")
                     
                 # 🔥 ДОБАВИТЬ ПРОВЕРКУ ВРЕМЕНИ ДЛЯ УДАЛЕНИЯ
                 if order.target_date == today and now.time() >= TIME_CONFIG.MODIFICATION_DEADLINE:
@@ -2328,7 +2333,7 @@ class BitrixSync:
                 
                 # Проверяем условия для удаления
                 if not order.is_cancelled:
-                    logger.warning(f"Заказ {order_id} не отменен, удаление невозможно")
+                    logger.warning(f"🔍 DIAG cleanup: Заказ {order_id} не отменен (is_cancelled={order.is_cancelled}), удаление невозможно")
                     return False
                     
                 if order.is_from_bitrix:
