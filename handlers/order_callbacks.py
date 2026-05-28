@@ -155,7 +155,7 @@ async def handle_change_callback(query, now, user, context):
     """
     # Добавляем проверку доступа в начале функции
     if not await check_user_access(user.id, context.application):
-        await show_access_denied(update)
+        await show_access_denied(query)
         return
     
     try:
@@ -277,7 +277,7 @@ async def handle_cancel_callback(query, now, user, context):
     
     if not await check_user_access(user.id, context.application):
         logger.warning(f"USER {user_id}: доступ запрещен")
-        await show_access_denied(update)
+        await show_access_denied(query)
         return
     
     try:
@@ -321,63 +321,60 @@ async def handle_cancel_callback(query, now, user, context):
 
         logger.info(f"USER {user_id}: пытается отменить заказ на {target_date}")
 
-        # Получаем ID пользователя в БД через SQLAlchemy
-        user_record = db.session.query(User).filter(User.telegram_id == user.id).first()
-        if not user_record:
-            logger.error(f"USER {user_id}: не найден в базе данных")
-            await query.answer("❌ Пользователь не найден", show_alert=True)
-            return
-        user_db_id = user_record.id
+        # 🔥 ИСПРАВЛЕНИЕ: используем контекстную сессию вместо глобальной db.session,
+        # чтобы гарантированно видеть bitrix_order_id, установленный в _push_to_bitrix
+        # (который использует db.get_session() — другую сессию).
+        with db.get_session() as session:
+            # Получаем ID пользователя в БД
+            user_record = session.query(User).filter(User.telegram_id == user.id).first()
+            if not user_record:
+                logger.error(f"USER {user_id}: не найден в базе данных")
+                await query.answer("❌ Пользователь не найден", show_alert=True)
+                return
+            user_db_id = user_record.id
 
-        # Проверяем можно ли отменять заказ
-        if not can_modify_order(target_date):
-            logger.warning(f"USER {user_id}: отмена невозможна для {target_date} (время истекло)")
-            await query.answer(f"ℹ️ Отмена невозможна после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}", show_alert=True)
-            return
+            # Проверяем можно ли отменять заказ
+            if not can_modify_order(target_date):
+                logger.warning(f"USER {user_id}: отмена невозможна для {target_date} (время истекло)")
+                await query.answer(f"ℹ️ Отмена невозможна после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}", show_alert=True)
+                return
 
-        # Проверяем, не создан ли заказ в Битрикс через SQLAlchemy
-        order = db.session.query(Order).filter(
-            Order.user_id == user_db_id,
-            Order.target_date == target_date,
-            Order.is_cancelled == False
-        ).first()
-        
-        if not order:
-            logger.warning(f"USER {user_id}: заказ на {target_date} не найден")
-            await query.answer("❌ Заказ не найден", show_alert=True)
-            return
+            # Получаем заказ (свежие данные из БД, включая bitrix_order_id)
+            order = session.query(Order).filter(
+                Order.user_id == user_db_id,
+                Order.target_date == target_date,
+                Order.is_cancelled == False
+            ).first()
+            
+            if not order:
+                logger.warning(f"USER {user_id}: заказ на {target_date} не найден")
+                await query.answer("❌ Заказ не найден", show_alert=True)
+                return
 
-        # Заказы из Bitrix теперь можно отменять (синхронизация с Bitrix через _cancel_bitrix_order)
-        if order.is_from_bitrix == 1:
-            logger.info(f"USER {user_id}: отмена заказа из Битрикс на {target_date} (разрешено)")
+            # Заказы из Bitrix теперь можно отменять
+            if order.is_from_bitrix == 1:
+                logger.info(f"USER {user_id}: отмена заказа из Битрикс на {target_date} (разрешено)")
 
-        # 🔥 ПРИНУДИТЕЛЬНОЕ ОБНОВЛЕНИЕ объекта из БД, чтобы получить актуальный bitrix_order_id.
-        # Без этого SQLAlchemy может вернуть устаревшее значение из identity map сессии,
-        # если заказ был ранее создан в этой сессии, а bitrix_order_id был установлен
-        # в другой сессии (в _push_to_bitrix).
-        db.session.refresh(order)
+            # 🔍 ДИАГНОСТИКА: проверяем состояние заказа ДО отмены
+            logger.info(f"🔍 DIAG cancel: order.id={order.id}, is_cancelled before={order.is_cancelled}, "
+                        f"bitrix_order_id={order.bitrix_order_id}, is_from_bitrix={order.is_from_bitrix}, "
+                        f"target_date={order.target_date}, session={id(session)}")
 
-        # 🔍 ДИАГНОСТИКА: проверяем состояние заказа ДО отмены
-        logger.info(f"🔍 DIAG cancel: order.id={order.id}, is_cancelled before={order.is_cancelled}, "
-                    f"bitrix_order_id={order.bitrix_order_id}, is_from_bitrix={order.is_from_bitrix}, "
-                    f"target_date={order.target_date}, session={id(db.session)}")
+            # Сохраняем bitrix_order_id ДО отмены
+            bitrix_id_to_cancel = order.bitrix_order_id
 
-        # Сохраняем bitrix_order_id ДО commit, чтобы избежать detached-доступа
-        bitrix_id_to_cancel = order.bitrix_order_id
+            # Отменяем заказ
+            order.is_cancelled = True
+            order.order_time = now.strftime("%H:%M:%S")
+            session.commit()
 
-        # Отменяем заказ через SQLAlchemy
-        order.is_cancelled = True
-        order.order_time = now.strftime("%H:%M:%S")
-        db.session.commit()
+            # 🔍 ДИАГНОСТИКА: проверяем что заказ отменён после commit
+            logger.info(f"🔍 DIAG cancel: after commit, is_cancelled={order.is_cancelled}, "
+                        f"bitrix_id_to_cancel={bitrix_id_to_cancel}")
 
-        # 🔍 ДИАГНОСТИКА: проверяем что заказ отменён после commit
-        logger.info(f"🔍 DIAG cancel: after commit, is_cancelled={order.is_cancelled}, "
-                    f"bitrix_id_to_cancel={bitrix_id_to_cancel}")
-
-        # 🔥 Отменяем заказ в Bitrix
+        # 🔥 Отменяем заказ в Bitrix (вне контекстной сессии, т.к. это API вызов)
         if not bitrix_id_to_cancel and order.is_from_bitrix == 1:
             # Заказ из Bitrix, но bitrix_order_id не сохранён локально.
-            # Пытаемся найти его в Bitrix по пользователю и дате.
             try:
                 sync = BitrixSync()
                 order_data = {
@@ -423,8 +420,8 @@ async def handle_cancel_callback(query, now, user, context):
         if is_from_orders:
             # Обновляем список заказов
             from handlers.common_handlers import view_orders
-            await view_orders(update=Update(0, callback_query=query), 
-                             context=context, 
+            await view_orders(update=Update(0, callback_query=query),
+                             context=context,
                              is_cancellation=True)
         else:
             # Возвращаем меню дня
@@ -446,7 +443,7 @@ async def handle_confirm_callback(query, now, user, context):
     - Обрабатывает возможные ошибки подтверждения
     """
     if not await check_user_access(user.id, context.application):
-        await show_access_denied(update)
+        await show_access_denied(query)
         return
     
     try:
@@ -466,7 +463,7 @@ async def modify_portion_count(query, now, user, context, delta):
     - Обновляет bitrix_quantity_id в соответствии с количеством
     """
     if not await check_user_access(user.id, context.application):
-        await show_access_denied(update)
+        await show_access_denied(query)
         return
     
     try:
