@@ -73,12 +73,20 @@ class LunchBot:
                 pool_timeout=30.0,      # Увеличено для SOCKS5
             )
             if CONFIG.proxy_url:
-                # 🔥 Прокси ТОЛЬКО для Telegram API, а не глобально для всего процесса
-                # (чтобы не ломать подключение к Bitrix24 и другим внутренним сервисам)
-                # HTTPXRequest принимает proxy_url, а SocksHTTPXRequest внутри преобразует
-                # его в proxies для httpx.AsyncClient
-                request_kwargs['proxy_url'] = CONFIG.proxy_url
+                # 🔥 Прокси ТОЛЬКО для Telegram API через HTTPS_PROXY,
+                # но с NO_PROXY для Bitrix24 и внутренних сетей
+                import os
+                os.environ['HTTPS_PROXY'] = CONFIG.proxy_url
+                # Запрещаем прокси для Bitrix24 и внутренних адресов
+                no_proxy = os.environ.get('NO_PROXY', '')
+                exclude = 'b24.epc.su,b24dev.ru,localhost,127.0.0.1,192.168.0.0/16,172.17.0.0/16'
+                if no_proxy:
+                    os.environ['NO_PROXY'] = f"{no_proxy},{exclude}"
+                else:
+                    os.environ['NO_PROXY'] = exclude
+                os.environ['no_proxy'] = os.environ['NO_PROXY']
                 self.logger.info(f"🔗 Прокси для Telegram API: {CONFIG.proxy_url}")
+                self.logger.info(f"🚫 NO_PROXY: {os.environ['NO_PROXY']}")
                 # Используем SocksHTTPXRequest — он корректно обрабатывает SOCKS5
                 request = SocksHTTPXRequest(**request_kwargs)
             else:
