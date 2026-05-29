@@ -1385,6 +1385,19 @@ class BitrixSync:
                                     if update_success:
                                         bitrix_id = existing_bitrix_id
                                         logger.info(f"✅ Заказ {order_id}: Bitrix заказ {existing_bitrix_id} обновлён, привязываем к новому локальному заказу")
+                                        
+                                        # 🔥 ИСПРАВЛЕНИЕ: Очищаем bitrix_order_id у старого отменённого заказа
+                                        # в ТЕКУЩЕЙ сессии (order_session), чтобы избежать IntegrityError
+                                        # при попытке установить тот же bitrix_order_id на новый заказ.
+                                        # Старый заказ уже отменён, поэтому он больше не должен занимать
+                                        # уникальный bitrix_order_id.
+                                        old_order = order_session.query(Order).filter(
+                                            Order.id == existing_local_order_id
+                                        ).first()
+                                        if old_order and old_order.bitrix_order_id == str(existing_bitrix_id):
+                                            old_order.bitrix_order_id = None
+                                            old_order.updated_at = datetime.now()
+                                            logger.info(f"🔧 Отвязали Bitrix ID {existing_bitrix_id} от старого отменённого заказа {existing_local_order_id}")
                                     else:
                                         logger.error(f"❌ Заказ {order_id}: не удалось обновить Bitrix заказ {existing_bitrix_id}")
                                         bitrix_id = None
@@ -1431,11 +1444,20 @@ class BitrixSync:
                                 order.is_sent_to_bitrix = True
                                 order.bitrix_order_id = str(bitrix_id)
                                 order.updated_at = datetime.now()
+                                # 🔍 ДИАГНОСТИКА: проверяем, нет ли уже заказа с таким bitrix_order_id
+                                existing_with_same_id = order_session.query(Order.id).filter(
+                                    Order.bitrix_order_id == str(bitrix_id),
+                                    Order.id != order_id
+                                ).first()
+                                if existing_with_same_id:
+                                    logger.warning(f"🔍 DIAG push: заказ {existing_with_same_id[0]} уже имеет bitrix_order_id={bitrix_id}, "
+                                                   f"ожидается IntegrityError при commit")
                                 try:
                                     order_session.commit()
                                     success_count += 1
                                     logger.info(f"✅ УСПЕШНО: Заказ {order_id} -> Bitrix ID: {bitrix_id}")
-                                except IntegrityError:
+                                except IntegrityError as ie:
+                                    logger.warning(f"🔍 DIAG push: IntegrityError при сохранении bitrix_order_id={bitrix_id} для заказа {order_id}: {ie}")
                                     order_session.rollback()
                                     # Bitrix ID уже занят другим локальным заказом.
                                     # Пытаемся разрешить конфликт: если старый заказ отменён — отвязываем его
@@ -2342,6 +2364,13 @@ class BitrixSync:
                     
                 if order.bitrix_order_id:
                     logger.warning(f"Заказ {order_id} уже синхронизирован с Bitrix (ID: {order.bitrix_order_id}), удаление невозможно")
+                    return False
+                    
+                # 🔥 ИСПРАВЛЕНИЕ: Заказы, которые были отправлены в Bitrix (is_sent_to_bitrix=True),
+                # не должны удаляться, даже если bitrix_order_id был очищен при отмене.
+                # Они нужны для истории и для предотвращения повторной отправки в Bitrix.
+                if order.is_sent_to_bitrix:
+                    logger.warning(f"Заказ {order_id} уже был отправлен в Bitrix (is_sent_to_bitrix=True), удаление невозможно")
                     return False
                     
                 # Проверяем что дата заказа сегодня или в будущем

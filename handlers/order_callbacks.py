@@ -370,6 +370,15 @@ async def handle_cancel_callback(query, now, user, context):
             # Отменяем заказ
             order.is_cancelled = True
             order.order_time = now.strftime("%H:%M:%S")
+
+            # 🔥 ИСПРАВЛЕНИЕ: Если у заказа есть bitrix_order_id, очищаем его при отмене.
+            # Это необходимо, чтобы новый заказ того же пользователя на ту же дату мог
+            # занять этот bitrix_order_id без нарушения UNIQUE-constraint.
+            # Старый заказ остаётся в БД как отменённый, но без привязки к Bitrix.
+            if order.bitrix_order_id:
+                logger.info(f"🔧 Отвязываем Bitrix ID {order.bitrix_order_id} от отменяемого заказа {order.id}")
+                order.bitrix_order_id = None
+
             session.commit()
 
             # 🔍 ДИАГНОСТИКА: проверяем что заказ отменён после commit
