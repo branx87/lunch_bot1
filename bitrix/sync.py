@@ -1355,13 +1355,31 @@ class BitrixSync:
                                 existing_local_cancelled = False
                                 existing_local_quantity = 0
                                 with db.get_session() as check_session:
+                                    # 🔥 ИСПРАВЛЕНИЕ: Ищем отменённый заказ этого пользователя на эту дату
+                                    # по user_id + target_date, а НЕ по bitrix_order_id.
+                                    # Это нужно потому что при отмене заказа мы очищаем bitrix_order_id (Fix 1),
+                                    # и поиск по bitrix_order_id не найдёт старый заказ.
                                     existing_local_order = check_session.query(Order).filter(
-                                        Order.bitrix_order_id == str(existing_bitrix_id)
-                                    ).first()
+                                        Order.user_id == order.user_id,
+                                        Order.target_date == order.target_date,
+                                        Order.is_cancelled == True
+                                    ).order_by(Order.id.desc()).first()
                                     if existing_local_order:
                                         existing_local_order_id = existing_local_order.id
                                         existing_local_cancelled = existing_local_order.is_cancelled
                                         existing_local_quantity = existing_local_order.quantity
+                                        logger.info(f"🔍 Найден отменённый заказ {existing_local_order_id} для пользователя {order.user_id} на {order.target_date}")
+                                    else:
+                                        # Если не нашли по user_id+date, пробуем найти по bitrix_order_id
+                                        # (для обратной совместимости со старыми отменёнными заказами, у которых bitrix_order_id ещё не очищен)
+                                        existing_local_order = check_session.query(Order).filter(
+                                            Order.bitrix_order_id == str(existing_bitrix_id)
+                                        ).first()
+                                        if existing_local_order:
+                                            existing_local_order_id = existing_local_order.id
+                                            existing_local_cancelled = existing_local_order.is_cancelled
+                                            existing_local_quantity = existing_local_order.quantity
+                                            logger.info(f"🔍 Найден заказ {existing_local_order_id} по bitrix_order_id={existing_bitrix_id}")
                                     
                                 if existing_local_order_id and existing_local_cancelled:
                                     # Старый заказ отменён — обновляем существующий заказ в Bitrix
