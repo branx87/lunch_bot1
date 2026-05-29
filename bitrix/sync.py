@@ -44,6 +44,12 @@ class BitrixSync:
             if not self.webhook or not self.rest_webhook:
                 raise ValueError("BITRIX_WEBHOOK или BITRIX_REST_WEBHOOK не найден в .env")
             
+            # 🔥 ЯВНО ЗАПРЕЩАЕМ ПРОКСИ ДЛЯ BITRIX24
+            # Прокси нужен только для Telegram API (обходит блокировки),
+            # Bitrix24 находится во внутренней сети и не должен ходить через SOCKS5.
+            os.environ['NO_PROXY'] = 'b24.epc.su,b24dev.ru,localhost,127.0.0.1,192.168.0.0/16,172.17.0.0/16'
+            os.environ['no_proxy'] = os.environ['NO_PROXY']
+            
             # 🔥 ПРОСТОЙ КЛИЕНТ БЕЗ КАСТОМНЫХ НАСТРОЕК
             self.bx = Bitrix(self.webhook)
             

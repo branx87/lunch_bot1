@@ -63,7 +63,8 @@ class BitrixBotClient:
 
         for attempt in range(1, retries + 1):
             try:
-                async with httpx.AsyncClient(timeout=15.0) as client:
+                # Явно без прокси — Bitrix24 во внутренней сети
+                async with httpx.AsyncClient(timeout=15.0, proxies={}) as client:
                     resp = await client.post(self._sender_url, json=payload, headers=headers)
                     if resp.status_code == 200:
                         data = resp.json()

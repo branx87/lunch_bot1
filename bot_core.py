@@ -72,11 +72,14 @@ class LunchBot:
                 pool_timeout=30.0,      # Увеличено для SOCKS5
             )
             if CONFIG.proxy_url:
-                # Прокси через env var — обход бага HTTPXRequest с SOCKS5+TLS
-                import os
-                os.environ['HTTPS_PROXY'] = CONFIG.proxy_url
-                self.logger.info(f"Используем прокси (env): {CONFIG.proxy_url}")
-            request = HTTPXRequest(**request_kwargs)
+                # 🔥 Прокси ТОЛЬКО для Telegram API, а не глобально для всего процесса
+                # (чтобы не ломать подключение к Bitrix24 и другим внутренним сервисам)
+                request_kwargs['proxies'] = CONFIG.proxy_url
+                self.logger.info(f"🔗 Прокси для Telegram API: {CONFIG.proxy_url}")
+                # Используем SocksHTTPXRequest — он корректно обрабатывает SOCKS5
+                request = SocksHTTPXRequest(**request_kwargs)
+            else:
+                request = HTTPXRequest(**request_kwargs)
             
             # ✅ УБРАЛИ connect_timeout, read_timeout и т.д. из ApplicationBuilder
             self.application = (
