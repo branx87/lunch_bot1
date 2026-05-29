@@ -360,7 +360,11 @@ async def handle_cancel_callback(query, now, user, context):
                         f"bitrix_order_id={order.bitrix_order_id}, is_from_bitrix={order.is_from_bitrix}, "
                         f"target_date={order.target_date}, session={id(session)}")
 
-            # Сохраняем bitrix_order_id ДО отмены
+            # 🔥 СОХРАНЯЕМ ВСЕ НУЖНЫЕ ПОЛЯ В ЛОКАЛЬНЫЕ ПЕРЕМЕННЫЕ ДО ВЫХОДА ИЗ СЕССИИ
+            # После выхода из with db.get_session() объект order станет detached,
+            # и обращение к его атрибутам вызовет DetachedInstanceError.
+            order_id = order.id
+            is_from_bitrix = order.is_from_bitrix
             bitrix_id_to_cancel = order.bitrix_order_id
 
             # Отменяем заказ
@@ -373,7 +377,7 @@ async def handle_cancel_callback(query, now, user, context):
                         f"bitrix_id_to_cancel={bitrix_id_to_cancel}")
 
         # 🔥 Отменяем заказ в Bitrix (вне контекстной сессии, т.к. это API вызов)
-        if not bitrix_id_to_cancel and order.is_from_bitrix == 1:
+        if not bitrix_id_to_cancel and is_from_bitrix == 1:
             # Заказ из Bitrix, но bitrix_order_id не сохранён локально.
             try:
                 sync = BitrixSync()
@@ -387,31 +391,31 @@ async def handle_cancel_callback(query, now, user, context):
                 )
                 if found_bitrix_id:
                     bitrix_id_to_cancel = found_bitrix_id
-                    logger.info(f"🔍 Заказ {order.id}: найден Bitrix ID {found_bitrix_id} для отмены")
+                    logger.info(f"🔍 Заказ {order_id}: найден Bitrix ID {found_bitrix_id} для отмены")
                 else:
-                    logger.warning(f"⚠️ Заказ {order.id}: не найден заказ в Bitrix для отмены")
+                    logger.warning(f"⚠️ Заказ {order_id}: не найден заказ в Bitrix для отмены")
             except Exception as e:
-                logger.error(f"❌ Заказ {order.id}: ошибка при поиске Bitrix ID для отмены: {e}")
+                logger.error(f"❌ Заказ {order_id}: ошибка при поиске Bitrix ID для отмены: {e}")
 
         if bitrix_id_to_cancel:
             try:
                 sync = BitrixSync()
                 cancelled_in_bitrix = await sync._cancel_bitrix_order(bitrix_id_to_cancel)
                 if cancelled_in_bitrix:
-                    logger.info(f"✅ Заказ {order.id}: отменён в Bitrix (ID: {bitrix_id_to_cancel})")
+                    logger.info(f"✅ Заказ {order_id}: отменён в Bitrix (ID: {bitrix_id_to_cancel})")
                 else:
-                    logger.warning(f"⚠️ Заказ {order.id}: не удалось отменить в Bitrix (ID: {bitrix_id_to_cancel})")
+                    logger.warning(f"⚠️ Заказ {order_id}: не удалось отменить в Bitrix (ID: {bitrix_id_to_cancel})")
             except Exception as e:
-                logger.error(f"❌ Заказ {order.id}: ошибка при отмене в Bitrix: {e}")
+                logger.error(f"❌ Заказ {order_id}: ошибка при отмене в Bitrix: {e}")
         else:
             # 🔥 НЕМЕДЛЕННОЕ УДАЛЕНИЕ если условия подходят (только для неотправленных заказов)
-            logger.info(f"🔍 DIAG cancel: вызываем cancel_order_immediate_cleanup для order.id={order.id}")
+            logger.info(f"🔍 DIAG cancel: вызываем cancel_order_immediate_cleanup для order.id={order_id}")
             try:
                 sync = BitrixSync()
-                cleanup_result = await sync.cancel_order_immediate_cleanup(order.id)
+                cleanup_result = await sync.cancel_order_immediate_cleanup(order_id)
                 logger.info(f"🔍 DIAG cancel: cancel_order_immediate_cleanup result={cleanup_result}")
             except Exception as e:
-                logger.error(f"❌ Заказ {order.id}: ошибка при cleanup: {e}")
+                logger.error(f"❌ Заказ {order_id}: ошибка при cleanup: {e}")
 
         # Логируем успешную отмену
         logger.info(f"USER {user_id}: успешно отменил заказ на {target_date}")
