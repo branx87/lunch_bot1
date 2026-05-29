@@ -325,6 +325,12 @@ async def handle_cancel_callback(query, now, user, context):
         # чтобы гарантированно видеть bitrix_order_id, установленный в _push_to_bitrix
         # (который использует db.get_session() — другую сессию).
         with db.get_session() as session:
+            # 🔍 ДИАГНОСТИКА: проверяем все заказы пользователя на эту дату ДО начала
+            all_user_orders = session.query(Order.id, Order.bitrix_order_id, Order.is_cancelled, Order.is_sent_to_bitrix, Order.is_from_bitrix).filter(
+                Order.user_id == user_id  # будет преобразован через user_record ниже
+            ).all()
+            # Пока не знаем user_db_id, пропускаем эту диагностику
+
             # Получаем ID пользователя в БД
             user_record = session.query(User).filter(User.telegram_id == user.id).first()
             if not user_record:
@@ -332,6 +338,14 @@ async def handle_cancel_callback(query, now, user, context):
                 await query.answer("❌ Пользователь не найден", show_alert=True)
                 return
             user_db_id = user_record.id
+
+            # 🔍 ДИАГНОСТИКА: все заказы пользователя на эту дату
+            all_user_orders = session.query(Order.id, Order.bitrix_order_id, Order.is_cancelled, Order.is_sent_to_bitrix, Order.is_from_bitrix).filter(
+                Order.user_id == user_db_id,
+                Order.target_date == target_date
+            ).all()
+            logger.info(f"🔍 DIAG cancel ALL: пользователь {user_db_id} на {target_date}: "
+                       f"{[(o.id, o.bitrix_order_id, o.is_cancelled, o.is_sent_to_bitrix, o.is_from_bitrix) for o in all_user_orders]}")
 
             # Проверяем можно ли отменять заказ
             if not can_modify_order(target_date):
@@ -358,7 +372,19 @@ async def handle_cancel_callback(query, now, user, context):
             # 🔍 ДИАГНОСТИКА: проверяем состояние заказа ДО отмены
             logger.info(f"🔍 DIAG cancel: order.id={order.id}, is_cancelled before={order.is_cancelled}, "
                         f"bitrix_order_id={order.bitrix_order_id}, is_from_bitrix={order.is_from_bitrix}, "
+                        f"is_sent_to_bitrix={order.is_sent_to_bitrix}, "
                         f"target_date={order.target_date}, session={id(session)}")
+
+            # 🔥 ДОПОЛНИТЕЛЬНАЯ ДИАГНОСТИКА: проверяем, есть ли в БД другие заказы
+            # этого пользователя на эту дату с bitrix_order_id
+            other_orders_with_bitrix = session.query(Order.id, Order.bitrix_order_id, Order.is_cancelled).filter(
+                Order.user_id == order.user_id,
+                Order.target_date == order.target_date,
+                Order.bitrix_order_id.isnot(None)
+            ).all()
+            if other_orders_with_bitrix:
+                logger.info(f"🔍 DIAG cancel: другие заказы пользователя {order.user_id} на {order.target_date} "
+                           f"с bitrix_order_id: {[(o.id, o.bitrix_order_id, o.is_cancelled) for o in other_orders_with_bitrix]}")
 
             # 🔥 СОХРАНЯЕМ ВСЕ НУЖНЫЕ ПОЛЯ В ЛОКАЛЬНЫЕ ПЕРЕМЕННЫЕ ДО ВЫХОДА ИЗ СЕССИИ
             # После выхода из with db.get_session() объект order станет detached,
@@ -366,24 +392,16 @@ async def handle_cancel_callback(query, now, user, context):
             order_id = order.id
             is_from_bitrix = order.is_from_bitrix
             bitrix_id_to_cancel = order.bitrix_order_id
+            is_sent_to_bitrix = order.is_sent_to_bitrix
 
             # Отменяем заказ
             order.is_cancelled = True
             order.order_time = now.strftime("%H:%M:%S")
-
-            # 🔥 ИСПРАВЛЕНИЕ: Если у заказа есть bitrix_order_id, очищаем его при отмене.
-            # Это необходимо, чтобы новый заказ того же пользователя на ту же дату мог
-            # занять этот bitrix_order_id без нарушения UNIQUE-constraint.
-            # Старый заказ остаётся в БД как отменённый, но без привязки к Bitrix.
-            if order.bitrix_order_id:
-                logger.info(f"🔧 Отвязываем Bitrix ID {order.bitrix_order_id} от отменяемого заказа {order.id}")
-                order.bitrix_order_id = None
-
             session.commit()
 
             # 🔍 ДИАГНОСТИКА: проверяем что заказ отменён после commit
             logger.info(f"🔍 DIAG cancel: after commit, is_cancelled={order.is_cancelled}, "
-                        f"bitrix_id_to_cancel={bitrix_id_to_cancel}")
+                        f"bitrix_id_to_cancel={bitrix_id_to_cancel}, is_sent_to_bitrix={is_sent_to_bitrix}")
 
         # 🔥 Отменяем заказ в Bitrix (вне контекстной сессии, т.к. это API вызов)
         if not bitrix_id_to_cancel and is_from_bitrix == 1:

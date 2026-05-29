@@ -1389,6 +1389,15 @@ class BitrixSync:
                                         f"Обновляем существующий заказ в Bitrix (ID: {existing_bitrix_id}) "
                                         f"с новыми данными (количество: {order_data['quantity']})"
                                     )
+                                    # 🔍 ДИАГНОСТИКА: проверяем bitrix_order_id старого заказа
+                                    with db.get_session() as diag_session:
+                                        old_order = diag_session.query(Order.id, Order.bitrix_order_id, Order.is_cancelled).filter(
+                                            Order.id == existing_local_order_id
+                                        ).first()
+                                        if old_order:
+                                            logger.info(f"🔍 DIAG push old_order: id={old_order.id}, "
+                                                       f"bitrix_order_id={old_order.bitrix_order_id}, "
+                                                       f"is_cancelled={old_order.is_cancelled}")
                                     update_success = await self._update_bitrix_order(
                                         existing_bitrix_id,
                                         {
@@ -1403,19 +1412,6 @@ class BitrixSync:
                                     if update_success:
                                         bitrix_id = existing_bitrix_id
                                         logger.info(f"✅ Заказ {order_id}: Bitrix заказ {existing_bitrix_id} обновлён, привязываем к новому локальному заказу")
-                                        
-                                        # 🔥 ИСПРАВЛЕНИЕ: Очищаем bitrix_order_id у старого отменённого заказа
-                                        # в ТЕКУЩЕЙ сессии (order_session), чтобы избежать IntegrityError
-                                        # при попытке установить тот же bitrix_order_id на новый заказ.
-                                        # Старый заказ уже отменён, поэтому он больше не должен занимать
-                                        # уникальный bitrix_order_id.
-                                        old_order = order_session.query(Order).filter(
-                                            Order.id == existing_local_order_id
-                                        ).first()
-                                        if old_order and old_order.bitrix_order_id == str(existing_bitrix_id):
-                                            old_order.bitrix_order_id = None
-                                            old_order.updated_at = datetime.now()
-                                            logger.info(f"🔧 Отвязали Bitrix ID {existing_bitrix_id} от старого отменённого заказа {existing_local_order_id}")
                                     else:
                                         logger.error(f"❌ Заказ {order_id}: не удалось обновить Bitrix заказ {existing_bitrix_id}")
                                         bitrix_id = None
@@ -1473,7 +1469,19 @@ class BitrixSync:
                                 try:
                                     order_session.commit()
                                     success_count += 1
+                                    # 🔍 ДИАГНОСТИКА: проверяем состояние заказа ПОСЛЕ успешного commit
                                     logger.info(f"✅ УСПЕШНО: Заказ {order_id} -> Bitrix ID: {bitrix_id}")
+                                    # Проверяем, что bitrix_order_id действительно сохранился
+                                    with db.get_session() as verify_session:
+                                        verify_order = verify_session.query(Order.id, Order.bitrix_order_id, Order.is_sent_to_bitrix).filter(
+                                            Order.id == order_id
+                                        ).first()
+                                        if verify_order:
+                                            logger.info(f"🔍 DIAG push VERIFY: order.id={verify_order.id}, "
+                                                       f"bitrix_order_id={verify_order.bitrix_order_id}, "
+                                                       f"is_sent_to_bitrix={verify_order.is_sent_to_bitrix}")
+                                        else:
+                                            logger.error(f"🔍 DIAG push VERIFY: заказ {order_id} НЕ НАЙДЕН в БД после commit!")
                                 except IntegrityError as ie:
                                     logger.warning(f"🔍 DIAG push: IntegrityError при сохранении bitrix_order_id={bitrix_id} для заказа {order_id}: {ie}")
                                     order_session.rollback()
@@ -2352,6 +2360,7 @@ class BitrixSync:
                 # 🔍 ДИАГНОСТИКА: проверяем состояние заказа в новой сессии
                 logger.info(f"🔍 DIAG cleanup: order.id={order.id}, is_cancelled={order.is_cancelled}, "
                             f"is_from_bitrix={order.is_from_bitrix}, bitrix_order_id={order.bitrix_order_id}, "
+                            f"is_sent_to_bitrix={order.is_sent_to_bitrix}, "
                             f"target_date={order.target_date}, session={id(session)}")
                     
                 # 🔥 ДОБАВИТЬ ПРОВЕРКУ ВРЕМЕНИ ДЛЯ УДАЛЕНИЯ
