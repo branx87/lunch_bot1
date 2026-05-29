@@ -11,12 +11,13 @@ class SocksHTTPXRequest(HTTPXRequest):
 
     def initialize(self) -> "asyncio.coroutine":
         # Override: create AsyncClient with simple config that works with SOCKS5
-        proxy = self._client_kwargs.get("proxies")
+        # HTTPXRequest хранит proxy_url в self._proxy_url (передаётся в __init__)
+        proxy_url = getattr(self, '_proxy_url', None)
         timeout = self._client_kwargs.get("timeout", httpx.Timeout(30))
         limits = self._client_kwargs.get("limits")
         kwargs = {"timeout": timeout}
-        if proxy:
-            kwargs["proxies"] = proxy
+        if proxy_url:
+            kwargs["proxies"] = {"all://": proxy_url}
         if limits:
             kwargs["limits"] = limits
         self._client = httpx.AsyncClient(**kwargs)
@@ -74,7 +75,9 @@ class LunchBot:
             if CONFIG.proxy_url:
                 # 🔥 Прокси ТОЛЬКО для Telegram API, а не глобально для всего процесса
                 # (чтобы не ломать подключение к Bitrix24 и другим внутренним сервисам)
-                request_kwargs['proxies'] = CONFIG.proxy_url
+                # HTTPXRequest принимает proxy_url, а SocksHTTPXRequest внутри преобразует
+                # его в proxies для httpx.AsyncClient
+                request_kwargs['proxy_url'] = CONFIG.proxy_url
                 self.logger.info(f"🔗 Прокси для Telegram API: {CONFIG.proxy_url}")
                 # Используем SocksHTTPXRequest — он корректно обрабатывает SOCKS5
                 request = SocksHTTPXRequest(**request_kwargs)
