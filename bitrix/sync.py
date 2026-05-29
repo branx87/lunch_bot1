@@ -1412,6 +1412,16 @@ class BitrixSync:
                                     if update_success:
                                         bitrix_id = existing_bitrix_id
                                         logger.info(f"✅ Заказ {order_id}: Bitrix заказ {existing_bitrix_id} обновлён, привязываем к новому локальному заказу")
+                                        # 🔥 ИСПРАВЛЕНИЕ: очищаем bitrix_order_id у старого отменённого заказа,
+                                        # чтобы избежать IntegrityError при сохранении bitrix_order_id на новом заказе
+                                        with db.get_session() as cleanup_session:
+                                            old_order = cleanup_session.query(Order).filter(
+                                                Order.id == existing_local_order_id
+                                            ).first()
+                                            if old_order and old_order.bitrix_order_id == str(existing_bitrix_id):
+                                                old_order.bitrix_order_id = None
+                                                cleanup_session.commit()
+                                                logger.info(f"✅ Очищен bitrix_order_id={existing_bitrix_id} у старого заказа {existing_local_order_id}")
                                     else:
                                         logger.error(f"❌ Заказ {order_id}: не удалось обновить Bitrix заказ {existing_bitrix_id}")
                                         bitrix_id = None

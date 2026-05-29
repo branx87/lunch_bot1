@@ -12,6 +12,9 @@ class Database:
     def __init__(self):
         self.database_url = os.getenv('DATABASE_URL', 'postgresql://bot_user:password@localhost:5434/lunch_bot')
         self.engine = create_engine(self.database_url, pool_pre_ping=True, pool_recycle=300)
+        # sessionmaker для get_session() — каждый вызов создаёт НОВУЮ сессию
+        self._session_factory = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+        # scoped_session для глобального db.session (обратная совместимость)
         self.SessionLocal = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=self.engine))
         self.session = self.SessionLocal()
         
@@ -46,8 +49,8 @@ class Database:
     
     @contextmanager
     def get_session(self):
-        """Контекстный менеджер для сессий"""
-        session = self.SessionLocal()
+        """Контекстный менеджер для сессий — каждый вызов создаёт НОВУЮ независимую сессию"""
+        session = self._session_factory()
         try:
             yield session
             session.commit()
