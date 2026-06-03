@@ -202,7 +202,8 @@ def generate_admin_report_file(start_date, end_date, session, is_daily=False):
     if is_daily:
         query = text("""
             SELECT o.target_date, u.full_name, COALESCE(u.location, 'Не указано') as location,
-                   o.quantity, o.is_from_bitrix, o.created_at, o.bitrix_order_id
+                   o.quantity, o.is_from_bitrix, o.created_at, o.bitrix_order_id,
+                   o.is_for_inspector
             FROM orders o JOIN users u ON o.user_id = u.id
             WHERE o.target_date = :target_date AND o.is_cancelled = FALSE
             ORDER BY o.target_date,
@@ -213,7 +214,8 @@ def generate_admin_report_file(start_date, end_date, session, is_daily=False):
     else:
         query = text("""
             SELECT o.target_date, u.full_name, COALESCE(u.location, 'Не указано') as location,
-                   o.quantity, o.is_from_bitrix, o.created_at, o.bitrix_order_id
+                   o.quantity, o.is_from_bitrix, o.created_at, o.bitrix_order_id,
+                   o.is_for_inspector
             FROM orders o JOIN users u ON o.user_id = u.id
             WHERE o.target_date BETWEEN :start_date AND :end_date AND o.is_cancelled = FALSE
             ORDER BY o.target_date,
@@ -233,8 +235,8 @@ def generate_admin_report_file(start_date, end_date, session, is_daily=False):
 
     # "All orders" sheet
     ws_all = wb.create_sheet("Все заказы", 0)
-    ws_all.append(["Дата обеда", "Номер заказа", "Сотрудник", "Локация", "Подпись", "Кол-во обедов", "Источник заказа"])
-    ws_all.auto_filter.ref = "A1:G1"
+    ws_all.append(["Дата обеда", "Номер заказа", "Сотрудник", "Локация", "Подпись", "Кол-во обедов", "Источник заказа", "Тип заказа"])
+    ws_all.auto_filter.ref = "A1:H1"
 
     orders_by_date = {}
     for row in all_orders:
@@ -246,15 +248,16 @@ def generate_admin_report_file(start_date, end_date, session, is_daily=False):
             target_dt = row[0].strftime("%d.%m.%Y") if isinstance(row[0], date) else row[0]
             source = "Битрикс" if row[4] else "Бот"
             order_number = row[6] if row[6] is not None else ""
-            ws_all.append([target_dt, order_number, row[1], row[2], "", row[3], source])
+            order_type = "🕵️ Инспектор" if row[7] else "Обычный"
+            ws_all.append([target_dt, order_number, row[1], row[2], "", row[3], source, order_type])
 
     # Per-location sheets
     for location in CONFIG.locations:
         if location == "ПЦ 2":
             continue
         ws = wb.create_sheet(location)
-        ws.append(["Дата обеда", "Номер заказа", "Сотрудник", "Территориальный признак", "Подпись", "Кол-во обедов", "Источник заказа"])
-        ws.auto_filter.ref = "A1:G1"
+        ws.append(["Дата обеда", "Сотрудник", "Территориальный признак", "Подпись", "Кол-во обедов"])
+        ws.auto_filter.ref = "A1:E1"
 
         if location == "Офис":
             loc_orders = [r for r in all_orders if r[2] in ["Офис", "ПЦ 2"]]
@@ -268,9 +271,9 @@ def generate_admin_report_file(start_date, end_date, session, is_daily=False):
         for date_key in sorted(loc_by_date.keys()):
             for row in loc_by_date[date_key]:
                 target_dt = row[0].strftime("%d.%m.%Y") if isinstance(row[0], date) else row[0]
-                source = "Битрикс" if row[4] else "Бот"
-                order_number = row[6] if row[6] is not None else ""
-                ws.append([target_dt, order_number, row[1], row[2], "", row[3], source])
+                # Для заказов инспектору пишем "Инспектор" вместо ФИО сотрудника
+                employee_name = "Инспектор" if row[7] else row[1]
+                ws.append([target_dt, employee_name, row[2], "", row[3]])
 
     # Summary sheet
     ws_summary = wb.create_sheet("Итоги")
