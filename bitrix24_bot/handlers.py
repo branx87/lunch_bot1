@@ -17,7 +17,7 @@ from models import User, Order
 from services.order_service import (
     get_order_for_date, get_active_orders,
     create_order, cancel_order, modify_quantity,
-    get_user_monthly_stats,
+    get_user_monthly_stats, QUANTITY_MAP,
 )
 from services.menu_service import get_menu_for_day, format_menu_text, get_week_menus
 from services.report_service import (
@@ -559,7 +559,7 @@ def _do_create_inspector_order_db(user_db_id: int, day_offset: int, session) -> 
         target_date=target_date,
         order_time=now.strftime("%H:%M:%S"),
         quantity=quantity,
-        bitrix_quantity_id="1",
+        bitrix_quantity_id=QUANTITY_MAP[1],
         is_active=True,
         is_preliminary=(day_offset > 0),
         is_for_inspector=True,

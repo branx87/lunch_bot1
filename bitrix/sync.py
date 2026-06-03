@@ -1335,15 +1335,15 @@ class BitrixSync:
                                 failed_order_ids.append(order_id)
                                 continue
 
-                            # Сохраняем crm_employee_id в локальную переменную сразу,
-                            # чтобы избежать DetachedInstanceError при асинхронных вызовах
-                            crm_employee_id = user.crm_employee_id
-
-                            # 🔥 Для заказов инспектору используем CRM ID инспектора
+                            # 🔥 Для заказов инспектору передаём CRM ID инспектора в ufCrm45_1743599470,
+                            # чтобы робот Bitrix сформировал название "Заказ Инспектор [ФИО заказчика]".
+                            # Для обычных заказов CRM ID не передаём — только bitrix_id (ufCrm45_1751956286).
                             is_inspector_order = order.is_for_inspector
                             if is_inspector_order and CONFIG.inspector_crm_id:
                                 crm_employee_id = CONFIG.inspector_crm_id
                                 logger.info(f"🕵️ Заказ {order_id} для инспектора: используем CRM ID {crm_employee_id}")
+                            else:
+                                crm_employee_id = None
 
                             # Формируем данные для Bitrix
                             order_data = {
