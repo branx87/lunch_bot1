@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 from config import CONFIG
 from database import db
-from models import User
+from models import User, Order
 from services.order_service import (
     get_order_for_date, get_active_orders,
     create_order, cancel_order, modify_quantity,
@@ -137,11 +137,14 @@ def _build_select_day_kb() -> list:
     return _kb(*rows)
 
 
-def _order_view_kb(has_order: bool, can_modify: bool) -> list:
+def _order_view_kb(has_order: bool, can_modify: bool, user_db_id: int = None) -> list:
     rows = []
     if not has_order:
         if can_modify:
             rows.append([_btn("✅ Заказать 1 порцию", "заказать порцию", "#2a7a2a")])
+            # Кнопка заказа для инспектора (проверка по bitrix_id)
+            if user_db_id and _can_order_for_inspector(user_db_id):
+                rows.append([_btn("🕵️ Заказать инспектору", "заказать инспектору", "#7a5c3e")])
     else:
         if can_modify:
             rows.append([
@@ -233,7 +236,7 @@ async def handle_message(
     _employee_root = {"заказать", "мои заказы", "меню", "быстрый заказ", "меню на сегодня", "меню на неделю",
                        "статистика за месяц", "статистика текущий месяц", "статистика прошлый месяц",
                        "уведомления", "уведомления отключить", "уведомления включить"}
-    _employee_ctx  = {"заказать порцию", "добавить порцию", "убрать порцию", "отменить заказ"}
+    _employee_ctx  = {"заказать порцию", "добавить порцию", "убрать порцию", "отменить заказ", "заказать инспектору"}
     _employee_steps = {STEP_SELECT_DAY, STEP_ORDER_VIEW, STEP_MY_ORDERS, STEP_STATS}
 
     _is_employee_action = (
@@ -488,12 +491,33 @@ def _fetch_order_view(user_db_id: int, day_offset: int, session) -> tuple:
     return menu_text, order, target_date, can_modify
 
 
+def _order_status_text(order) -> str:
+    """Формирует текст статуса заказа"""
+    if not order:
+        return "\n[B]Заказ не оформлен[/B]"
+    if order.is_for_inspector:
+        return f"\n[B]🕵️ Заказ для инспектора: {order.quantity} порц.[/B]"
+    return f"\n[B]Заказано: {order.quantity} порц.[/B]"
+
+
 def _fetch_active_orders(user_db_id: int, session) -> list:
     now = datetime.now(TIME_CONFIG.TIMEZONE).date()
     orders = get_active_orders(user_db_id, now, session)
     for o in orders:
         session.expunge(o)
     return orders
+
+
+def _can_order_for_inspector(user_db_id: int) -> bool:
+    """Проверяет по bitrix_id пользователя, может ли он заказывать для инспектора"""
+    try:
+        with db.get_session() as session:
+            user = session.query(User.bitrix_id).filter(User.id == user_db_id).first()
+            if user and user.bitrix_id:
+                return user.bitrix_id in CONFIG.inspector_allowed_bitrix_ids
+    except Exception as e:
+        logger.error(f"Ошибка проверки прав инспектора: {e}")
+    return False
 
 
 def _do_create_order_db(user_db_id: int, day_offset: int, session) -> str:
@@ -510,6 +534,39 @@ def _do_create_order_db(user_db_id: int, day_offset: int, session) -> str:
     if err:
         return f"ℹ️ {err}"
     return f"✅ Заказ на {target_date.strftime('%d.%m')} оформлен — 1 порция."
+
+
+def _do_create_inspector_order_db(user_db_id: int, day_offset: int, session) -> str:
+    """Создаёт заказ для инспектора (расходы компании)"""
+    from datetime import datetime
+    menu, day_name, target_date = get_menu_for_day(day_offset, CONFIG)
+    now = datetime.now(TIME_CONFIG.TIMEZONE)
+
+    if target_date.weekday() in TIME_CONFIG.WEEKEND_DAYS:
+        return "ℹ️ Заказы на выходные не принимаются."
+
+    if target_date == now.date() and now.time() >= TIME_CONFIG.ORDER_DEADLINE:
+        return f"ℹ️ Приём заказов на сегодня завершён в {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}."
+
+    # Проверяем существующий заказ
+    existing = get_order_for_date(user_db_id, target_date, session)
+    if existing:
+        return f"ℹ️ У вас уже заказано {existing.quantity} порций. Нельзя заказать и для себя, и для инспектора на один день."
+
+    quantity = 1
+    order = Order(
+        user_id=user_db_id,
+        target_date=target_date,
+        order_time=now.strftime("%H:%M:%S"),
+        quantity=quantity,
+        bitrix_quantity_id="1",
+        is_active=True,
+        is_preliminary=(day_offset > 0),
+        is_for_inspector=True,
+        created_at=now.replace(tzinfo=None),
+    )
+    session.add(order)
+    return f"✅ 🕵️ Заказ для инспектора на {target_date.strftime('%d.%m')} оформлен — 1 порция."
 
 
 def _do_cancel_order_db(user_db_id: int, target_date, session) -> str:
@@ -627,11 +684,11 @@ async def _handle_employee_inner(
         _state[dialog_id] = {S_STEP: STEP_ORDER_VIEW, S_DAY: day_offset}
         menu_text, order, target_date, can_modify = await _run_sync(
             _fetch_order_view, user_db_id, day_offset)
-        status = f"\n[B]Заказано: {order.quantity} порц.[/B]" if order else "\n[B]Заказ не оформлен[/B]"
+        status = _order_status_text(order)
         if not can_modify:
             status += "\n⏰ Приём/изменение заказов закрыт"
         return [_msg(f"{menu_text}{status}",
-                     keyboard=_order_view_kb(order is not None, can_modify), replace=True)]
+                     keyboard=_order_view_kb(order is not None, can_modify, user_db_id), replace=True)]
 
     # ---- Меню на неделю / Меню (обратная совместимость) ----
     if raw in ("меню на неделю", "меню"):
@@ -679,9 +736,16 @@ async def _handle_employee_inner(
                 menu_text, order, target_date, can_modify = await _run_sync(
                     _fetch_order_view, user_db_id, day_offset)
                 text = f"{menu_text}\n\n{result}"
-                if order:
-                    text += f"\n[B]Заказано: {order.quantity} порц.[/B]"
-                return [_msg(text, keyboard=_order_view_kb(order is not None, can_modify), replace=True)]
+                text += _order_status_text(order)
+                return [_msg(text, keyboard=_order_view_kb(order is not None, can_modify, user_db_id), replace=True)]
+
+            if raw == "заказать инспектору":
+                result = await _run_sync(_do_create_inspector_order_db, user_db_id, day_offset)
+                menu_text, order, target_date, can_modify = await _run_sync(
+                    _fetch_order_view, user_db_id, day_offset)
+                text = f"{menu_text}\n\n{result}"
+                text += _order_status_text(order)
+                return [_msg(text, keyboard=_order_view_kb(order is not None, can_modify, user_db_id), replace=True)]
 
             if raw == "добавить порцию":
                 result = await _run_sync(_do_modify_qty_db, user_db_id, day_offset, +1)
@@ -689,9 +753,8 @@ async def _handle_employee_inner(
                     _fetch_order_view, user_db_id, day_offset)
                 has_order = order is not None and not order.is_cancelled
                 text = f"{menu_text}\n\n{result}"
-                if has_order:
-                    text += f"\n[B]Заказано: {order.quantity} порц.[/B]"
-                return [_msg(text, keyboard=_order_view_kb(has_order, can_modify), replace=True)]
+                text += _order_status_text(order if has_order else None)
+                return [_msg(text, keyboard=_order_view_kb(has_order, can_modify, user_db_id), replace=True)]
 
             if raw == "убрать порцию":
                 result = await _run_sync(_do_modify_qty_db, user_db_id, day_offset, -1)
@@ -699,9 +762,8 @@ async def _handle_employee_inner(
                     _fetch_order_view, user_db_id, day_offset)
                 has_order = order is not None and not order.is_cancelled
                 text = f"{menu_text}\n\n{result}"
-                if has_order:
-                    text += f"\n[B]Заказано: {order.quantity} порц.[/B]"
-                return [_msg(text, keyboard=_order_view_kb(has_order, can_modify), replace=True)]
+                text += _order_status_text(order if has_order else None)
+                return [_msg(text, keyboard=_order_view_kb(has_order, can_modify, user_db_id), replace=True)]
 
             if raw == "отменить заказ":
                 menu, day_name, target_date = get_menu_for_day(day_offset, CONFIG)
@@ -709,15 +771,15 @@ async def _handle_employee_inner(
                 menu_text, order, target_date, can_modify = await _run_sync(
                     _fetch_order_view, user_db_id, day_offset)
                 text = f"{menu_text}\n\n{result}"
-                return [_msg(text, keyboard=_order_view_kb(False, can_modify), replace=True)]
+                return [_msg(text, keyboard=_order_view_kb(False, can_modify, user_db_id), replace=True)]
 
         menu_text, order, target_date, can_modify = await _run_sync(
             _fetch_order_view, user_db_id, day_offset)
-        status = f"\n[B]Заказано: {order.quantity} порц.[/B]" if order else "\n[B]Заказ не оформлен[/B]"
+        status = _order_status_text(order)
         if not can_modify:
             status += "\n⏰ Приём/изменение заказов закрыт"
         return [_msg(f"{menu_text}{status}",
-                     keyboard=_order_view_kb(order is not None, can_modify), replace=True)]
+                     keyboard=_order_view_kb(order is not None, can_modify, user_db_id), replace=True)]
 
     # ---- Мои заказы ----
     if raw == "мои заказы":
@@ -811,6 +873,5 @@ async def _handle_direct_day_action(
         _fetch_order_view, user_db_id, day_offset)
     has_order = order is not None
     text = f"{menu_text}\n\n{result}"
-    if has_order:
-        text += f"\n[B]Заказано: {order.quantity} порц.[/B]"
-    return [_msg(text, keyboard=_order_view_kb(has_order, can_modify), replace=True)]
+    text += _order_status_text(order if has_order else None)
+    return [_msg(text, keyboard=_order_view_kb(has_order, can_modify, user_db_id), replace=True)]
