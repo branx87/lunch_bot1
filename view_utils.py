@@ -10,6 +10,17 @@ from handlers.common import show_main_menu
 from utils import can_modify_order
 
 logger = logging.getLogger(__name__)
+
+def _can_order_for_inspector_by_bitrix_id(user_db_id: int) -> bool:
+    """Проверяет по bitrix_id пользователя, может ли он заказывать для инспектора"""
+    try:
+        with db.get_session() as session:
+            user = session.query(User.bitrix_id).filter(User.id == user_db_id).first()
+            if user and user.bitrix_id:
+                return user.bitrix_id in CONFIG.inspector_allowed_bitrix_ids
+    except Exception as e:
+        logger.error(f"Ошибка проверки прав инспектора: {e}")
+    return False
     
 async def refresh_day_view(query, day_offset, user_db_id, now, is_order=False):
     """
@@ -42,7 +53,7 @@ async def refresh_day_view(query, day_offset, user_db_id, now, is_order=False):
 
         # Проверяем заказ пользователя
         with db.get_session() as session:
-            order = session.query(Order.quantity, Order.is_preliminary).filter(
+            order = session.query(Order.quantity, Order.is_preliminary, Order.is_for_inspector).filter(
                 Order.user_id == user_db_id,
                 Order.target_date == target_date.isoformat(),
                 Order.is_cancelled == False
@@ -51,8 +62,10 @@ async def refresh_day_view(query, day_offset, user_db_id, now, is_order=False):
         # Добавляем информацию о заказе
         keyboard = []
         if order:
-            qty, is_preliminary = order
+            qty, is_preliminary, is_for_inspector = order
             order_type = "Предзаказ" if is_preliminary else "Заказ"
+            if is_for_inspector:
+                order_type = "🕵️ Заказ для инспектора"
             response_text += f"\n\n✅ {order_type}: {qty} порции"
             
             if can_modify_order(target_date):
@@ -62,6 +75,9 @@ async def refresh_day_view(query, day_offset, user_db_id, now, is_order=False):
                 response_text += "\n⏳ Изменение невозможно (время истекло)"
         elif can_modify_order(target_date):
             keyboard.append([InlineKeyboardButton("✅ Заказать", callback_data=f"order_{day_offset}")])
+            # 🔥 Кнопка для заказа инспектору (проверка по bitrix_id)
+            if _can_order_for_inspector_by_bitrix_id(user_db_id):
+                keyboard.append([InlineKeyboardButton("🕵️ Заказать инспектору", callback_data=f"inspector_{day_offset}")])
         else:
             response_text += "\n⏳ Приём заказов завершён"
 

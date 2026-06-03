@@ -1339,6 +1339,12 @@ class BitrixSync:
                             # чтобы избежать DetachedInstanceError при асинхронных вызовах
                             crm_employee_id = user.crm_employee_id
 
+                            # 🔥 Для заказов инспектору используем CRM ID инспектора
+                            is_inspector_order = order.is_for_inspector
+                            if is_inspector_order and CONFIG.inspector_crm_id:
+                                crm_employee_id = CONFIG.inspector_crm_id
+                                logger.info(f"🕵️ Заказ {order_id} для инспектора: используем CRM ID {crm_employee_id}")
+
                             # Формируем данные для Bitrix
                             order_data = {
                                 'bitrix_id': user.bitrix_id,
@@ -1347,6 +1353,7 @@ class BitrixSync:
                                 'order_time': order.order_time or '09:00:00',
                                 'location': user.location or 'Офис',
                                 'local_order_id': order_id,
+                                'is_for_inspector': is_inspector_order,
                             }
 
                             # Защита от дублей: проверяем, есть ли уже заказ в Bitrix для этого пользователя на сегодня
@@ -1648,6 +1655,10 @@ class BitrixSync:
 
             params['fields']['ufCrm45_1751956286'] = user_id
 
+            # 🔥 Устанавливаем CRM ID сотрудника (для кого заказ)
+            if crm_employee_id:
+                params['fields']['ufCrm45_1743599470'] = crm_employee_id
+
             result = await self.bx.call('crm.item.add', params)
             
             if not result or 'id' not in result:
@@ -1701,6 +1712,10 @@ class BitrixSync:
                     order_time = order_time + ':00'
                 fields['createdTime'] = f"{target_date}T{order_time}+03:00"
             
+            # 🔥 Обновляем CRM ID сотрудника (для кого заказ), если передан
+            if user_crm_id:
+                fields['ufCrm45_1743599470'] = user_crm_id
+
             if not fields:
                 logger.warning(f"⚠️ Нет полей для обновления заказа {bitrix_id} в Bitrix")
                 return False

@@ -248,13 +248,19 @@ async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_
             # Существующая логика для включенных заказов
             can_modify = can_modify_order(target_date)
             if order:  # Если заказ уже есть
-                message += f"\n\n✅ {'Предзаказ' if day_offset > 0 else 'Заказ'}: {order.quantity} порции"
+                if order.is_for_inspector:
+                    message += f"\n\n🕵️ Заказ для инспектора: {order.quantity} порции"
+                else:
+                    message += f"\n\n✅ {'Предзаказ' if day_offset > 0 else 'Заказ'}: {order.quantity} порции"
                 if can_modify:
                     keyboard.append([InlineKeyboardButton("✏️ Изменить количество", callback_data=f"change_{day_offset}")])
                 keyboard.append([InlineKeyboardButton("❌ Отменить заказ", callback_data=f"cancel_{day_offset}")])
             else:  # Если заказа нет
                 if can_modify:
                     keyboard.append([InlineKeyboardButton("✅ Заказать", callback_data=f"order_{day_offset}")])
+                    # Кнопка заказа для инспектора (проверка по bitrix_id пользователя)
+                    if user_record and user_record.bitrix_id and user_record.bitrix_id in CONFIG.inspector_allowed_bitrix_ids:
+                        keyboard.append([InlineKeyboardButton("🕵️ Заказать инспектору", callback_data=f"inspector_{day_offset}")])
                 else:
                     keyboard.append([InlineKeyboardButton("⏳ Время для заказов истекло", callback_data="noop")])
         

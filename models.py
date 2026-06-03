@@ -60,6 +60,7 @@ class Order(Base):
     is_from_bitrix = Column(Boolean, default=False)
     is_sent_to_bitrix = Column(Boolean, default=False)
     is_preliminary = Column(Boolean, default=False)
+    is_for_inspector = Column(Boolean, default=False)  # Заказ для инспектора (расходы компании)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     last_synced_at = Column(DateTime, nullable=True)  # 🔥 УБРАТЬ server_default=func.now()

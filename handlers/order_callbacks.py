@@ -22,6 +22,101 @@ logger = logging.getLogger(__name__)
 # Re-export from services
 from services.order_service import QUANTITY_MAP, BITRIX_QUANTITY_MAP
     
+async def handle_inspector_order_callback(query, now, user, context):
+    """
+    Обработчик заказа для инспектора.
+    Создаёт заказ с флагом is_for_inspector=True.
+    Доступно только пользователям из списка inspector_allowed_ids.
+    """
+    user_id = user.id
+    logger.info(f"USER {user_id}: заказ для инспектора: {query.data}")
+
+    # Получаем пользователя из БД для проверки bitrix_id
+    user_record = db.session.query(User).filter(User.telegram_id == user.id).first()
+    if not user_record:
+        logger.error(f"USER {user_id}: не найден в базе данных")
+        await query.answer("❌ Пользователь не найден", show_alert=True)
+        return
+
+    # Проверяем, разрешено ли пользователю заказывать для инспектора (по bitrix_id)
+    if not user_record.bitrix_id or user_record.bitrix_id not in CONFIG.inspector_allowed_bitrix_ids:
+        logger.warning(f"USER {user_id} (bitrix_id={user_record.bitrix_id}): нет прав для заказа инспектору")
+        await query.answer("❌ У вас нет прав для заказа инспектору", show_alert=True)
+        return
+
+    # Проверяем, разрешены ли заказы
+    if not CONFIG.are_orders_accepted_now():
+        status_msg = CONFIG.get_orders_status_message()
+        logger.warning(f"USER {user_id}: попытка заказа инспектору вне времени приема: {status_msg}")
+        await query.answer(status_msg, show_alert=True)
+        await query.edit_message_reply_markup(reply_markup=None)
+        return
+
+    # Парсим callback
+    if '_ts_' in query.data:
+        _, day_offset_str, timestamp_str = query.data.split("_", 2)
+        request_time = datetime.fromtimestamp(int(timestamp_str))
+        if (now - request_time) > timedelta(minutes=30):
+            logger.warning(f"USER {user_id}: просроченная кнопка заказа инспектору")
+            await query.answer("⏳ Время действия кнопки истекло", show_alert=True)
+            await query.edit_message_reply_markup(reply_markup=None)
+            return
+    else:
+        day_offset_str = query.data.split("_", 1)[1]
+
+    day_offset = int(day_offset_str)
+    target_date = (now + timedelta(days=day_offset)).date()
+
+    # Проверки даты
+    if target_date.weekday() in TIME_CONFIG.WEEKEND_DAYS:
+        await query.answer("ℹ️ Заказы на выходные не принимаются", show_alert=True)
+        return
+
+    if day_offset > 0 and target_date <= now.date():
+        await query.answer("❌ Предзаказ можно сделать только на будущие даты", show_alert=True)
+        return
+
+    if day_offset == 0:
+        if now.time() >= TIME_CONFIG.ORDER_DEADLINE:
+            await query.answer(f"ℹ️ Приём заказов на сегодня завершён в {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}", show_alert=True)
+            return
+
+    # user_record уже получен выше при проверке прав
+    user_db_id = user_record.id
+
+    # Проверяем существующий заказ
+    existing_order = db.session.query(Order).filter(
+        Order.user_id == user_db_id,
+        Order.target_date == target_date,
+        Order.is_cancelled == False
+    ).first()
+
+    if existing_order:
+        await query.answer(f"ℹ️ У вас уже есть заказ на эту дату", show_alert=True)
+        return
+
+    # Создаём заказ для инспектора
+    new_order = Order(
+        user_id=user_db_id,
+        target_date=target_date,
+        order_time=now.strftime("%H:%M:%S"),
+        quantity=1,
+        bitrix_quantity_id=QUANTITY_MAP[1],
+        is_active=True,
+        is_preliminary=day_offset > 0,
+        is_for_inspector=True,
+        created_at=datetime.now()
+    )
+    db.session.add(new_order)
+    db.session.commit()
+
+    logger.info(f"USER {user_id}: создан заказ для инспектора на {target_date}")
+
+    # Обновляем интерфейс
+    await refresh_day_view(query, day_offset, user_db_id, now, is_order=True)
+    await query.answer("✅ Заказ для инспектора оформлен (расходы компании)")
+
+
 async def handle_order_callback(query, now, user, context):
     """Обработчик оформления заказа с проверкой доступности заказов"""
     user_id = user.id
@@ -589,7 +684,7 @@ def setup_order_callbacks(application):
     """
     application.add_handler(CallbackQueryHandler(
         callback_handler,
-        pattern=r'^(order|inc|dec|change|cancel|confirm)_'
+        pattern=r'^(order|inc|dec|change|cancel|confirm|inspector)_'
     ))
     
 async def show_main_menu_from_callback(update: Update, user_id: int):
@@ -678,6 +773,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_confirm_callback(query, now, user, context)
         elif query.data.startswith("order_"):
             await handle_order_callback(query, now, user, context)
+        elif query.data.startswith("inspector_"):
+            await handle_inspector_order_callback(query, now, user, context)
         elif query.data.startswith("del_"):  # Обработка удалений
             from handlers.admin_config_handlers import handle_deletion
             await handle_deletion(update, context)

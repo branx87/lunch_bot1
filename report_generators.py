@@ -184,20 +184,21 @@ async def export_accounting_report(
         ws.append(headers)
         ws.auto_filter.ref = f"A{ws.max_row}:H{ws.max_row}"
 
-        # 🔥 ИСПРАВЛЕННЫЙ ЗАПРОС - используем employment_date вместо created_at
+        # 🔥 ЗАПРОС ДЛЯ ОСНОВНЫХ ЗАКАЗОВ (без инспектора)
         with db.get_session() as session:
             query = text('''
-                SELECT 
+                SELECT
                     COALESCE(u.department, 'Не указано') as department,
                     u.full_name,
                     SUM(o.quantity) as portions,
                     COALESCE(u.position, 'Не указана') as position,
                     COALESCE(u.city, 'Не указана') as city,
-                    u.employment_date as hire_date  -- 🔥 Берем дату приема из employment_date
+                    u.employment_date as hire_date
                 FROM orders o
                 JOIN users u ON o.user_id = u.id
                 WHERE o.target_date BETWEEN :start_date AND :end_date
                   AND o.is_cancelled = FALSE
+                  AND o.is_for_inspector = FALSE
                 GROUP BY u.id, u.department, u.full_name, u.position, u.city, u.employment_date
                 ORDER BY u.department, u.full_name
             ''')
@@ -269,6 +270,44 @@ async def export_accounting_report(
                 total_without_ndfl,  # числовое значение
                 total_with_ndfl      # числовое значение
             ])
+
+        # 🔥 ДОБАВЛЯЕМ БЛОК "РАСХОДЫ КОМПАНИИ — ИНСПЕКТОР"
+        ws.append([])
+        ws.append(["Расходы компании — Инспектор"])
+        ws.append([])
+
+        # Запрос заказов для инспектора
+        with db.get_session() as session:
+            inspector_query = text('''
+                SELECT
+                    o.target_date,
+                    u.full_name as ordered_by,
+                    o.quantity
+                FROM orders o
+                JOIN users u ON o.user_id = u.id
+                WHERE o.target_date BETWEEN :start_date AND :end_date
+                  AND o.is_cancelled = FALSE
+                  AND o.is_for_inspector = TRUE
+                ORDER BY o.target_date, u.full_name
+            ''')
+            inspector_rows = session.execute(inspector_query, {
+                'start_date': start_date,
+                'end_date': end_date
+            }).fetchall()
+
+        inspector_headers = ["Дата", "Кто заказал", "Кол-во порций", "Инспектор"]
+        ws.append(inspector_headers)
+
+        inspector_total = 0
+        if inspector_rows:
+            for row in inspector_rows:
+                target_date_str = row[0].strftime("%d.%m.%Y") if isinstance(row[0], date) else str(row[0])
+                ws.append([target_date_str, row[1], row[2], "Инспектор"])
+                inspector_total += row[2]
+        else:
+            ws.append(["Нет заказов для инспектора", "", "", ""])
+
+        ws.append(["Итого по инспектору", "", inspector_total, ""])
 
         # Форматирование
         bold_font = Font(bold=True)
@@ -369,54 +408,56 @@ async def export_monthly_report(
         
         # Создаем лист "Все заказы"
         ws_all = wb.create_sheet("Все заказы", 0)
-        all_headers = ["Дата обеда", "Номер заказа", "Сотрудник", "Локация", "Подпись", "Кол-во обедов", "Источник заказа"]
+        all_headers = ["Дата обеда", "Номер заказа", "Сотрудник", "Локация", "Подпись", "Кол-во обедов", "Источник заказа", "Тип заказа"]
         ws_all.append(all_headers)
-        ws_all.auto_filter.ref = "A1:G1"
+        ws_all.auto_filter.ref = "A1:H1"
         
         # 🔥 ИСПРАВЛЕННЫЙ ЗАПРОС с SQLAlchemy
         with db.get_session() as session:
             if is_daily:
                 query = text("""
-                    SELECT 
+                    SELECT
                         o.target_date,
                         u.full_name,
                         COALESCE(u.location, 'Не указано') as location,
                         o.quantity,
                         o.is_from_bitrix,
                         o.created_at,
-                        o.bitrix_order_id
+                        o.bitrix_order_id,
+                        o.is_for_inspector
                     FROM orders o
                     JOIN users u ON o.user_id = u.id
                     WHERE o.target_date = :target_date
                     AND o.is_cancelled = FALSE
-                    ORDER BY 
+                    ORDER BY
                         o.target_date,
-                        CASE 
+                        CASE
                             WHEN o.bitrix_order_id IS NULL THEN CAST(o.created_at AS TEXT)
-                            ELSE o.bitrix_order_id 
+                            ELSE o.bitrix_order_id
                         END,
                         u.full_name
                 """)
                 result = session.execute(query, {'target_date': start_date})
             else:
                 query = text("""
-                    SELECT 
+                    SELECT
                         o.target_date,
                         u.full_name,
                         COALESCE(u.location, 'Не указано') as location,
                         o.quantity,
                         o.is_from_bitrix,
                         o.created_at,
-                        o.bitrix_order_id
+                        o.bitrix_order_id,
+                        o.is_for_inspector
                     FROM orders o
                     JOIN users u ON o.user_id = u.id
                     WHERE o.target_date BETWEEN :start_date AND :end_date
                     AND o.is_cancelled = FALSE
-                    ORDER BY 
+                    ORDER BY
                         o.target_date,
-                        CASE 
+                        CASE
                             WHEN o.bitrix_order_id IS NULL THEN CAST(o.created_at AS TEXT)
-                            ELSE o.bitrix_order_id 
+                            ELSE o.bitrix_order_id
                         END,
                         u.full_name
                 """)
@@ -438,13 +479,14 @@ async def export_monthly_report(
                 orders_by_date[date_key] = []
             orders_by_date[date_key].append(row)
         
-        # Заполняем лист "Все заказы" с номером заказа
+        # Заполняем лист "Все заказы" с номером заказа и типом
         for date_key in sorted(orders_by_date.keys()):
             for row in orders_by_date[date_key]:
                 target_date = row[0].strftime("%d.%m.%Y") if isinstance(row[0], date) else datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
                 source = "Битрикс" if row[4] else "Бот"
                 order_number = row[6] if row[6] is not None else ""
-                ws_all.append([target_date, order_number, row[1], row[2], "", row[3], source])
+                order_type = "🕵️ Инспектор" if row[7] else "Обычный"
+                ws_all.append([target_date, order_number, row[1], row[2], "", row[3], source, order_type])
 
         # 🔥 ОСТАЛЬНАЯ ЛОГИКА ОСТАЕТСЯ ПРЕЖНЕЙ (создание листов по локациям, итоги и т.д.)
         # Создаем листы для каждой локации (объединяем "Офис" и "ПЦ 2")
@@ -484,7 +526,9 @@ async def export_monthly_report(
             for date_key in sorted(loc_orders_by_date.keys()):
                 for row in loc_orders_by_date[date_key]:
                     target_date = row[0].strftime("%d.%m.%Y") if isinstance(row[0], date) else datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
-                    ws.append([target_date, row[1], row[2], "", row[3]])
+                    # Для заказов инспектору пишем "Инспектор" вместо ФИО сотрудника
+                    employee_name = "Инспектор" if row[7] else row[1]
+                    ws.append([target_date, employee_name, row[2], "", row[3]])
             
             # Добавляем границы для всех ячеек с данными
             for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):

@@ -34,6 +34,8 @@ class BotConfig:
         self._provider_ids = []
         self._accounting_ids = []
         self._master_admin_id = None  # 🔥 ДОБАВИТЬ
+        self._inspector_allowed_bitrix_ids = []  # 🔥 Bitrix ID пользователей, кто может заказывать для инспектора
+        self._inspector_crm_id = None  # 🔥 CRM ID инспектора в Bitrix
         self._staff_names = set()
         self._holidays = {}
         self._menu = {}
@@ -95,11 +97,21 @@ class BotConfig:
                 self._master_admin_id = self._admin_ids[0]
                 logger.info(f"👑 Главный админ (по умолчанию): {self._master_admin_id}")
             
+            # 🔥 НОВОЕ: Загрузка списка Bitrix ID кто может заказывать для инспектора
+            self._inspector_allowed_bitrix_ids = self._parse_ids(os.getenv("INSPECTOR_ALLOWED_BITRIX_IDS", ""))
+            
+            # 🔥 НОВОЕ: CRM ID инспектора в Bitrix (для поля ufCrm45_1743599470)
+            inspector_crm_str = os.getenv("INSPECTOR_CRM_ID", "")
+            if inspector_crm_str.strip():
+                self._inspector_crm_id = inspector_crm_str.strip()
+                logger.info(f"🕵️ CRM ID инспектора: {self._inspector_crm_id}")
+            
             logger.info(
                 f"✅ Загружены ID: админы={self._admin_ids}, "
                 f"поставщики={self._provider_ids}, "
                 f"бухгалтеры={self._accounting_ids}, "
-                f"главный админ={self._master_admin_id}"
+                f"главный админ={self._master_admin_id}, "
+                f"инспектор (Bitrix ID) могут заказывать={self._inspector_allowed_bitrix_ids}"
             )
         except Exception as e:
             logger.error(f"❌ Ошибка загрузки переменных окружения: {e}")
@@ -306,6 +318,16 @@ class BotConfig:
     @property
     def b24_accounting_ids(self) -> list[int]:
         return self._b24_accounting_ids
+
+    @property
+    def inspector_allowed_bitrix_ids(self) -> list[int]:
+        """Bitrix ID пользователей, которые могут заказывать для инспектора"""
+        return self._inspector_allowed_bitrix_ids
+
+    @property
+    def inspector_crm_id(self) -> str | None:
+        """CRM ID инспектора в Bitrix (для поля ufCrm45_1743599470)"""
+        return self._inspector_crm_id
 
 # Создаем глобальный экземпляр CONFIG
 try:
