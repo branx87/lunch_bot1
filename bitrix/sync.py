@@ -648,10 +648,19 @@ class BitrixSync:
                 stats['skipped'] += 1
                 return
 
+            # 🔥 ПРОВЕРКА: если crm_employee_id равен CRM ID инспектора —
+            # ищем заказ по bitrix_order_id (он уже есть в локальной БД, создан через бота)
+            is_inspector_order = False
+            if crm_employee_id and CONFIG.inspector_crm_id and crm_employee_id == CONFIG.inspector_crm_id:
+                is_inspector_order = True
+                logger.info(f"🕵️ Заказ {bitrix_id} для инспектора (CRM ID {crm_employee_id}) — ищем по bitrix_order_id")
+
             user_id = None
             
-            # 🔥 УЛУЧШЕННАЯ ЛОГИКА ПОИСКА СОТРУДНИКА
-            if crm_employee_id:
+            if is_inspector_order:
+                # Для инспектора не ищем user_id — заказ уже есть в БД, найдём по bitrix_order_id
+                user_id = None
+            elif crm_employee_id:
                 # 1. Прямой поиск по CRM ID
                 user_id = await self._get_local_user_id_by_crm_id(crm_employee_id)
                 
@@ -664,7 +673,7 @@ class BitrixSync:
                 # Прямой поиск по Bitrix ID
                 user_id = await self._get_local_user_id(bitrix_user_id)
                 
-            if not user_id:
+            if not user_id and not is_inspector_order:
                 logger.warning(f"Сотрудник не найден для заказа {bitrix_id}")
                 await self.sync_employees()  # Пробуем синхронизировать сотрудников
                 stats['skipped'] += 1
@@ -686,6 +695,11 @@ class BitrixSync:
                     logger.info(f"✅ Обновлен заказ {bitrix_id}")
                 else:
                     stats['errors'] += 1
+            elif is_inspector_order:
+                # Для инспектора не создаём новый заказ — он должен уже существовать
+                logger.warning(f"🕵️ Заказ для инспектора {bitrix_id} не найден в локальной БД — пропускаем")
+                stats['skipped'] += 1
+                return
             else:
                 success = self._add_local_order(user_id, order)
                 if success:
