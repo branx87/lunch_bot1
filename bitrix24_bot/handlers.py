@@ -330,8 +330,26 @@ def _parse_rtype(raw: str, role: str) -> str | None:
     return None
 
 
+async def _sync_orders_before_report():
+    """Фоновая синхронизация заказов с Bitrix перед формированием отчёта.
+    Аналогично Telegram bot в handlers/base_handlers.py:admin_reports_menu."""
+    try:
+        from bitrix.sync import BitrixSync
+        sync = BitrixSync()
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
+        await sync.sync_orders(start_date, end_date, incremental=True)
+        logger.info("✅ Фоновая синхронизация перед отчётом B24 выполнена")
+    except Exception as e:
+        logger.error(f"Ошибка фоновой синхронизации перед отчётом B24: {e}")
+
+
 async def _do_orders_today(role: str) -> list[dict]:
     today = datetime.now(CONFIG.timezone).date()
+
+    # Синхронизация статусов с Bitrix перед формированием отчёта
+    await _sync_orders_before_report()
+
     text, _ = await _run_sync(generate_provider_report_text, today, today)
     messages = [_msg(text)]
 
@@ -351,6 +369,9 @@ async def _do_orders_today(role: str) -> list[dict]:
 async def _do_report(rtype: str, period: str, role: str) -> list[dict]:
     now   = datetime.now(CONFIG.timezone)
     today = now.date()
+
+    # Синхронизация статусов с Bitrix перед формированием отчёта
+    await _sync_orders_before_report()
 
     if period == "day":
         start_date = end_date = today
