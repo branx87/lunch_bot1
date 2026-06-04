@@ -351,12 +351,18 @@ async def export_accounting_report(
         def format_currency(amount):
             return f"{float(amount):,.2f}".replace(",", " ").replace(".", ",")
 
+        # Сумма расходов на инспектора
+        inspector_amount_without_ndfl = inspector_total * 150
+        inspector_amount_with_ndfl = round(inspector_amount_without_ndfl / 0.87, 2)
+        grand_total_portions = total_portions + inspector_total
+
         # Отправка файла
         caption = (
             f"📋 Отчет для удержаний из зарплаты\n"
             f"📅 Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n"
-            f"🍽 Всего обедов: {total_portions}\n"
-            f"💰 Сумма удержания: {format_currency(total_with_ndfl)} руб. (с НДФЛ)"
+            f"🍽 Всего обедов: {grand_total_portions} (сотрудники: {total_portions}, инспектор: {inspector_total})\n"
+            f"💰 Сумма удержания: {format_currency(total_with_ndfl)} руб. (с НДФЛ)\n"
+            f"🕵️ Расходы на инспектора: {format_currency(inspector_amount_with_ndfl)} руб. (с НДФЛ)"
         )
 
         await _send_document_with_retry(context.bot, update.effective_chat.id, file_path, caption, file_name)

@@ -119,6 +119,7 @@ def generate_accounting_report_file(start_date, end_date, session):
     ws.append(headers)
     ws.auto_filter.ref = f"A{ws.max_row}:H{ws.max_row}"
 
+    # 🔥 ОСНОВНЫЕ ЗАКАЗЫ (без инспектора)
     query = text('''
         SELECT
             COALESCE(u.department, 'Не указано') as department,
@@ -131,6 +132,7 @@ def generate_accounting_report_file(start_date, end_date, session):
         JOIN users u ON o.user_id = u.id
         WHERE o.target_date BETWEEN :start_date AND :end_date
           AND o.is_cancelled = FALSE
+          AND o.is_for_inspector = FALSE
         GROUP BY u.id, u.department, u.full_name, u.position, u.city, u.employment_date
         ORDER BY u.department, u.full_name
     ''')
@@ -163,6 +165,47 @@ def generate_accounting_report_file(start_date, end_date, session):
 
         ws.append(["ВСЕГО", "", total_portions, "", "", "", total_without_ndfl, total_with_ndfl])
 
+    # 🔥 БЛОК "РАСХОДЫ КОМПАНИИ — ИНСПЕКТОР"
+    ws.append([])
+    ws.append(["Расходы компании — Инспектор"])
+    ws.append([])
+
+    inspector_query = text('''
+        SELECT
+            o.target_date,
+            u.full_name as ordered_by,
+            o.quantity
+        FROM orders o
+        JOIN users u ON o.user_id = u.id
+        WHERE o.target_date BETWEEN :start_date AND :end_date
+          AND o.is_cancelled = FALSE
+          AND o.is_for_inspector = TRUE
+        ORDER BY o.target_date, u.full_name
+    ''')
+    inspector_rows = session.execute(inspector_query, {'start_date': start_date, 'end_date': end_date}).fetchall()
+
+    inspector_headers = ["Дата", "Кто заказал", "Кол-во порций", "Инспектор"]
+    ws.append(inspector_headers)
+
+    inspector_total = 0
+    if inspector_rows:
+        for row in inspector_rows:
+            target_date_str = row[0].strftime("%d.%m.%Y") if isinstance(row[0], date) else str(row[0])
+            ws.append([target_date_str, row[1], row[2], "Инспектор"])
+            inspector_total += row[2]
+    else:
+        ws.append(["Нет заказов для инспектора", "", "", ""])
+
+    ws.append(["Итого по инспектору", "", inspector_total, ""])
+
+    # Сумма расходов на инспектора
+    inspector_amount_without_ndfl = inspector_total * 150
+    inspector_amount_with_ndfl = round(inspector_amount_without_ndfl / 0.87, 2)
+
+    ws.append([])
+    ws.append(["", "Сумма без НДФЛ:", "", f"{inspector_amount_without_ndfl:,.2f} руб.".replace(",", " ")])
+    ws.append(["", "Сумма с НДФЛ:", "", f"{inspector_amount_with_ndfl:,.2f} руб.".replace(",", " ")])
+
     _apply_accounting_styles(ws)
 
     file_name = f"salary_deductions_{report_year}{report_month:02d}.xlsx"
@@ -172,11 +215,16 @@ def generate_accounting_report_file(start_date, end_date, session):
     def format_currency(amount):
         return f"{float(amount):,.2f}".replace(",", " ").replace(".", ",")
 
+    # Общее количество обедов (сотрудники + инспектор)
+    grand_total_portions = total_portions + inspector_total
+    grand_total_with_ndfl = total_with_ndfl + inspector_amount_with_ndfl
+
     caption = (
         f"📋 Отчет для удержаний из зарплаты\n"
         f"📅 Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n"
-        f"🍽 Всего обедов: {total_portions}\n"
-        f"💰 Сумма удержания: {format_currency(total_with_ndfl)} руб. (с НДФЛ)"
+        f"🍽 Всего обедов: {grand_total_portions} (сотрудники: {total_portions}, инспектор: {inspector_total})\n"
+        f"💰 Сумма удержания: {format_currency(total_with_ndfl)} руб. (с НДФЛ)\n"
+        f"🕵️ Расходы на инспектора: {format_currency(inspector_amount_with_ndfl)} руб. (с НДФЛ)"
     )
 
     return file_path, file_name, caption
