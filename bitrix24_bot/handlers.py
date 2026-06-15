@@ -49,6 +49,8 @@ STEP_SELECT_DAY  = "select_day"
 STEP_ORDER_VIEW  = "order_view"
 STEP_MY_ORDERS   = "my_orders"
 STEP_STATS       = "stats_period"
+STEP_LOCATION    = "select_location"
+S_LOCATION_PENDING = "location_pending"
 
 # ------------------------------------------------------------------
 # Keyboards
@@ -117,6 +119,12 @@ KB_MONTH_RANGE = _kb(
      _btn("📆 Прошлый месяц", "прошлый месяц", "#3b7abf")],
     [_btn("🏠 Главное меню", "главное меню", "#555")],
 )
+
+
+def _location_kb() -> list:
+    return _kb(
+        [_btn(loc, f"выбрать локацию {loc}", "#3b7abf") for loc in CONFIG.locations],
+    )
 
 
 def _build_select_day_kb() -> list:
@@ -496,6 +504,25 @@ def _fetch_user_db_id(bitrix_user_id: int, session) -> int | None:
     return user.id if user else None
 
 
+def _fetch_user_location(bitrix_user_id: int, session) -> str | None:
+    user = session.query(User).filter(
+        User.bitrix_id == bitrix_user_id,
+        User.is_deleted == False,
+    ).first()
+    return user.location if user else None
+
+
+async def _check_location_or_prompt(
+    dialog_id: str, from_user_id: int, user_db_id: int, pending_action: dict
+) -> list[dict] | None:
+    """Check user location. Returns location prompt message if missing, None if OK."""
+    location = await _run_sync(_fetch_user_location, from_user_id)
+    if location:
+        return None
+    _state[dialog_id] = {S_STEP: STEP_LOCATION, S_LOCATION_PENDING: pending_action}
+    return [_msg("📍 Выберите объект для заказа:", keyboard=_location_kb(), replace=True)]
+
+
 def _fetch_order_view(user_db_id: int, day_offset: int, session) -> tuple:
     menu, day_name, target_date = get_menu_for_day(day_offset, CONFIG)
     menu_text = format_menu_text(menu, day_name, target_date)
@@ -693,8 +720,49 @@ async def _handle_employee_inner(
         await _run_sync(_set_notifications, user_db_id, True)
         return [_msg("🔔 Напоминания включены.", keyboard=_notifications_kb(True), replace=True)]
 
+    # ---- Выбор локации ----
+    if step == STEP_LOCATION and raw.startswith("выбрать локацию "):
+        location = raw.replace("выбрать локацию ", "").strip()
+        if location not in CONFIG.locations:
+            return [_msg("❌ Выберите объект из списка:", keyboard=_location_kb(), replace=True)]
+        from services.user_service import set_user_location
+        user = db.session.query(User).filter(User.id == user_db_id).first()
+        if user:
+            set_user_location(user, location)
+            db.session.commit()
+        pending = state.get(S_LOCATION_PENDING)
+        _state.pop(dialog_id, None)
+        if pending and pending.get("action") == "quick_order":
+            result = await _run_sync(_do_create_order_db, user_db_id, pending["day_offset"])
+            return [_msg(f"📍 Объект: {location}\n\n{result}", keyboard=main_kb, replace=True)]
+        if pending and pending.get("action") == "order_from_menu":
+            day_offset = pending["day_offset"]
+            result = await _run_sync(_do_create_order_db, user_db_id, day_offset)
+            _state[dialog_id] = {S_STEP: STEP_ORDER_VIEW, S_DAY: day_offset}
+            menu_text, order, target_date, can_modify = await _run_sync(
+                _fetch_order_view, user_db_id, day_offset)
+            text = f"{menu_text}\n\n📍 Объект: {location}\n\n{result}"
+            text += _order_status_text(order)
+            return [_msg(text, keyboard=_order_view_kb(order is not None, can_modify, user_db_id), replace=True)]
+        if pending and pending.get("action") == "order_day":
+            day_offset = pending["day_offset"]
+            result = await _run_sync(_do_create_order_db, user_db_id, day_offset)
+            _state[dialog_id] = {S_STEP: STEP_ORDER_VIEW, S_DAY: day_offset}
+            menu_text, order, target_date, can_modify = await _run_sync(
+                _fetch_order_view, user_db_id, day_offset)
+            has_order = order is not None
+            text = f"{menu_text}\n\n📍 Объект: {location}\n\n{result}"
+            text += _order_status_text(order if has_order else None)
+            return [_msg(text, keyboard=_order_view_kb(has_order, can_modify, user_db_id), replace=True)]
+        return [_msg(f"📍 Объект установлен: {location}", keyboard=main_kb, replace=True)]
+
     # ---- Быстрый заказ ----
     if raw == "быстрый заказ":
+        prompt = await _check_location_or_prompt(
+            dialog_id, from_user_id, user_db_id,
+            {"action": "quick_order", "day_offset": 0})
+        if prompt:
+            return prompt
         result = await _run_sync(_do_create_order_db, user_db_id, 0)
         _state.pop(dialog_id, None)
         return [_msg(result, keyboard=main_kb, replace=True)]
@@ -735,7 +803,7 @@ async def _handle_employee_inner(
     if _direct_match:
         action     = _direct_match.group(1)
         day_offset = int(_direct_match.group(2))
-        return await _handle_direct_day_action(dialog_id, user_db_id, action, day_offset, role)
+        return await _handle_direct_day_action(dialog_id, from_user_id, user_db_id, action, day_offset, role)
 
     # ---- Заказать ----
     if raw == "заказать":
@@ -753,6 +821,11 @@ async def _handle_employee_inner(
 
         if step == STEP_ORDER_VIEW:
             if raw == "заказать порцию":
+                prompt = await _check_location_or_prompt(
+                    dialog_id, from_user_id, user_db_id,
+                    {"action": "order_from_menu", "day_offset": day_offset})
+                if prompt:
+                    return prompt
                 result = await _run_sync(_do_create_order_db, user_db_id, day_offset)
                 menu_text, order, target_date, can_modify = await _run_sync(
                     _fetch_order_view, user_db_id, day_offset)
@@ -874,12 +947,19 @@ async def _handle_employee_inner(
 
 async def _handle_direct_day_action(
     dialog_id: str,
+    from_user_id: int,
     user_db_id: int,
     action: str,
     day_offset: int,
     role: str,
 ) -> list[dict]:
+    main_kb = _main_kb(role)
     if action == "заказать":
+        prompt = await _check_location_or_prompt(
+            dialog_id, from_user_id, user_db_id,
+            {"action": "order_day", "day_offset": day_offset})
+        if prompt:
+            return prompt
         result = await _run_sync(_do_create_order_db, user_db_id, day_offset)
     elif action == "добавить":
         result = await _run_sync(_do_modify_qty_db, user_db_id, day_offset, +1)

@@ -279,13 +279,22 @@ class CronManager:
 
                     # Send via Bitrix24 — только пользователям, у которых есть история заказов
                     if bitrix_id and self._b24_client.is_configured and has_any_order:
-                        kb = [[{
-                            "TEXT": "🔕 Отключить напоминания",
-                            "ACTION": "SEND",
-                            "ACTION_VALUE": "уведомления отключить",
-                            "BG_COLOR": "#555",
-                            "TEXT_COLOR": "#fff",
-                        }]]
+                        kb = [
+                            [{
+                                "TEXT": "🔕 Отключить напоминания",
+                                "ACTION": "SEND",
+                                "ACTION_VALUE": "уведомления отключить",
+                                "BG_COLOR": "#555",
+                                "TEXT_COLOR": "#fff",
+                            }],
+                            [{
+                                "TEXT": "✅ Быстрый заказ",
+                                "ACTION": "SEND",
+                                "ACTION_VALUE": "быстрый заказ",
+                                "BG_COLOR": "#2a7a2a",
+                                "TEXT_COLOR": "#fff",
+                            }],
+                        ]
                         ok = await self._b24_client.send_message(
                             str(bitrix_id),
                             "⏰ Не забудьте заказать обед! 🍽\n\nПрием заказов открыт до 9:30.",
