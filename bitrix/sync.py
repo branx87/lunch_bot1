@@ -47,11 +47,16 @@ class BitrixSync:
             # 🔥 ЯВНО ЗАПРЕЩАЕМ ПРОКСИ ДЛЯ BITRIX24
             # Прокси нужен только для Telegram API (обходит блокировки),
             # Bitrix24 находится во внутренней сети и не должен ходить через SOCKS5.
+            saved_proxy = {k: os.environ.pop(k, None) for k in ('HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy')}
             os.environ['NO_PROXY'] = 'b24.epc.su,b24dev.ru,localhost,127.0.0.1,192.168.0.0/16,172.17.0.0/16'
             os.environ['no_proxy'] = os.environ['NO_PROXY']
             
-            # 🔥 ПРОСТОЙ КЛИЕНТ БЕЗ КАСТОМНЫХ НАСТРОЕК
             self.bx = Bitrix(self.webhook)
+            
+            # Восстанавливаем прокси для остальных компонентов
+            for k, v in saved_proxy.items():
+                if v is not None:
+                    os.environ[k] = v
             
             # 🔥 ДОБАВЬТЕ ЭТУ СТРОКУ
             self.bot_application = bot_application
