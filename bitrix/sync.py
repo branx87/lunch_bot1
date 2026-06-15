@@ -1039,19 +1039,19 @@ class BitrixSync:
             logger.error(f"Ошибка получения сотрудников из CRM: {e}")
             return []
 
-    async def _get_crm_field_id(self) -> int | None:
+    async def _get_crm_field_id(self) -> str | None:
         """Получаем ID поля enum 'Сотрудник' (ufCrm45_1743599470)"""
         try:
             fields = await self.bx.get_all(
                 'crm.item.fields',
                 {'entityTypeId': 1222}
             )
-            emp_field = next(
-                (field for field in fields.values()
-                 if field.get('title') == 'Сотрудник' and field.get('type') == 'enumeration'),
-                None
-            )
-            return emp_field.get('id') if emp_field else None
+            for field_id, field in fields.items():
+                if field.get('title') == 'Сотрудник' and field.get('type') == 'enumeration':
+                    return field_id
+            logger.error(f"Поле 'Сотрудник' не найдено. Доступные enum-поля: "
+                         f"{[(f.get('title'), f.get('type'), k) for k, f in fields.items() if f.get('type') == 'enumeration']}")
+            return None
         except Exception as e:
             logger.error(f"Ошибка получения ID поля enum: {e}")
             return None
