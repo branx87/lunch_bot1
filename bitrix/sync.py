@@ -1984,13 +1984,15 @@ class BitrixSync:
             # 1. Запрашиваем подразделения (существующий код)
             logger.info("Запрашиваю подразделения через REST API...")
             
+            _no_proxy = {'http': None, 'https': None}
+            
             def get_all_departments():
                 """Рекурсивно получает все подразделения"""
                 all_deps = {}
                 
                 def fetch_deps(start=0):
                     params = {'start': start}
-                    response = requests.get(self.rest_webhook + 'department.get', params=params)
+                    response = requests.get(self.rest_webhook + 'department.get', params=params, proxies=_no_proxy)
                     data = response.json()
                     
                     if 'result' in data and data['result']:
@@ -2018,7 +2020,7 @@ class BitrixSync:
                     'FILTER[USER_TYPE]': 'employee',
                     'start': start
                 }
-                user_response = requests.get(self.rest_webhook + 'user.get', params=params)
+                user_response = requests.get(self.rest_webhook + 'user.get', params=params, proxies=_no_proxy)
                 user_data = user_response.json()
 
                 if 'result' not in user_data or not user_data['result']:
