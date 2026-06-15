@@ -1066,8 +1066,7 @@ class BitrixSync:
     ) -> Dict[str, int]:
         """
         Синхронизирует enum-поле 'Сотрудник' в CRM с сотрудниками из REST API.
-        Добавляет только недавно устроившихся (employment_date >= 60 дней назад).
-        Деактивирует уволенных (добавляет префикс '[уволен] ').
+        Деактивирует уволенных. Добавляет только недавно устроившихся (>= 60 дней).
         """
         from datetime import date, timedelta
 
@@ -1084,15 +1083,10 @@ class BitrixSync:
 
             cutoff_date = date.today() - timedelta(days=NEW_HIRE_DAYS)
 
-            active_by_name = {}
+            all_active_norms = set()
             for emp in rest_employees:
                 if emp.get('Активен', True):
-                    norm = self._normalize_name(emp['ФИО'])
-                    emp_date = entity_1120_map.get(norm, {}).get('employment_date')
-                    if emp_date and emp_date >= cutoff_date:
-                        active_by_name[norm] = emp
-                    elif emp_date is None:
-                        active_by_name[norm] = emp
+                    all_active_norms.add(self._normalize_name(emp['ФИО']))
 
             crm_by_norm = {}
             for item in crm_items:
@@ -1103,18 +1097,18 @@ class BitrixSync:
             for item in crm_items:
                 norm_name = self._normalize_name(item['VALUE'])
                 is_deactivated = item['VALUE'].startswith('[уволен] ')
-                is_active_in_rest = norm_name in active_by_name
+                is_active_in_rest = norm_name in all_active_norms
 
                 try:
                     if is_deactivated and is_active_in_rest:
                         clean_name = item['VALUE'].replace('[уволен] ', '', 1)
-                        await self.bx.call('crm.item.property.enumeration.update', {
+                        await self.bx.call('crm.enumeration.update', {
                             'id': int(item['ID']),
                             'fields': {'VALUE': clean_name, 'SORT': item.get('SORT', 0)},
                         })
                         stats['deactivated'] += 1
                     elif not is_deactivated and not is_active_in_rest:
-                        await self.bx.call('crm.item.property.enumeration.update', {
+                        await self.bx.call('crm.enumeration.update', {
                             'id': int(item['ID']),
                             'fields': {'VALUE': f"[уволен] {item['VALUE']}", 'SORT': item.get('SORT', 0)},
                         })
@@ -1134,7 +1128,7 @@ class BitrixSync:
                         continue
                     try:
                         max_sort += 10
-                        await self.bx.call('crm.item.property.enumeration.add', {
+                        await self.bx.call('crm.enumeration.add', {
                             'field_id': field_id,
                             'fields': {'VALUE': rest_emp['ФИО'], 'SORT': max_sort},
                         })
