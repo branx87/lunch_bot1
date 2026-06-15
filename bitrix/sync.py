@@ -470,6 +470,14 @@ class BitrixSync:
                     logger.error(f"Ошибка обработки сотрудника {rest_emp.get('ФИО', 'unknown')}: {e}")
             
             logger.info(f"Синхронизация сотрудников завершена. Статистика: {stats}")
+
+            # Синхронизация enum-поля 'Сотрудник' в CRM
+            try:
+                enum_stats = await self.sync_crm_enum_field(rest_employees)
+                logger.info(f"Синхронизация enum-поля: {enum_stats}")
+            except Exception as e:
+                logger.error(f"Ошибка синхронизации enum-поля: {e}", exc_info=True)
+
             return stats
 
         except Exception as e:
@@ -1030,6 +1038,108 @@ class BitrixSync:
         except Exception as e:
             logger.error(f"Ошибка получения сотрудников из CRM: {e}")
             return []
+
+    async def _get_crm_field_id(self) -> int | None:
+        """Получаем ID поля enum 'Сотрудник' (ufCrm45_1743599470)"""
+        try:
+            fields = await self.bx.get_all(
+                'crm.item.fields',
+                {'entityTypeId': 1222}
+            )
+            emp_field = next(
+                (field for field in fields.values()
+                 if field.get('title') == 'Сотрудник' and field.get('type') == 'enumeration'),
+                None
+            )
+            return emp_field.get('id') if emp_field else None
+        except Exception as e:
+            logger.error(f"Ошибка получения ID поля enum: {e}")
+            return None
+
+    async def sync_crm_enum_field(self, rest_employees: List[Dict]) -> Dict[str, int]:
+        """
+        Синхронизирует enum-поле 'Сотрудник' в CRM с сотрудниками из REST API.
+        Добавляет новых, деактивирует уволенных ( добавляет префикс '[уволен] ').
+        """
+        stats = {'added': 0, 'deactivated': 0, 'unchanged': 0, 'errors': 0}
+        try:
+            field_id = await self._get_crm_field_id()
+            if not field_id:
+                logger.error("Не удалось получить ID поля enum 'Сотрудник'")
+                return stats
+
+            crm_items = await self._get_crm_employees()
+
+            rest_by_name = {}
+            for emp in rest_employees:
+                if emp.get('Активен', True):
+                    rest_by_name[self._normalize_name(emp['ФИО'])] = emp
+
+            crm_by_name = {}
+            for item in crm_items:
+                crm_by_name[self._normalize_name(item['VALUE'])] = item
+
+            max_sort = max((int(item.get('SORT', 0)) for item in crm_items), default=0)
+            new_items = []
+
+            for item in crm_items:
+                norm_name = self._normalize_name(item['VALUE'])
+                rest_emp = rest_by_name.get(norm_name)
+                is_deactivated = item['VALUE'].startswith('[уволен] ')
+                is_active_in_rest = rest_emp is not None
+
+                if is_deactivated and is_active_in_rest:
+                    clean_name = item['VALUE'].replace('[уволен] ', '', 1)
+                    new_items.append({
+                        'ID': item['ID'],
+                        'VALUE': clean_name,
+                        'SORT': item.get('SORT', 0),
+                    })
+                    stats['deactivated'] += 1
+                elif not is_deactivated and not is_active_in_rest:
+                    new_items.append({
+                        'ID': item['ID'],
+                        'VALUE': f"[уволен] {item['VALUE']}",
+                        'SORT': item.get('SORT', 0),
+                    })
+                    stats['deactivated'] += 1
+                else:
+                    new_items.append({
+                        'ID': item['ID'],
+                        'VALUE': item['VALUE'],
+                        'SORT': item.get('SORT', 0),
+                    })
+                    stats['unchanged'] += 1
+
+            for norm_name, rest_emp in rest_by_name.items():
+                if norm_name not in crm_by_name:
+                    max_sort += 10
+                    new_items.append({
+                        'VALUE': rest_emp['ФИО'],
+                        'SORT': max_sort,
+                    })
+                    stats['added'] += 1
+
+            if stats['added'] == 0 and stats['deactivated'] == 0:
+                logger.info("Enum-поле 'Сотрудник' актуально, изменений нет")
+                return stats
+
+            await self.bx.call('crm.item.property.enumeration.update', {
+                'id': field_id,
+                'items': new_items,
+            })
+
+            logger.info(
+                f"Enum-поле 'Сотрудник' обновлено: "
+                f"добавлено {stats['added']}, деактивировано {stats['deactivated']}, "
+                f"без изменений {stats['unchanged']}"
+            )
+            return stats
+
+        except Exception as e:
+            stats['errors'] += 1
+            logger.error(f"Ошибка синхронизации enum-поля: {e}", exc_info=True)
+            return stats
 
     # Маппинг ufCrm20WorkTime -> (начало, конец) рабочего дня
     _work_time_map = {

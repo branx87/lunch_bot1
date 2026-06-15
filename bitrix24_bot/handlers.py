@@ -245,7 +245,7 @@ async def handle_message(
                        "статистика за месяц", "статистика текущий месяц", "статистика прошлый месяц",
                        "уведомления", "уведомления отключить", "уведомления включить"}
     _employee_ctx  = {"заказать порцию", "добавить порцию", "убрать порцию", "отменить заказ", "заказать инспектору"}
-    _employee_steps = {STEP_SELECT_DAY, STEP_ORDER_VIEW, STEP_MY_ORDERS, STEP_STATS}
+    _employee_steps = {STEP_SELECT_DAY, STEP_ORDER_VIEW, STEP_MY_ORDERS, STEP_STATS, STEP_LOCATION}
 
     _is_employee_action = (
         raw in _employee_root or
@@ -253,7 +253,8 @@ async def handle_message(
         (step in _employee_steps and (
             raw in _employee_ctx or
             bool(re.match(r'^день \d+$', raw)) or
-            bool(re.match(r'^отменить \d{2}\.\d{2}$', raw))
+            bool(re.match(r'^отменить \d{2}\.\d{2}$', raw)) or
+            raw.startswith("выбрать локацию ")
         ))
     )
     if role == "employee" or (role == "admin" and _is_employee_action):
