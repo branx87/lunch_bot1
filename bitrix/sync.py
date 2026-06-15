@@ -1070,70 +1070,63 @@ class BitrixSync:
 
             crm_items = await self._get_crm_employees()
 
-            rest_by_name = {}
+            active_by_name = {}
             for emp in rest_employees:
                 if emp.get('Активен', True):
-                    rest_by_name[self._normalize_name(emp['ФИО'])] = emp
+                    active_by_name[self._normalize_name(emp['ФИО'])] = emp
 
-            crm_by_name = {}
+            crm_by_norm = {}
             for item in crm_items:
-                crm_by_name[self._normalize_name(item['VALUE'])] = item
+                crm_by_norm[self._normalize_name(item['VALUE'])] = item
 
             max_sort = max((int(item.get('SORT', 0)) for item in crm_items), default=0)
-            new_items = []
 
             for item in crm_items:
                 norm_name = self._normalize_name(item['VALUE'])
-                rest_emp = rest_by_name.get(norm_name)
                 is_deactivated = item['VALUE'].startswith('[уволен] ')
-                is_active_in_rest = rest_emp is not None
+                is_active_in_rest = norm_name in active_by_name
 
-                if is_deactivated and is_active_in_rest:
-                    clean_name = item['VALUE'].replace('[уволен] ', '', 1)
-                    new_items.append({
-                        'ID': item['ID'],
-                        'VALUE': clean_name,
-                        'SORT': item.get('SORT', 0),
-                    })
-                    stats['deactivated'] += 1
-                elif not is_deactivated and not is_active_in_rest:
-                    new_items.append({
-                        'ID': item['ID'],
-                        'VALUE': f"[уволен] {item['VALUE']}",
-                        'SORT': item.get('SORT', 0),
-                    })
-                    stats['deactivated'] += 1
-                else:
-                    new_items.append({
-                        'ID': item['ID'],
-                        'VALUE': item['VALUE'],
-                        'SORT': item.get('SORT', 0),
-                    })
-                    stats['unchanged'] += 1
+                try:
+                    if is_deactivated and is_active_in_rest:
+                        clean_name = item['VALUE'].replace('[уволен] ', '', 1)
+                        await self.bx.call('crm.item.property.enumeration.update', {
+                            'id': int(item['ID']),
+                            'fields': {'VALUE': clean_name, 'SORT': item.get('SORT', 0)},
+                        })
+                        stats['deactivated'] += 1
+                    elif not is_deactivated and not is_active_in_rest:
+                        await self.bx.call('crm.item.property.enumeration.update', {
+                            'id': int(item['ID']),
+                            'fields': {'VALUE': f"[уволен] {item['VALUE']}", 'SORT': item.get('SORT', 0)},
+                        })
+                        stats['deactivated'] += 1
+                    else:
+                        stats['unchanged'] += 1
+                except Exception as e:
+                    stats['errors'] += 1
+                    logger.error(f"Ошибка обновления enum-значения '{item['VALUE']}': {e}")
 
-            for norm_name, rest_emp in rest_by_name.items():
-                if norm_name not in crm_by_name:
-                    max_sort += 10
-                    new_items.append({
-                        'VALUE': rest_emp['ФИО'],
-                        'SORT': max_sort,
-                    })
-                    stats['added'] += 1
+            for norm_name, rest_emp in active_by_name.items():
+                if norm_name not in crm_by_norm:
+                    try:
+                        max_sort += 10
+                        await self.bx.call('crm.item.property.enumeration.add', {
+                            'field_id': field_id,
+                            'fields': {'VALUE': rest_emp['ФИО'], 'SORT': max_sort},
+                        })
+                        stats['added'] += 1
+                    except Exception as e:
+                        stats['errors'] += 1
+                        logger.error(f"Ошибка добавления enum-значения '{rest_emp['ФИО']}': {e}")
 
             if stats['added'] == 0 and stats['deactivated'] == 0:
                 logger.info("Enum-поле 'Сотрудник' актуально, изменений нет")
-                return stats
-
-            await self.bx.call('crm.item.property.enumeration.update', {
-                'id': field_id,
-                'items': new_items,
-            })
-
-            logger.info(
-                f"Enum-поле 'Сотрудник' обновлено: "
-                f"добавлено {stats['added']}, деактивировано {stats['deactivated']}, "
-                f"без изменений {stats['unchanged']}"
-            )
+            else:
+                logger.info(
+                    f"Enum-поле 'Сотрудник' обновлено: "
+                    f"добавлено {stats['added']}, деактивировано {stats['deactivated']}, "
+                    f"без изменений {stats['unchanged']}"
+                )
             return stats
 
         except Exception as e:
