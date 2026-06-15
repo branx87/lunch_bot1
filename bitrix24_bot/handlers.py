@@ -723,8 +723,11 @@ async def _handle_employee_inner(
 
     # ---- Выбор локации ----
     if step == STEP_LOCATION and raw.startswith("выбрать локацию "):
-        location = raw.replace("выбрать локацию ", "").strip()
-        if location not in CONFIG.locations:
+        location_input = raw.replace("выбрать локацию ", "").strip()
+        location = next(
+            (loc for loc in CONFIG.locations if loc.lower() == location_input), None
+        )
+        if not location:
             return [_msg("❌ Выберите объект из списка:", keyboard=_location_kb(), replace=True)]
         from services.user_service import set_user_location
         user = db.session.query(User).filter(User.id == user_db_id).first()
