@@ -473,7 +473,7 @@ class BitrixSync:
 
             # Синхронизация enum-поля 'Сотрудник' в CRM
             try:
-                enum_stats = await self.sync_crm_enum_field(rest_employees)
+                enum_stats = await self.sync_crm_enum_field(rest_employees, entity_1120_map)
                 logger.info(f"Синхронизация enum-поля: {enum_stats}")
             except Exception as e:
                 logger.error(f"Ошибка синхронизации enum-поля: {e}", exc_info=True)
@@ -1056,12 +1056,19 @@ class BitrixSync:
             logger.error(f"Ошибка получения ID поля enum: {e}")
             return None
 
-    async def sync_crm_enum_field(self, rest_employees: List[Dict]) -> Dict[str, int]:
+    async def sync_crm_enum_field(
+        self, rest_employees: List[Dict], entity_1120_map: Dict[str, Dict]
+    ) -> Dict[str, int]:
         """
         Синхронизирует enum-поле 'Сотрудник' в CRM с сотрудниками из REST API.
-        Добавляет новых, деактивирует уволенных ( добавляет префикс '[уволен] ').
+        Добавляет только недавно устроившихся (employment_date >= 60 дней назад).
+        Деактивирует уволенных (добавляет префикс '[уволен] ').
         """
-        stats = {'added': 0, 'deactivated': 0, 'unchanged': 0, 'errors': 0}
+        from datetime import date, timedelta
+
+        stats = {'added': 0, 'deactivated': 0, 'unchanged': 0, 'errors': 0, 'skipped_old': 0}
+        NEW_HIRE_DAYS = 60
+
         try:
             field_id = await self._get_crm_field_id()
             if not field_id:
@@ -1070,10 +1077,17 @@ class BitrixSync:
 
             crm_items = await self._get_crm_employees()
 
+            cutoff_date = date.today() - timedelta(days=NEW_HIRE_DAYS)
+
             active_by_name = {}
             for emp in rest_employees:
                 if emp.get('Активен', True):
-                    active_by_name[self._normalize_name(emp['ФИО'])] = emp
+                    norm = self._normalize_name(emp['ФИО'])
+                    emp_date = entity_1120_map.get(norm, {}).get('employment_date')
+                    if emp_date and emp_date >= cutoff_date:
+                        active_by_name[norm] = emp
+                    elif emp_date is None:
+                        active_by_name[norm] = emp
 
             crm_by_norm = {}
             for item in crm_items:
@@ -1106,8 +1120,13 @@ class BitrixSync:
                     stats['errors'] += 1
                     logger.error(f"Ошибка обновления enum-значения '{item['VALUE']}': {e}")
 
-            for norm_name, rest_emp in active_by_name.items():
+            all_active = {self._normalize_name(e['ФИО']): e for e in rest_employees if e.get('Активен', True)}
+            for norm_name, rest_emp in all_active.items():
                 if norm_name not in crm_by_norm:
+                    emp_date = entity_1120_map.get(norm_name, {}).get('employment_date')
+                    if emp_date and emp_date < cutoff_date:
+                        stats['skipped_old'] += 1
+                        continue
                     try:
                         max_sort += 10
                         await self.bx.call('crm.item.property.enumeration.add', {
@@ -1125,6 +1144,7 @@ class BitrixSync:
                 logger.info(
                     f"Enum-поле 'Сотрудник' обновлено: "
                     f"добавлено {stats['added']}, деактивировано {stats['deactivated']}, "
+                    f"пропущено (старые) {stats['skipped_old']}, "
                     f"без изменений {stats['unchanged']}"
                 )
             return stats
