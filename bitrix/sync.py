@@ -476,12 +476,12 @@ class BitrixSync:
             
             logger.info(f"Синхронизация сотрудников завершена. Статистика: {stats}")
 
-            # Синхронизация enum-поля 'Сотрудник' в CRM
-            try:
-                enum_stats = await self.sync_crm_enum_field(rest_employees, entity_1120_map)
-                logger.info(f"Синхронизация enum-поля: {enum_stats}")
-            except Exception as e:
-                logger.error(f"Ошибка синхронизации enum-поля: {e}", exc_info=True)
+            # Синхронизация enum-поля 'Сотрудник' в CRM (отключено до проверки API)
+            # try:
+            #     enum_stats = await self.sync_crm_enum_field(rest_employees, entity_1120_map)
+            #     logger.info(f"Синхронизация enum-поля: {enum_stats}")
+            # except Exception as e:
+            #     logger.error(f"Ошибка синхронизации enum-поля: {e}", exc_info=True)
 
             return stats
 
