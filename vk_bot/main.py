@@ -62,6 +62,15 @@ def main():
             logger.error("VK_BOT_TOKEN not set in environment")
             sys.exit(1)
 
+        from vkbottle.polling.bot_polling import BotPolling
+
+        class NoopPolling(BotPolling):
+            def save_server_ts(self, server):
+                pass
+
+            def restore_server_ts(self, server):
+                return server
+
         labeler = BotLabeler()
         state_dispenser = BuiltinStateDispenser()
 
@@ -74,7 +83,7 @@ def main():
         setup_labelers(labeler)
 
         global bot
-        bot = Bot(token=token, labeler=labeler, state_dispenser=state_dispenser)
+        bot = Bot(token=token, labeler=labeler, state_dispenser=state_dispenser, polling=NoopPolling())
 
         logger.info("=== VK bot starting ===")
         bot.run_forever()

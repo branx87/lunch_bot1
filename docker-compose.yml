@@ -37,7 +37,6 @@ services:
       - ./data/db:/app/data/db:rw
       - ./data/backups:/app/data/backups:rw
       - .:/app:ro
-      - ./data/.vkbottle:/app/.vkbottle:rw
     environment:
       - TZ=Europe/Moscow
       - PYTHONUNBUFFERED=1
@@ -101,7 +100,6 @@ services:
       - ./data/logs:/app/data/logs:rw
       - ./data/reports:/app/data/reports:rw
       - .:/app:ro
-      - ./data/.vkbottle:/app/.vkbottle:rw
     environment:
       - TZ=Europe/Moscow
       - PYTHONUNBUFFERED=1
@@ -131,7 +129,6 @@ services:
       - ./data/reports:/app/data/reports:rw
       - ./data/db:/app/data/db:rw
       - .:/app:ro
-      - ./data/.vkbottle:/app/.vkbottle:rw
     environment:
       - TZ=Europe/Moscow
       - PYTHONUNBUFFERED=1

@@ -33,7 +33,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY . /app/
 
 # Создаем директории для данных внутри контейнера
-RUN mkdir -p /app/data/{configs,logs,reports,db,backups} /app/.vkbottle
+RUN mkdir -p /app/data/{configs,logs,reports,db,backups}
 
 # Меняем владельца файлов
 RUN chown -R conteiner:conteiner /app
