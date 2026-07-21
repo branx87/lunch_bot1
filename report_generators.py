@@ -497,13 +497,6 @@ async def export_monthly_report(
         # 🔥 ОСТАЛЬНАЯ ЛОГИКА ОСТАЕТСЯ ПРЕЖНЕЙ (создание листов по локациям, итоги и т.д.)
         # Создаем листы для каждой локации (объединяем "Офис" и "ПЦ 2")
         
-        thin_border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin')
-        )
-        
         for location in CONFIG.locations:
             if location == "ПЦ 2":
                 continue
