@@ -13,6 +13,7 @@ from config import CONFIG
 from handlers.common import show_main_menu
 from middleware import check_user_access
 from utils import can_modify_order
+from services.menu_service import DAYS_RU
 from view_utils import refresh_day_view
 from notifications import show_access_denied
 from time_config import TIME_CONFIG
@@ -309,8 +310,7 @@ async def handle_change_callback(query, now, user, context):
 
         # Получаем меню на выбранный день
         try:
-            from services.menu_service import DAYS_RU as days_ru
-            day_name = days_ru[target_date.weekday()]
+            day_name = DAYS_RU[target_date.weekday()]
             menu = CONFIG.menu.get(day_name)
             if not menu:
                 logger.error(f"Меню не найдено для дня {day_name}")

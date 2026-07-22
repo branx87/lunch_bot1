@@ -8,6 +8,7 @@ from models import User, Order
 from config import CONFIG
 from handlers.common import show_main_menu
 from utils import can_modify_order
+from services.menu_service import DAYS_RU
 
 # --- Просмотр заказов ---
 async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, is_cancellation=False):
@@ -78,10 +79,9 @@ async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, is_can
         response += "<i>Нажмите на заказ, чтобы отменить его</i>\n\n"
         
         keyboard = []
-        from services.menu_service import DAYS_RU as days_ru
 
         for order in active_orders:
-            day_name = days_ru[order.target_date.weekday()]
+            day_name = DAYS_RU[order.target_date.weekday()]
             date_str = order.target_date.strftime('%d.%m')
             qty = order.quantity
             status = " (предв.)" if order.is_preliminary else ""

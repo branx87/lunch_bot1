@@ -13,6 +13,7 @@ from constants import SELECT_MONTH_RANGE_STATS
 from handlers.common import show_main_menu
 from handlers.common_handlers import view_orders
 from utils import can_modify_order, check_registration, format_menu, handle_unregistered
+from services.menu_service import DAYS_RU
 from view_utils import refresh_orders_view
 
 logger = logging.getLogger(__name__)
@@ -22,8 +23,7 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
     today = now.date()
-    days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    day_name = days_ru[today.weekday()]
+    day_name = DAYS_RU[today.weekday()]
     date_str = today.strftime("%d.%m")
     
     # Проверяем праздник
@@ -104,7 +104,6 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
         today = now.date()
-        from services.menu_service import DAYS_RU as days_ru
         
         sent_days = 0
         
@@ -119,7 +118,7 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         for day_offset in range(7):
             day_date = today + timedelta(days=day_offset)
-            day_name = days_ru[day_date.weekday()]
+            day_name = DAYS_RU[day_date.weekday()]
             date_str = day_date.strftime("%d.%m")
             date_iso = day_date.isoformat()
             
@@ -200,9 +199,9 @@ async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_
     try:
         user = update.effective_user
         now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
-        from services.menu_service import DAYS_RU as days_ru
+        from services.menu_service import DAYS_RU as DAYS_RU
         target_date = now.date() + timedelta(days=day_offset)
-        day_name = days_ru[target_date.weekday()]
+        day_name = DAYS_RU[target_date.weekday()]
         date_iso = target_date.isoformat()
 
         # Проверяем праздник
@@ -363,9 +362,8 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"USER {user_id}: успешно отменил заказ на {target_date}")
 
                 # Обновляем интерфейс
-    from services.menu_service import DAYS_RU as days_ru
                 if "Меню на" in query.message.text:
-                    day_name = days_ru[target_date.weekday()]
+                    day_name = DAYS_RU[target_date.weekday()]
                     menu = CONFIG.menu.get(day_name)
                     await query.edit_message_text(
                         text=f"~~{format_menu(menu, day_name)}~~\n❌ Заказ отменён",
@@ -375,7 +373,7 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode="Markdown"
                     )
                 else:
-                    await refresh_orders_view(query, context, user_id, now, days_ru)
+                    await refresh_orders_view(query, context, user_id, now, DAYS_RU)
 
                 await query.answer("✅ Заказ отменён")
 

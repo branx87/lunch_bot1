@@ -8,6 +8,7 @@ from config import CONFIG
 from models import User, Order
 from handlers.common import show_main_menu
 from utils import can_modify_order
+from services.menu_service import DAYS_RU
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +35,8 @@ async def refresh_day_view(query, day_offset, user_db_id, now, is_order=False):
         is_order: Флаг, указывающий на действие заказа.
     """
     try:
-        from services.menu_service import DAYS_RU as days_ru
         target_date = (now + timedelta(days=day_offset)).date()
-        day_name = days_ru[target_date.weekday()]
+        day_name = DAYS_RU[target_date.weekday()]
         date_str = target_date.strftime("%d.%m")
         menu = CONFIG.menu.get(day_name)
 
