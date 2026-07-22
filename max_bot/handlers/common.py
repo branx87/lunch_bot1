@@ -11,7 +11,7 @@ from config import CONFIG
 from time_config import TIME_CONFIG
 from services.order_service import get_active_orders, get_user_monthly_stats
 from services.menu_service import DAYS_RU
-from services.user_service import get_verified_user, MESSENGER_MAX
+from services.user_service import get_user_db_id, MESSENGER_MAX
 from max_bot.keyboards import main_menu_keyboard, location_keyboard
 from max_bot.states import Registration
 from maxapi.types import CallbackButton
@@ -21,11 +21,6 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-def _get_user_db_id(max_user_id, session):
-    user = get_verified_user(max_user_id, MESSENGER_MAX, session)
-    return user.id if user else None
-
-
 @router.message_created(F.message.body.text == "Просмотреть заказы")
 async def view_orders(event: MessageCreated):
     """Show active orders with cancel buttons."""
@@ -33,7 +28,7 @@ async def view_orders(event: MessageCreated):
     today = datetime.now(CONFIG.timezone).date()
 
     with db.get_session() as session:
-        user_db_id = _get_user_db_id(user_id, session)
+        user_db_id = get_user_db_id(user_id, MESSENGER_MAX, session)
         if not user_db_id:
             await event.message.answer("❌ Вы не зарегистрированы. Отправьте /start")
             return
@@ -71,7 +66,7 @@ async def monthly_stats(event: MessageCreated):
     end_date = now.date()
 
     with db.get_session() as session:
-        user_db_id = _get_user_db_id(user_id, session)
+        user_db_id = get_user_db_id(user_id, MESSENGER_MAX, session)
         if not user_db_id:
             await event.message.answer("❌ Вы не зарегистрированы. Отправьте /start")
             return

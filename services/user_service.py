@@ -129,6 +129,12 @@ def get_verified_user(messenger_id, messenger_type, session):
     ).first()
 
 
+def get_user_db_id(messenger_id, messenger_type, session):
+    """Get user DB ID by messenger ID. Returns int or None."""
+    user = get_verified_user(messenger_id, messenger_type, session)
+    return user.id if user else None
+
+
 def register_user_messenger(user, messenger_id, messenger_type, username=None, phone=None):
     """
     Bind a messenger ID to an existing User record.

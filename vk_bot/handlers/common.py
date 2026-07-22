@@ -10,16 +10,11 @@ from config import CONFIG
 from time_config import TIME_CONFIG
 from services.order_service import get_active_orders, get_user_monthly_stats
 from services.menu_service import DAYS_RU
-from services.user_service import get_verified_user, MESSENGER_VK
+from services.user_service import get_user_db_id, MESSENGER_VK
 from vk_bot.keyboards import main_menu_keyboard, location_keyboard
 
 logger = logging.getLogger(__name__)
 common_labeler = BotLabeler()
-
-
-def _get_user_db_id(vk_user_id, session):
-    user = get_verified_user(vk_user_id, MESSENGER_VK, session)
-    return user.id if user else None
 
 
 @common_labeler.private_message(text="Просмотреть заказы")
@@ -29,7 +24,7 @@ async def view_orders(message: Message):
     today = datetime.now(CONFIG.timezone).date()
 
     with db.get_session() as session:
-        user_db_id = _get_user_db_id(user_id, session)
+        user_db_id = get_user_db_id(user_id, MESSENGER_VK, session)
         if not user_db_id:
             await message.answer("❌ Вы не зарегистрированы. Напишите /start")
             return
@@ -72,7 +67,7 @@ async def monthly_stats(message: Message):
     end_date = now.date()
 
     with db.get_session() as session:
-        user_db_id = _get_user_db_id(user_id, session)
+        user_db_id = get_user_db_id(user_id, MESSENGER_VK, session)
         if not user_db_id:
             await message.answer("❌ Вы не зарегистрированы. Напишите /start")
             return

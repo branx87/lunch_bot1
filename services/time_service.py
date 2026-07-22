@@ -6,6 +6,32 @@ from datetime import datetime, date, timedelta
 from time_config import TIME_CONFIG
 
 
+def get_month_date_range(period="current", now=None):
+    """
+    Get start and end dates for current or previous month.
+    
+    Args:
+        period: "current" for current month, "previous" for previous month
+        now: datetime object, defaults to current time
+        
+    Returns:
+        tuple of (start_date, end_date) as date objects
+    """
+    if now is None:
+        now = datetime.now(TIME_CONFIG.TIMEZONE)
+    
+    if period == "current":
+        start_date = now.replace(day=1).date()
+        end_date = now.date()
+    else:
+        first_day_current = now.replace(day=1)
+        last_day_prev = first_day_current - timedelta(days=1)
+        start_date = last_day_prev.replace(day=1).date()
+        end_date = last_day_prev.date()
+    
+    return start_date, end_date
+
+
 def get_next_workday(from_date=None):
     """Returns the next working day after from_date."""
     if from_date is None:

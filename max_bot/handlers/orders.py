@@ -13,7 +13,7 @@ from services.order_service import (
 )
 from services.time_service import can_modify_order
 from services.menu_service import get_menu_for_day, format_menu_text, DAYS_RU
-from services.user_service import get_verified_user, MESSENGER_MAX
+from services.user_service import get_user_db_id, MESSENGER_MAX
 from max_bot.keyboards import order_buttons, quantity_buttons, main_menu_keyboard
 
 logger = logging.getLogger(__name__)
@@ -24,11 +24,6 @@ def _parse_day_offset(payload):
     """Extract day_offset from payload like 'order_2' -> 2."""
     parts = payload.split("_", 1)
     return int(parts[1]) if len(parts) > 1 else 0
-
-
-def _get_user_db_id(max_user_id, session):
-    user = get_verified_user(max_user_id, MESSENGER_MAX, session)
-    return user.id if user else None
 
 
 async def _refresh_day_view(event, day_offset, user_db_id, session):
@@ -72,7 +67,7 @@ async def quick_order(event):
         return
 
     with db.get_session() as session:
-        user_db_id = _get_user_db_id(user_id, session)
+        user_db_id = get_user_db_id(user_id, MESSENGER_MAX, session)
         if not user_db_id:
             await event.message.answer("❌ Вы не зарегистрированы. Отправьте /start")
             return
@@ -108,7 +103,7 @@ async def on_order(event: MessageCallback):
         return
 
     with db.get_session() as session:
-        user_db_id = _get_user_db_id(user_id, session)
+        user_db_id = get_user_db_id(user_id, MESSENGER_MAX, session)
         if not user_db_id:
             await event.answer(notification="❌ Вы не зарегистрированы")
             return
@@ -140,7 +135,7 @@ async def on_change(event: MessageCallback):
         return
 
     with db.get_session() as session:
-        user_db_id = _get_user_db_id(user_id, session)
+        user_db_id = get_user_db_id(user_id, MESSENGER_MAX, session)
         if not user_db_id:
             return
 
@@ -187,7 +182,7 @@ async def _modify(event: MessageCallback, delta: int):
         return
 
     with db.get_session() as session:
-        user_db_id = _get_user_db_id(user_id, session)
+        user_db_id = get_user_db_id(user_id, MESSENGER_MAX, session)
         if not user_db_id:
             return
 
@@ -246,7 +241,7 @@ async def on_cancel(event: MessageCallback):
         return
 
     with db.get_session() as session:
-        user_db_id = _get_user_db_id(user_id, session)
+        user_db_id = get_user_db_id(user_id, MESSENGER_MAX, session)
         if not user_db_id:
             return
 
@@ -278,7 +273,7 @@ async def on_confirm(event: MessageCallback):
     day_offset = _parse_day_offset(event.callback.payload)
 
     with db.get_session() as session:
-        user_db_id = _get_user_db_id(user_id, session)
+        user_db_id = get_user_db_id(user_id, MESSENGER_MAX, session)
         if not user_db_id:
             return
         await _refresh_day_view(event, day_offset, user_db_id, session)

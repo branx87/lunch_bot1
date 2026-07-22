@@ -11,17 +11,11 @@ from time_config import TIME_CONFIG
 from services.menu_service import get_menu_for_day, format_menu_text, get_week_menus
 from services.order_service import get_order_for_date
 from services.time_service import can_modify_order
-from services.user_service import get_user_by_messenger, get_verified_user, MESSENGER_MAX
+from services.user_service import get_user_by_messenger, get_user_db_id, MESSENGER_MAX
 from max_bot.keyboards import order_buttons, main_menu_keyboard
 
 logger = logging.getLogger(__name__)
 router = Router()
-
-
-def _get_user_db_id(max_user_id, session):
-    """Helper to get internal user ID from Max user ID."""
-    user = get_verified_user(max_user_id, MESSENGER_MAX, session)
-    return user.id if user else None
 
 
 @router.message_created(F.message.body.text == "Меню на сегодня")
@@ -30,7 +24,7 @@ async def show_today_menu(event: MessageCreated):
     user_id = event.user.user_id
 
     with db.get_session() as session:
-        user_db_id = _get_user_db_id(user_id, session)
+        user_db_id = get_user_db_id(user_id, MESSENGER_MAX, session)
         if not user_db_id:
             await event.message.answer("❌ Вы не зарегистрированы. Отправьте /start")
             return
@@ -61,7 +55,7 @@ async def show_week_menu(event: MessageCreated):
     user_id = event.user.user_id
 
     with db.get_session() as session:
-        user_db_id = _get_user_db_id(user_id, session)
+        user_db_id = get_user_db_id(user_id, MESSENGER_MAX, session)
         if not user_db_id:
             await event.message.answer("❌ Вы не зарегистрированы. Отправьте /start")
             return

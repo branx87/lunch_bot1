@@ -11,16 +11,11 @@ from time_config import TIME_CONFIG
 from services.order_service import create_order, cancel_order, modify_quantity, get_order_for_date
 from services.time_service import can_modify_order
 from services.menu_service import get_menu_for_day, format_menu_text, DAYS_RU
-from services.user_service import get_verified_user, MESSENGER_VK
+from services.user_service import get_user_db_id, MESSENGER_VK
 from vk_bot.keyboards import order_buttons, quantity_buttons
 
 logger = logging.getLogger(__name__)
 orders_labeler = BotLabeler()
-
-
-def _get_user_db_id(vk_user_id, session):
-    user = get_verified_user(vk_user_id, MESSENGER_VK, session)
-    return user.id if user else None
 
 
 def _build_day_view(day_offset, user_db_id, session):
@@ -81,7 +76,7 @@ async def quick_order(message: Message):
         return
 
     with db.get_session() as session:
-        user_db_id = _get_user_db_id(user_id, session)
+        user_db_id = get_user_db_id(user_id, MESSENGER_VK, session)
         if not user_db_id:
             await message.answer("❌ Вы не зарегистрированы. Напишите /start")
             return
@@ -131,7 +126,7 @@ async def on_order_callback(event: MessageEvent):
             return
 
         with db.get_session() as session:
-            user_db_id = _get_user_db_id(user_id, session)
+            user_db_id = get_user_db_id(user_id, MESSENGER_VK, session)
             if not user_db_id:
                 await event.show_snackbar("Вы не зарегистрированы")
                 return
@@ -153,7 +148,7 @@ async def on_order_callback(event: MessageEvent):
             return
 
         with db.get_session() as session:
-            user_db_id = _get_user_db_id(user_id, session)
+            user_db_id = get_user_db_id(user_id, MESSENGER_VK, session)
             if not user_db_id:
                 return
 
@@ -183,7 +178,7 @@ async def on_order_callback(event: MessageEvent):
             return
 
         with db.get_session() as session:
-            user_db_id = _get_user_db_id(user_id, session)
+            user_db_id = get_user_db_id(user_id, MESSENGER_VK, session)
             if not user_db_id:
                 return
 
@@ -219,7 +214,7 @@ async def on_order_callback(event: MessageEvent):
             return
 
         with db.get_session() as session:
-            user_db_id = _get_user_db_id(user_id, session)
+            user_db_id = get_user_db_id(user_id, MESSENGER_VK, session)
             if not user_db_id:
                 return
 
@@ -244,7 +239,7 @@ async def on_order_callback(event: MessageEvent):
     # --- CONFIRM ---
     if cmd == "confirm":
         with db.get_session() as session:
-            user_db_id = _get_user_db_id(user_id, session)
+            user_db_id = get_user_db_id(user_id, MESSENGER_VK, session)
             if not user_db_id:
                 return
             await _edit_day_view(event, day_offset, user_db_id, session)
@@ -267,7 +262,7 @@ async def on_order_callback(event: MessageEvent):
             return
 
         with db.get_session() as session:
-            user_db_id = _get_user_db_id(user_id, session)
+            user_db_id = get_user_db_id(user_id, MESSENGER_VK, session)
             if not user_db_id:
                 return
 

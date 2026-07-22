@@ -34,7 +34,7 @@ async def refresh_day_view(query, day_offset, user_db_id, now, is_order=False):
         is_order: Флаг, указывающий на действие заказа.
     """
     try:
-        days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+        from services.menu_service import DAYS_RU as days_ru
         target_date = (now + timedelta(days=day_offset)).date()
         day_name = days_ru[target_date.weekday()]
         date_str = target_date.strftime("%d.%m")

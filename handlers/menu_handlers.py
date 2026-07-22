@@ -104,7 +104,7 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
         today = now.date()
-        days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+        from services.menu_service import DAYS_RU as days_ru
         
         sent_days = 0
         
@@ -200,7 +200,7 @@ async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_
     try:
         user = update.effective_user
         now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
-        days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+        from services.menu_service import DAYS_RU as days_ru
         target_date = now.date() + timedelta(days=day_offset)
         day_name = days_ru[target_date.weekday()]
         date_iso = target_date.isoformat()
@@ -363,7 +363,7 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"USER {user_id}: успешно отменил заказ на {target_date}")
 
                 # Обновляем интерфейс
-                days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    from services.menu_service import DAYS_RU as days_ru
                 if "Меню на" in query.message.text:
                     day_name = days_ru[target_date.weekday()]
                     menu = CONFIG.menu.get(day_name)

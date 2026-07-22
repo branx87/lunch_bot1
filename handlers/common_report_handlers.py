@@ -25,17 +25,14 @@ async def select_month_range(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("❌ Не выбран тип отчета")
             return await show_main_menu(update, user_id)
 
-        now = datetime.now(CONFIG.timezone)
+        from services.time_service import get_month_date_range
+        
         start_date = end_date = None
 
         if text == "Текущий месяц":
-            start_date = now.replace(day=1).date()
-            end_date = now.date()
+            start_date, end_date = get_month_date_range("current")
         elif text == "Прошлый месяц":
-            first_day_current_month = now.replace(day=1)
-            last_day_prev_month = first_day_current_month - timedelta(days=1)
-            start_date = last_day_prev_month.replace(day=1).date()
-            end_date = last_day_prev_month.date()
+            start_date, end_date = get_month_date_range("previous")
         elif text == "Вернуться в главное меню":
             return await show_main_menu(update, user_id)
         else:

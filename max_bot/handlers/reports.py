@@ -70,15 +70,9 @@ async def on_month_selected(event: MessageCallback):
     # Store selection
     month = event.callback.payload  # "month_current" or "month_previous"
 
-    now = datetime.now(CONFIG.timezone)
-    if month == "month_current":
-        start_date = now.replace(day=1).date()
-        end_date = now.date()
-    else:
-        first_of_month = now.replace(day=1)
-        last_month_end = first_of_month - __import__('datetime').timedelta(days=1)
-        start_date = last_month_end.replace(day=1).date()
-        end_date = last_month_end.date()
+    from services.time_service import get_month_date_range
+    period = "current" if month == "month_current" else "previous"
+    start_date, end_date = get_month_date_range(period)
 
     # For providers — send directly
     if role == 'provider':

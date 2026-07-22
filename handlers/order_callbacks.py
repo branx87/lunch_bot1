@@ -309,7 +309,7 @@ async def handle_change_callback(query, now, user, context):
 
         # Получаем меню на выбранный день
         try:
-            days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+            from services.menu_service import DAYS_RU as days_ru
             day_name = days_ru[target_date.weekday()]
             menu = CONFIG.menu.get(day_name)
             if not menu:

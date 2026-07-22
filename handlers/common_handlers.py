@@ -78,7 +78,7 @@ async def view_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, is_can
         response += "<i>Нажмите на заказ, чтобы отменить его</i>\n\n"
         
         keyboard = []
-        days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+        from services.menu_service import DAYS_RU as days_ru
 
         for order in active_orders:
             day_name = days_ru[order.target_date.weekday()]

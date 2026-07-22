@@ -84,16 +84,8 @@ async def on_report_callback(event: MessageEvent):
             return
 
         period = payload.get("p", "current")
-        now = datetime.now(CONFIG.timezone)
-
-        if period == "current":
-            start_date = now.replace(day=1).date()
-            end_date = now.date()
-        else:
-            first = now.replace(day=1)
-            last_month_end = first - timedelta(days=1)
-            start_date = last_month_end.replace(day=1).date()
-            end_date = last_month_end.date()
+        from services.time_service import get_month_date_range
+        start_date, end_date = get_month_date_range(period)
 
         if role == 'provider':
             with db.get_session() as session:

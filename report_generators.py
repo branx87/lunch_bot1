@@ -1,13 +1,9 @@
 # ##report_generators.py
-from openpyxl.styles import Font
 from typing import Optional
-from report_utils import thin_border
-import openpyxl
 from datetime import datetime, date
 from telegram import Update
 from telegram.error import Forbidden
 from telegram.ext import ContextTypes
-import os
 import logging
 
 import asyncio
@@ -15,8 +11,6 @@ from telegram.error import TimedOut, NetworkError
 
 from database import db
 from config import CONFIG
-from models import User, Order
-from sqlalchemy import text
 
 
 async def _send_document_with_retry(bot, chat_id, file_path, caption, filename, retries=3):
@@ -33,9 +27,6 @@ async def _send_document_with_retry(bot, chat_id, file_path, caption, filename, 
             logger.warning(f"Ошибка отправки файла (попытка {attempt}/{retries}), повтор через {wait}с: {e}")
             await asyncio.sleep(wait)
 
-from report_utils import ensure_reports_dir
-from settings import SETTINGS_CONFIG
-
 logger = logging.getLogger(__name__)
 
 async def export_orders_for_provider(
@@ -50,58 +41,9 @@ async def export_orders_for_provider(
     Добавляет строку с незарегистрированными сотрудниками, если такие есть.
     """
     try:
-        # Если даты не заданы — используем сегодняшнюю
-        if not start_date or not end_date:
-            today = datetime.now(CONFIG.timezone).date()
-            start_date = end_date = today
-        else:
-            start_date = start_date if isinstance(start_date, date) else start_date.date()
-            end_date = end_date if isinstance(end_date, date) else end_date.date()
-
         with db.get_session() as session:
-            # Получаем данные по локациям
-            location_data_result = session.execute(text('''
-                SELECT COALESCE(u.location, 'Не указано'), SUM(o.quantity)
-                FROM orders o
-                JOIN users u ON o.user_id = u.id
-                WHERE o.target_date BETWEEN :start_date AND :end_date
-                  AND o.is_cancelled = FALSE
-                GROUP BY COALESCE(u.location, 'Не указано')
-            '''), {'start_date': start_date.isoformat(), 'end_date': end_date.isoformat()})
-
-            location_data = dict(location_data_result.fetchall())
-
-        # Объединяем "Офис" и "ПЦ 2"
-        office_portions = location_data.get("Офис", 0) + location_data.get("ПЦ 2", 0)
-        pc1_portions = location_data.get("ПЦ 1", 0)
-        warehouse_portions = location_data.get("Склад", 0)
-        unregistered_portions = location_data.get("Не указано", 0)
-
-        total_portions = office_portions + pc1_portions + warehouse_portions + unregistered_portions
-
-        # Формируем текстовое сообщение
-        period_text = (
-            f"{start_date.strftime('%d.%m.%Y')}"
-            if start_date == end_date
-            else f"{start_date.strftime('%d.%m.%Y')} — {end_date.strftime('%d.%m.%Y')}"
-        )
-
-        # Основные строки отчета
-        message_lines = [
-            f"📋 *Заказы на* | {period_text}",
-            f"━━━━━━━━━━━━━━━━━━",
-            f"📌 Всего: *{total_portions}* порций\n",
-            f"• 🏢 Офис: *{office_portions}*",
-            f"• 🏭 ПЦ 1: *{pc1_portions}*",
-            f"• 📦 Склад: *{warehouse_portions}*"
-        ]
-
-        # Добавляем строку с незарегистрированными только если они есть
-        if unregistered_portions > 0:
-            message_lines.append(f"• ❓ Незарегистрированные: *{unregistered_portions}*")
-
-        # Собираем финальное сообщение
-        message = "\n".join(message_lines)
+            from services.report_service import generate_provider_report_text
+            message, _ = generate_provider_report_text(start_date, end_date, session)
 
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
@@ -126,245 +68,9 @@ async def export_accounting_report(
     end_date: Optional[date] = None
 ):
     try:
-        # 1. Настройка форматирования чисел
-        import locale
-        try:
-            locale.setlocale(locale.LC_NUMERIC, 'ru_RU.UTF-8')
-        except:
-            pass
-
-        # 2. Словарь месяцев
-        month_names = {
-            1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
-            5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
-            9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
-        }
-
-        reports_dir = ensure_reports_dir('accounting')
-        now = datetime.now(CONFIG.timezone)
-        
-        # Обработка дат
-        if not start_date or not end_date:
-            start_date = end_date = now.date()
-        else:
-            start_date = start_date if isinstance(start_date, date) else start_date.date()
-            end_date = end_date if isinstance(end_date, date) else end_date.date()
-
-        if start_date > end_date:
-            start_date, end_date = end_date, start_date
-
-        # Определяем месяц и год по периоду отчета
-        report_month = start_date.month
-        report_year = start_date.year
-        month_year = f"{month_names[report_month]} {report_year}"
-
-        # Создаем Excel файл
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Удержания за обеды"
-        
-        # Заголовки
-        ws.append(["Список сотрудников на удержание обедов из ежемесячной премии"])
-        ws.append([f"за {month_year} г."])
-        ws.append([])
-        ws.append(["", "удержание стоимости 1 обеда составляет", "150,00 руб. (без НДФЛ)"])
-        ws.append(["", "", "172,41 руб. (с НДФЛ 13%)"])
-        ws.append([])
-        
-        # Заголовки таблицы
-        headers = [
-            "Подразделение",
-            "ФИО",
-            "Кол-во обедов",
-            "Должность",
-            "Территория",
-            "Дата приема",
-            "Сумма удержания без НДФЛ",
-            "Сумма удержания с НДФЛ"
-        ]
-        ws.append(headers)
-        ws.auto_filter.ref = f"A{ws.max_row}:H{ws.max_row}"
-
-        # 🔥 ЗАПРОС ДЛЯ ОСНОВНЫХ ЗАКАЗОВ (без инспектора)
         with db.get_session() as session:
-            query = text('''
-                SELECT
-                    COALESCE(u.department, 'Не указано') as department,
-                    u.full_name,
-                    SUM(o.quantity) as portions,
-                    COALESCE(u.position, 'Не указана') as position,
-                    COALESCE(u.city, 'Не указана') as city,
-                    u.employment_date as hire_date
-                FROM orders o
-                JOIN users u ON o.user_id = u.id
-                WHERE o.target_date BETWEEN :start_date AND :end_date
-                  AND o.is_cancelled = FALSE
-                  AND o.is_for_inspector = FALSE
-                GROUP BY u.id, u.department, u.full_name, u.position, u.city, u.employment_date
-                ORDER BY u.department, u.full_name
-            ''')
-            
-            rows = session.execute(query, {
-                'start_date': start_date,
-                'end_date': end_date
-            }).fetchall()
-
-        # Инициализация переменных
-        total_portions = 0
-        total_without_ndfl = 0
-        total_with_ndfl = 0
-
-        if not rows:
-            ws.append(["Нет данных за выбранный период", "", "", "", "", "", "", ""])
-        else:
-            for row in rows:
-                department, full_name, portions, position, city, hire_date = row
-                
-                # 🔥 ОБРАБОТКА ДАТЫ ПРИЕМА - преобразуем в читаемый формат
-                hire_date_str = "Не указана"
-                if hire_date:
-                    if isinstance(hire_date, date):
-                        hire_date_str = hire_date.strftime("%d.%m.%Y")
-                    elif isinstance(hire_date, datetime):
-                        hire_date_str = hire_date.date().strftime("%d.%m.%Y")
-                    elif isinstance(hire_date, str):
-                        try:
-                            # Пробуем разные форматы дат
-                            if '.' in hire_date:
-                                # Формат DD.MM.YYYY
-                                hire_date_str = datetime.strptime(hire_date, "%d.%m.%Y").strftime("%d.%m.%Y")
-                            elif '-' in hire_date:
-                                # Формат YYYY-MM-DD
-                                hire_date_str = datetime.strptime(hire_date, "%Y-%m-%d").strftime("%d.%m.%Y")
-                            else:
-                                hire_date_str = "Не указана"
-                        except:
-                            hire_date_str = "Не указана"
-                
-                # Расчет сумм
-                amount_without_ndfl = portions * 150
-                amount_with_ndfl = round(amount_without_ndfl / 0.87, 2)
-                
-                ws.append([
-                    department,  # подразделение
-                    full_name,   # ФИО
-                    portions,    # количество обедов
-                    position,    # должность
-                    city,        # территория (город)
-                    hire_date_str,  # 🔥 дата приема из employment_date
-                    amount_without_ndfl,  # числовое значение
-                    amount_with_ndfl      # числовое значение
-                ])
-                
-                total_portions += portions
-                total_without_ndfl += amount_without_ndfl
-                total_with_ndfl += amount_with_ndfl
-
-            # Итоговая строка
-            ws.append([
-                "ВСЕГО",
-                "",
-                total_portions,
-                "",
-                "",
-                "",
-                total_without_ndfl,  # числовое значение
-                total_with_ndfl      # числовое значение
-            ])
-
-        # 🔥 ДОБАВЛЯЕМ БЛОК "РАСХОДЫ КОМПАНИИ — ИНСПЕКТОР"
-        ws.append([])
-        ws.append(["Расходы компании — Инспектор"])
-        ws.append([])
-
-        # Запрос заказов для инспектора
-        with db.get_session() as session:
-            inspector_query = text('''
-                SELECT
-                    o.target_date,
-                    u.full_name as ordered_by,
-                    o.quantity
-                FROM orders o
-                JOIN users u ON o.user_id = u.id
-                WHERE o.target_date BETWEEN :start_date AND :end_date
-                  AND o.is_cancelled = FALSE
-                  AND o.is_for_inspector = TRUE
-                ORDER BY o.target_date, u.full_name
-            ''')
-            inspector_rows = session.execute(inspector_query, {
-                'start_date': start_date,
-                'end_date': end_date
-            }).fetchall()
-
-        inspector_headers = ["Дата", "Кто заказал", "Кол-во порций", "Инспектор"]
-        ws.append(inspector_headers)
-
-        inspector_total = 0
-        if inspector_rows:
-            for row in inspector_rows:
-                target_date_str = row[0].strftime("%d.%m.%Y") if isinstance(row[0], date) else str(row[0])
-                ws.append([target_date_str, row[1], row[2], "Инспектор"])
-                inspector_total += row[2]
-        else:
-            ws.append(["Нет заказов для инспектора", "", "", ""])
-
-        ws.append(["Итого по инспектору", "", inspector_total, ""])
-
-        # Форматирование
-        bold_font = Font(bold=True)
-        money_format = '# ##0.00'
-        
-        # Применение стилей
-        for row in ws.iter_rows(min_row=1, max_row=6):
-            for cell in row:
-                cell.font = bold_font
-                
-        for cell in ws[7]:  # заголовки таблицы
-            cell.font = bold_font
-            
-        for cell in ws[ws.max_row]:  # итоговая строка
-            cell.font = bold_font
-        
-        # Формат денежных значений
-        for row in ws.iter_rows(min_row=8, max_row=ws.max_row):
-            for cell in row[6:8]:  # колонки с суммами
-                if cell.value and isinstance(cell.value, (int, float)):
-                    cell.number_format = money_format
-                    cell.value = float(cell.value)
-        
-        # Автоподбор ширины столбцов
-        column_widths = {}
-        for row in ws.iter_rows():
-            for cell in row:
-                length = len(str(cell.value)) * 1.2
-                if cell.column_letter not in column_widths or length > column_widths[cell.column_letter]:
-                    column_widths[cell.column_letter] = length
-        
-        for col, width in column_widths.items():
-            ws.column_dimensions[col].width = min(width, 50)
-        
-        # Сохранение файла
-        file_name = f"salary_deductions_{report_year}{report_month:02d}.xlsx"
-        file_path = os.path.join(reports_dir, file_name)
-        wb.save(file_path)
-        
-        # Функция форматирования валюты для вывода в сообщении
-        def format_currency(amount):
-            return f"{float(amount):,.2f}".replace(",", " ").replace(".", ",")
-
-        # Сумма расходов на инспектора
-        inspector_amount_without_ndfl = inspector_total * 150
-        inspector_amount_with_ndfl = round(inspector_amount_without_ndfl / 0.87, 2)
-        grand_total_portions = total_portions + inspector_total
-
-        # Отправка файла
-        caption = (
-            f"📋 Отчет для удержаний из зарплаты\n"
-            f"📅 Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n"
-            f"🍽 Всего обедов: {grand_total_portions} (сотрудники: {total_portions}, инспектор: {inspector_total})\n"
-            f"💰 Сумма удержания: {format_currency(total_with_ndfl)} руб. (с НДФЛ)\n"
-            f"🕵️ Расходы на инспектора: {format_currency(inspector_amount_with_ndfl)} руб. (с НДФЛ)"
-        )
+            from services.report_service import generate_accounting_report_file
+            file_path, file_name, caption = generate_accounting_report_file(start_date, end_date, session)
 
         await _send_document_with_retry(context.bot, update.effective_chat.id, file_path, caption, file_name)
 
@@ -393,195 +99,14 @@ async def export_monthly_report(
             await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
             return
 
-        now = datetime.now(CONFIG.timezone)
-        
-        # Если даты не переданы - используем текущий месяц
-        if not start_date or not end_date:
-            month_start = now.replace(day=1).date()
-            end_date = now.date()
-            start_date = month_start
-        else:
-            # Проверяем, что start_date <= end_date
-            if start_date > end_date:
-                start_date, end_date = end_date, start_date
-
-        reports_dir = ensure_reports_dir('admin')
-        
-        wb = openpyxl.Workbook()
-        
-        # Удаляем лист по умолчанию
-        if 'Sheet' in wb.sheetnames:
-            del wb['Sheet']
-        
-        # Создаем лист "Все заказы"
-        ws_all = wb.create_sheet("Все заказы", 0)
-        all_headers = ["Дата обеда", "Номер заказа", "Сотрудник", "Локация", "Подпись", "Кол-во обедов", "Источник заказа", "Тип заказа"]
-        ws_all.append(all_headers)
-        ws_all.auto_filter.ref = "A1:H1"
-        
-        # 🔥 ИСПРАВЛЕННЫЙ ЗАПРОС с SQLAlchemy
         with db.get_session() as session:
-            if is_daily:
-                query = text("""
-                    SELECT
-                        o.target_date,
-                        u.full_name,
-                        COALESCE(u.location, 'Не указано') as location,
-                        o.quantity,
-                        o.is_from_bitrix,
-                        o.created_at,
-                        o.bitrix_order_id,
-                        o.is_for_inspector
-                    FROM orders o
-                    JOIN users u ON o.user_id = u.id
-                    WHERE o.target_date = :target_date
-                    AND o.is_cancelled = FALSE
-                    ORDER BY
-                        o.target_date,
-                        CASE
-                            WHEN o.bitrix_order_id IS NULL THEN CAST(o.created_at AS TEXT)
-                            ELSE o.bitrix_order_id
-                        END,
-                        u.full_name
-                """)
-                result = session.execute(query, {'target_date': start_date})
-            else:
-                query = text("""
-                    SELECT
-                        o.target_date,
-                        u.full_name,
-                        COALESCE(u.location, 'Не указано') as location,
-                        o.quantity,
-                        o.is_from_bitrix,
-                        o.created_at,
-                        o.bitrix_order_id,
-                        o.is_for_inspector
-                    FROM orders o
-                    JOIN users u ON o.user_id = u.id
-                    WHERE o.target_date BETWEEN :start_date AND :end_date
-                    AND o.is_cancelled = FALSE
-                    ORDER BY
-                        o.target_date,
-                        CASE
-                            WHEN o.bitrix_order_id IS NULL THEN CAST(o.created_at AS TEXT)
-                            ELSE o.bitrix_order_id
-                        END,
-                        u.full_name
-                """)
-                result = session.execute(query, {'start_date': start_date, 'end_date': end_date})
-            
-            all_orders = result.fetchall()
+            from services.report_service import generate_admin_report_file
+            file_path, file_name, caption = generate_admin_report_file(start_date, end_date, session, is_daily)
 
-        # 🔥 ПРОВЕРКА: если нет заказов
-        if not all_orders:
-            period_desc = start_date.strftime("%d.%m.%Y") if is_daily else f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}"
-            await update.message.reply_text(f"📊 На период {period_desc} заказов нет")
+        if file_path is None:
+            await update.message.reply_text(caption)
             return
 
-        # Группируем заказы по дате для общего листа
-        orders_by_date = {}
-        for row in all_orders:
-            date_key = row[0]  # target_date
-            if date_key not in orders_by_date:
-                orders_by_date[date_key] = []
-            orders_by_date[date_key].append(row)
-        
-        # Заполняем лист "Все заказы" с номером заказа и типом
-        for date_key in sorted(orders_by_date.keys()):
-            for row in orders_by_date[date_key]:
-                target_date = row[0].strftime("%d.%m.%Y") if isinstance(row[0], date) else datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
-                source = "Битрикс" if row[4] else "Бот"
-                order_number = row[6] if row[6] is not None else ""
-                order_type = "🕵️ Инспектор" if row[7] else "Обычный"
-                ws_all.append([target_date, order_number, row[1], row[2], "", row[3], source, order_type])
-
-        # 🔥 ОСТАЛЬНАЯ ЛОГИКА ОСТАЕТСЯ ПРЕЖНЕЙ (создание листов по локациям, итоги и т.д.)
-        # Создаем листы для каждой локации (объединяем "Офис" и "ПЦ 2")
-        
-        for location in CONFIG.locations:
-            if location == "ПЦ 2":
-                continue
-                
-            ws = wb.create_sheet(location)
-            # Без колонок "Номер заказа" и "Источник заказа"
-            headers = ["Дата обеда", "Сотрудник", "Территориальный признак", "Подпись", "Кол-во обедов"]
-            ws.append(headers)
-            ws.auto_filter.ref = "A1:E1"
-            
-            # Для листа "Офис" включаем также заказы из "ПЦ 2"
-            if location == "Офис":
-                location_orders = [row for row in all_orders if row[2] in ["Офис", "ПЦ 2"]]
-            else:
-                location_orders = [row for row in all_orders if row[2] == location]
-            
-            # Группируем по дате для текущей локации
-            loc_orders_by_date = {}
-            for row in location_orders:
-                date_key = row[0]
-                if date_key not in loc_orders_by_date:
-                    loc_orders_by_date[date_key] = []
-                loc_orders_by_date[date_key].append(row)
-            
-            # Заполняем лист локации без номера заказа и источника
-            for date_key in sorted(loc_orders_by_date.keys()):
-                for row in loc_orders_by_date[date_key]:
-                    target_date = row[0].strftime("%d.%m.%Y") if isinstance(row[0], date) else datetime.strptime(row[0], "%Y-%m-%d").strftime("%d.%m.%Y")
-                    # Для заказов инспектору пишем "Инспектор" вместо ФИО сотрудника
-                    employee_name = "Инспектор" if row[7] else row[1]
-                    ws.append([target_date, employee_name, row[2], "", row[3]])
-            
-            # Добавляем границы для всех ячеек с данными
-            for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
-                for cell in row_cells:
-                    cell.border = thin_border
-        
-        # Лист "Итоги"
-        ws_summary = wb.create_sheet("Итоги")
-        summary_headers = ["Локация", "Порции"]
-        ws_summary.append(summary_headers)
-        ws_summary.auto_filter.ref = "A1:B1"
-        
-        # Подсчет итогов (объединяем "Офис" и "ПЦ 2")
-        location_totals = {}
-        for row in all_orders:
-            location = row[2]
-            if location == "ПЦ 2":
-                location = "Офис"
-            quantity = row[3]
-            if location not in location_totals:
-                location_totals[location] = 0
-            location_totals[location] += quantity
-        
-        total = 0
-        for location, portions in sorted(location_totals.items(), key=lambda x: x[1], reverse=True):
-            ws_summary.append([location, portions])
-            total += portions
-        
-        ws_summary.append(["ВСЕГО", total])
-        
-        # Форматирование
-        bold_font = Font(bold=True)
-        for sheet in wb.worksheets:
-            for row in sheet.iter_rows(min_row=1, max_row=1):
-                for cell in row:
-                    cell.font = bold_font
-            
-            for col in sheet.columns:
-                max_length = max(len(str(cell.value)) for cell in col)
-                sheet.column_dimensions[col[0].column_letter].width = max_length + 2
-
-        # Сохраняем файл
-        timestamp = now.strftime("%Y%m%d_%H%M%S")
-        file_name = f"admin_report_{timestamp}.xlsx"
-        file_path = os.path.join(reports_dir, file_name)
-        wb.save(file_path)
-        
-        # Формируем сообщение
-        if is_daily:
-            caption = f"📅 Админ отчет за {start_date.strftime('%d.%m.%Y')}\n🍽 Всего порций: {total}"
-        else:
-            caption = f"📅 Админ отчет за период {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n🍽 Всего порций: {total}"
-        
         await _send_document_with_retry(context.bot, update.effective_chat.id, file_path, caption, file_name)
 
     except Forbidden:
