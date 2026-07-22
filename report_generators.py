@@ -1,6 +1,7 @@
 # ##report_generators.py
-from openpyxl.styles import Font, Border, Side
+from openpyxl.styles import Font
 from typing import Optional
+from report_utils import thin_border
 import openpyxl
 from datetime import datetime, date
 from telegram import Update

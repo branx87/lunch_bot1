@@ -8,12 +8,12 @@ from datetime import datetime, date
 from typing import Optional
 
 import openpyxl
-from openpyxl.styles import Font, Border, Side
+from openpyxl.styles import Font
 from sqlalchemy import text
 
 from config import CONFIG
 from database import db
-from report_utils import ensure_reports_dir
+from report_utils import ensure_reports_dir, thin_border
 
 logger = logging.getLogger(__name__)
 
@@ -338,13 +338,6 @@ def generate_admin_report_file(start_date, end_date, session, is_daily=False):
         ws_summary.append([loc, portions])
         total += portions
     ws_summary.append(["ВСЕГО", total])
-
-    thin_border = Border(
-        left=Side(style='thin'),
-        right=Side(style='thin'),
-        top=Side(style='thin'),
-        bottom=Side(style='thin')
-    )
 
     for sheet in wb.worksheets:
         for row_cells in sheet.iter_rows(min_row=1, max_row=sheet.max_row, max_col=sheet.max_column):

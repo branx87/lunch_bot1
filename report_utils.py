@@ -1,8 +1,16 @@
 # ##report_utils.py
 import os
 import logging
+from openpyxl.styles import Border, Side
 
 logger = logging.getLogger(__name__)
+
+thin_border = Border(
+    left=Side(style='thin'),
+    right=Side(style='thin'),
+    top=Side(style='thin'),
+    bottom=Side(style='thin')
+)
 
 
 def ensure_reports_dir(report_type: str = 'accounting') -> str:
