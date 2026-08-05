@@ -51,13 +51,7 @@ class BitrixSync:
             os.environ['NO_PROXY'] = 'b24.epc.su,b24dev.ru,localhost,127.0.0.1,192.168.0.0/16,172.17.0.0/16'
             os.environ['no_proxy'] = os.environ['NO_PROXY']
             
-            # ⚠️ У Bitrix24 истёк SSL-сертификат — обходим проверку через нашу aiohttp-сессию.
-            # Параметр `client` в fast_bitrix24 принимает готовый aiohttp.ClientSession,
-            # внутри которого используется TCPConnector с нашим ssl_context (CERT_NONE).
-            no_ssl_session = aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(ssl=ssl_context)
-            )
-            self.bx = Bitrix(self.webhook, client=no_ssl_session)
+            self.bx = Bitrix(self.webhook)
 
             # Восстанавливаем прокси для остальных компонентов
             for k, v in saved_proxy.items():
