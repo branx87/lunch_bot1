@@ -322,8 +322,8 @@ class CronManager:
     async def _sync_employees(self):
         """Автоматическая синхронизация сотрудников Bitrix"""
         # Инициализация синхронизатора
-        bitrix_sync = BitrixSync()
-        await bitrix_sync.sync_employees()
+        async with BitrixSync() as bitrix_sync:
+            await bitrix_sync.sync_employees()
         logger.info("Ежедневная синхронизация сотрудников с Bitrix выполнена")
 
     async def _create_backup(self):

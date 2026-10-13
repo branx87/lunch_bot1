@@ -84,51 +84,51 @@ async def export_monthly_orders(year=None, month=None):
         logger.info(f"Всего получено {len(orders)} заказов за месяц")
         orders.sort(key=lambda x: int(x['id']))
         
-        bitrix_sync = BitrixSync()
-        await bitrix_sync.sync_employees()
+        async with BitrixSync() as bitrix_sync:
+            await bitrix_sync.sync_employees()
 
-        processed_data = []
-        stats = {'total': 0, 'added': 0, 'updated': 0, 'errors': 0}
+            processed_data = []
+            stats = {'total': 0, 'added': 0, 'updated': 0, 'errors': 0}
 
-        for order in orders:
-            parsed_order = bitrix_sync._parse_bitrix_order(order)
-            if not parsed_order:
-                stats['errors'] += 1
-                continue
+            for order in orders:
+                parsed_order = bitrix_sync._parse_bitrix_order(order)
+                if not parsed_order:
+                    stats['errors'] += 1
+                    continue
                 
-            await bitrix_sync._process_single_order(parsed_order, stats)
+                await bitrix_sync._process_single_order(parsed_order, stats)
             
-            employee_bitrix_id = str(order.get('ufCrm45_1751956286', ''))
-            employee_name = await get_employee_name(employee_bitrix_id)
+                employee_bitrix_id = str(order.get('ufCrm45_1751956286', ''))
+                employee_name = await get_employee_name(employee_bitrix_id)
             
-            quantity = map_quantity(order.get('ufCrm45ObedyCount'))
-            location = map_location(order.get('ufCrm45ObedyFrom'))
-            created_time = order.get('createdTime', '')
-            created_date = created_time.split('T')[0] if created_time else ''
+                quantity = map_quantity(order.get('ufCrm45ObedyCount'))
+                location = map_location(order.get('ufCrm45ObedyFrom'))
+                created_time = order.get('createdTime', '')
+                created_date = created_time.split('T')[0] if created_time else ''
 
-            processed_data.append({
-                'ID_заказа_Bitrix': order.get('id'),
-                'ID_сотрудника': employee_bitrix_id,
-                'Сотрудник': employee_name,
-                'Количество_обедов': quantity,
-                'Локация': location,
-                'Дата_заказа': created_date,
-                'Время_заказа': created_time.split('T')[1][:8] if 'T' in created_time else ''
-            })
+                processed_data.append({
+                    'ID_заказа_Bitrix': order.get('id'),
+                    'ID_сотрудника': employee_bitrix_id,
+                    'Сотрудник': employee_name,
+                    'Количество_обедов': quantity,
+                    'Локация': location,
+                    'Дата_заказа': created_date,
+                    'Время_заказа': created_time.split('T')[1][:8] if 'T' in created_time else ''
+                })
 
-        df = pd.DataFrame(processed_data)
-        df = df.sort_values(by=['ID_заказа_Bitrix'])
+            df = pd.DataFrame(processed_data)
+            df = df.sort_values(by=['ID_заказа_Bitrix'])
 
-        logger.info(f"Статистика обработки заказов: Добавлено: {stats['added']}, Обновлено: {stats['updated']}, Ошибок: {stats['errors']}")
+            logger.info(f"Статистика обработки заказов: Добавлено: {stats['added']}, Обновлено: {stats['updated']}, Ошибок: {stats['errors']}")
 
-        filename = f"bitrix_orders_export_{year}-{month:02d}.xlsx"
-        df.to_excel(filename, index=False)
-        logger.info(f"Данные сохранены в файл: {filename}")
+            filename = f"bitrix_orders_export_{year}-{month:02d}.xlsx"
+            df.to_excel(filename, index=False)
+            logger.info(f"Данные сохранены в файл: {filename}")
 
-        print("\nПервые 5 заказов:")
-        print(df.head().to_string(index=False))
+            print("\nПервые 5 заказов:")
+            print(df.head().to_string(index=False))
 
-        return df
+            return df
 
     except Exception as e:
         logger.error(f"Ошибка при экспорте: {str(e)}", exc_info=True)

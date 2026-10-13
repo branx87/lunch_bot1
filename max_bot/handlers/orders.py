@@ -15,6 +15,7 @@ from services.time_service import can_modify_order
 from services.menu_service import get_menu_for_day, format_menu_text, DAYS_RU
 from services.user_service import get_user_db_id, MESSENGER_MAX
 from max_bot.keyboards import order_buttons, quantity_buttons, main_menu_keyboard
+from bitrix.ops import cleanup_cancelled
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -253,12 +254,7 @@ async def on_cancel(event: MessageCallback):
         session.commit()
 
         # Trigger Bitrix cleanup
-        try:
-            from bitrix.sync import BitrixSync
-            sync = BitrixSync()
-            await sync.cancel_order_immediate_cleanup(order.id)
-        except Exception as e:
-            logger.warning(f"Bitrix cleanup failed: {e}")
+        await cleanup_cancelled(order.id)
 
         await event.answer(notification="✅ Заказ отменён")
         await _refresh_day_view(event, day_offset, user_db_id, session)

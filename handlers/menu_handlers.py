@@ -15,6 +15,7 @@ from handlers.common_handlers import view_orders
 from utils import can_modify_order, check_registration, format_menu, handle_unregistered
 from services.menu_service import DAYS_RU
 from view_utils import refresh_orders_view
+from bitrix.ops import cancel_in_bitrix, cleanup_cancelled
 
 logger = logging.getLogger(__name__)
 
@@ -348,16 +349,7 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 # 🔥 Если заказ уже отправлен в Bitrix — отменяем его там тоже
                 if bitrix_id_to_cancel:
-                    try:
-                        from bitrix.sync import BitrixSync
-                        sync = BitrixSync()
-                        cancelled_in_bitrix = await sync._cancel_bitrix_order(bitrix_id_to_cancel)
-                        if cancelled_in_bitrix:
-                            logger.info(f"✅ Заказ {order.id}: отменён в Bitrix (ID: {bitrix_id_to_cancel})")
-                        else:
-                            logger.warning(f"⚠️ Заказ {order.id}: не удалось отменить в Bitrix (ID: {bitrix_id_to_cancel})")
-                    except Exception as e:
-                        logger.error(f"❌ Заказ {order.id}: ошибка при отмене в Bitrix: {e}")
+                    await cancel_in_bitrix(bitrix_id_to_cancel, order.id)
 
                 logger.info(f"USER {user_id}: успешно отменил заказ на {target_date}")
 
@@ -629,24 +621,10 @@ async def handle_cancel_from_view(update: Update, context: ContextTypes.DEFAULT_
             
             # 🔥 Если заказ уже отправлен в Bitrix — отменяем его там тоже
             if bitrix_id_to_cancel:
-                try:
-                    from bitrix.sync import BitrixSync
-                    sync = BitrixSync()
-                    cancelled_in_bitrix = await sync._cancel_bitrix_order(bitrix_id_to_cancel)
-                    if cancelled_in_bitrix:
-                        logger.info(f"✅ Заказ {order.id}: отменён в Bitrix (ID: {bitrix_id_to_cancel})")
-                    else:
-                        logger.warning(f"⚠️ Заказ {order.id}: не удалось отменить в Bitrix (ID: {bitrix_id_to_cancel})")
-                except Exception as e:
-                    logger.error(f"❌ Заказ {order.id}: ошибка при отмене в Bitrix: {e}")
+                await cancel_in_bitrix(bitrix_id_to_cancel, order.id)
             else:
                 # 🔥 НЕМЕДЛЕННОЕ УДАЛЕНИЕ (только для неотправленных заказов)
-                try:
-                    from bitrix.sync import BitrixSync
-                    sync = BitrixSync()
-                    await sync.cancel_order_immediate_cleanup(order.id)
-                except Exception as e:
-                    logger.error(f"❌ Заказ {order.id}: ошибка при cleanup: {e}")
+                await cleanup_cancelled(order.id)
 
             logger.info(f"Пользователь {user_id} отменил заказ на {target_date_str}")
             

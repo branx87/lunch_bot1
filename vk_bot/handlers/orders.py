@@ -13,6 +13,7 @@ from services.time_service import can_modify_order
 from services.menu_service import get_menu_for_day, format_menu_text, DAYS_RU
 from services.user_service import get_user_db_id, MESSENGER_VK
 from vk_bot.keyboards import order_buttons, quantity_buttons
+from bitrix.ops import cleanup_cancelled
 
 logger = logging.getLogger(__name__)
 orders_labeler = BotLabeler()
@@ -225,12 +226,7 @@ async def on_order_callback(event: MessageEvent):
 
             session.commit()
 
-            try:
-                from bitrix.sync import BitrixSync
-                sync = BitrixSync()
-                await sync.cancel_order_immediate_cleanup(order.id)
-            except Exception as e:
-                logger.warning(f"Bitrix cleanup failed: {e}")
+            await cleanup_cancelled(order.id)
 
             await event.show_snackbar("✅ Заказ отменён")
             await _edit_day_view(event, day_offset, user_db_id, session)

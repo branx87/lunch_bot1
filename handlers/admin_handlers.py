@@ -43,9 +43,9 @@ async def manual_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         from bitrix.sync import BitrixSync
-        sync = BitrixSync()
-        await update.message.reply_text("🔄 Начата синхронизация с Bitrix24...")
-        await sync._push_to_bitrix()
+        async with BitrixSync() as sync:
+            await update.message.reply_text("🔄 Начата синхронизация с Bitrix24...")
+            await sync._push_to_bitrix()
         await update.message.reply_text("✅ Синхронизация завершена")
     except Exception as e:
         logger.error(f"Ошибка ручной синхронизации: {e}", exc_info=True)

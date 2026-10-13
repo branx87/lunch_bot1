@@ -70,50 +70,48 @@ async def manual_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     logger.info(f"Главный админ {user_id} запустил ручную отправку заказов")
     
     try:
-        sync = BitrixSync()
-        
-        # Проверяем наличие неотправленных заказов
-        pending_info = await sync.get_pending_orders_info()
-        
-        if pending_info['count'] == 0:
-            await update.message.reply_text(
-                "✅ Нет заказов для отправки\n\n"
-                f"Дата: {pending_info['date']}"
+        async with BitrixSync() as sync:
+            
+            # Проверяем наличие неотправленных заказов
+            pending_info = await sync.get_pending_orders_info()
+            
+            if pending_info['count'] == 0:
+                await update.message.reply_text(
+                    "✅ Нет заказов для отправки\n\n"
+                    f"Дата: {pending_info['date']}"
+                )
+                return
+            
+            # Уведомляем о начале отправки
+            status_msg = await update.message.reply_text(
+                f"🔄 Начинаю отправку {pending_info['count']} заказов...\n"
+                "⏳ Подождите..."
             )
-            await sync.close()
-            return
-        
-        # Уведомляем о начале отправки
-        status_msg = await update.message.reply_text(
-            f"🔄 Начинаю отправку {pending_info['count']} заказов...\n"
-            "⏳ Подождите..."
-        )
-        
-        # Запускаем отправку
-        success = await sync._push_to_bitrix()
-        
-        # Получаем результат
-        new_pending = await sync.get_pending_orders_info()
-        sent_count = pending_info['count'] - new_pending['count']
-        
-        if success:
-            result_text = (
-                f"✅ УСПЕШНО ОТПРАВЛЕНО!\n\n"
-                f"📤 Заказов отправлено: {sent_count}\n"
-                f"📅 Дата: {pending_info['date']}\n"
-                f"⏰ Время: {datetime.now(TIME_CONFIG.TIMEZONE).strftime('%H:%M:%S')}"
-            )
-        else:
-            result_text = (
-                f"⚠️ ЧАСТИЧНО ВЫПОЛНЕНО\n\n"
-                f"✅ Отправлено: {sent_count}\n"
-                f"❌ Не отправлено: {new_pending['count']}\n"
-                f"📅 Дата: {pending_info['date']}\n\n"
-                f"🔍 Проверьте логи для деталей."
-            )
-        
-        await status_msg.edit_text(result_text)
-        await sync.close()
+            
+            # Запускаем отправку
+            success = await sync._push_to_bitrix()
+            
+            # Получаем результат
+            new_pending = await sync.get_pending_orders_info()
+            sent_count = pending_info['count'] - new_pending['count']
+            
+            if success:
+                result_text = (
+                    f"✅ УСПЕШНО ОТПРАВЛЕНО!\n\n"
+                    f"📤 Заказов отправлено: {sent_count}\n"
+                    f"📅 Дата: {pending_info['date']}\n"
+                    f"⏰ Время: {datetime.now(TIME_CONFIG.TIMEZONE).strftime('%H:%M:%S')}"
+                )
+            else:
+                result_text = (
+                    f"⚠️ ЧАСТИЧНО ВЫПОЛНЕНО\n\n"
+                    f"✅ Отправлено: {sent_count}\n"
+                    f"❌ Не отправлено: {new_pending['count']}\n"
+                    f"📅 Дата: {pending_info['date']}\n\n"
+                    f"🔍 Проверьте логи для деталей."
+                )
+            
+            await status_msg.edit_text(result_text)
         
     except Exception as e:
         logger.error(f"Ошибка ручной отправки заказов: {e}", exc_info=True)

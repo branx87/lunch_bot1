@@ -1,6 +1,7 @@
 # ##bitrix/sync.py
 from typing import Dict, List, Optional
 import asyncio
+import inspect
 import logging
 from datetime import datetime, time, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -51,12 +52,15 @@ class BitrixSync:
             os.environ['NO_PROXY'] = 'b24.epc.su,b24dev.ru,localhost,127.0.0.1,192.168.0.0/16,172.17.0.0/16'
             os.environ['no_proxy'] = os.environ['NO_PROXY']
             
-            self.bx = Bitrix(self.webhook)
-
-            # Восстанавливаем прокси для остальных компонентов
-            for k, v in saved_proxy.items():
-                if v is not None:
-                    os.environ[k] = v
+            # finally — иначе при ошибке создания клиента переменные остаются
+            # удалёнными из os.environ на весь процесс.
+            try:
+                self.bx = Bitrix(self.webhook)
+            finally:
+                # Восстанавливаем прокси для остальных компонентов
+                for k, v in saved_proxy.items():
+                    if v is not None:
+                        os.environ[k] = v
             
             # 🔥 ДОБАВЬТЕ ЭТУ СТРОКУ
             self.bot_application = bot_application
@@ -107,6 +111,20 @@ class BitrixSync:
                 except Exception as e:
                     logger.warning(f"Ошибка закрытия сессии: {e}")
             self._active_sessions.clear()
+
+            # Закрываем HTTP-клиент Bitrix24.
+            # Без этого остаётся висящая aiohttp-сессия — в логах она
+            # всплывает как "Unclosed client session" / "Unclosed connector".
+            # У разных версий fast_bitrix24 API разный: у старых есть close(),
+            # у новых сессия закрывается сама и метода может не быть вовсе.
+            bx = getattr(self, 'bx', None)
+            closer = getattr(bx, 'close', None) if bx is not None else None
+            if callable(closer):
+                result = closer()
+                if inspect.isawaitable(result):
+                    await result
+                logger.info("✅ HTTP-клиент Bitrix24 закрыт")
+
             logger.info("✅ BitrixSync корректно закрыт")
             
         except Exception as e:
@@ -2507,83 +2525,13 @@ class BitrixSync:
             return None
         
     async def cancel_order_immediate_cleanup(self, order_id: int) -> bool:
-        """
-        Немедленное удаление отмененного заказа из базы.
-        Условия удаления:
-        - Заказ должен быть отменен (is_cancelled = TRUE)
-        - Заказ должен быть создан в боте (is_from_bitrix = FALSE)
-        - Заказ не должен иметь bitrix_order_id (не синхронизирован с Bitrix)
-        - Дата заказа должна быть сегодняшней или будущей
-        """
-        try:
-            now = datetime.now(TIME_CONFIG.TIMEZONE)  # ← ИСПРАВИТЬ
-            today = now.date()
-            
-            with db.get_session() as session:
-                # Получаем информацию о заказе
-                order = session.query(Order).filter(Order.id == order_id).first()
-                if not order:
-                    logger.warning(f"Заказ {order_id} не найден")
-                    return False
-                
-                # 🔍 ДИАГНОСТИКА: проверяем состояние заказа в новой сессии
-                logger.info(f"🔍 DIAG cleanup: order.id={order.id}, is_cancelled={order.is_cancelled}, "
-                            f"is_from_bitrix={order.is_from_bitrix}, bitrix_order_id={order.bitrix_order_id}, "
-                            f"is_sent_to_bitrix={order.is_sent_to_bitrix}, "
-                            f"target_date={order.target_date}, session={id(session)}")
-                    
-                # 🔥 ДОБАВИТЬ ПРОВЕРКУ ВРЕМЕНИ ДЛЯ УДАЛЕНИЯ
-                if order.target_date == today and now.time() >= TIME_CONFIG.MODIFICATION_DEADLINE:
-                    logger.warning(f"⏰ Время для удаления заказов на сегодня истекло ({TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')})")
-                    return False
-                    
-                # 🔥 ИСПРАВЛЕНИЕ: правильное преобразование target_date
-                # Если target_date уже date объект - используем как есть
-                # Если строка - преобразуем в date
-                if isinstance(order.target_date, str):
-                    try:
-                        target_date = datetime.strptime(order.target_date, "%Y-%m-%d").date()
-                    except ValueError:
-                        logger.error(f"Неверный формат даты в заказе {order_id}: {order.target_date}")
-                        return False
-                else:
-                    target_date = order.target_date
-                
-                # Проверяем условия для удаления
-                if not order.is_cancelled:
-                    logger.warning(f"🔍 DIAG cleanup: Заказ {order_id} не отменен (is_cancelled={order.is_cancelled}), удаление невозможно")
-                    return False
-                    
-                if order.is_from_bitrix:
-                    logger.warning(f"Заказ {order_id} создан в Bitrix, удаление невозможно")
-                    return False
-                    
-                if order.bitrix_order_id:
-                    logger.warning(f"Заказ {order_id} уже синхронизирован с Bitrix (ID: {order.bitrix_order_id}), удаление невозможно")
-                    return False
-                    
-                # 🔥 ИСПРАВЛЕНИЕ: Заказы, которые были отправлены в Bitrix (is_sent_to_bitrix=True),
-                # не должны удаляться, даже если bitrix_order_id был очищен при отмене.
-                # Они нужны для истории и для предотвращения повторной отправки в Bitrix.
-                if order.is_sent_to_bitrix:
-                    logger.warning(f"Заказ {order_id} уже был отправлен в Bitrix (is_sent_to_bitrix=True), удаление невозможно")
-                    return False
-                    
-                # Проверяем что дата заказа сегодня или в будущем
-                if target_date < today:
-                    logger.warning(f"Заказ {order_id} на прошедшую дату {target_date}, удаление невозможно")
-                    return False
+        """Немедленное удаление отмененного заказа из базы.
 
-                # Удаляем заказ
-                session.delete(order)
-                session.commit()
-            
-            logger.info(f"✅ Немедленно удален отмененный заказ {order_id} на дату {target_date}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка немедленного удаления заказа {order_id}: {e}")
-            return False
+        Логика живёт в bitrix.ops.cleanup_cancelled — там же её и правьте.
+        Метод оставлен как делегат для существующих вызовов.
+        """
+        from bitrix.ops import cleanup_cancelled
+        return await cleanup_cancelled(order_id)
         
     async def cleanup_all_cancelled_orders(self):
         """Ежедневная очистка всех отмененных заказов"""

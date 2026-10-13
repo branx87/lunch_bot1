@@ -6,7 +6,7 @@ from datetime import datetime, date, time, timedelta
 import logging
 from bot_keyboards import create_main_menu_keyboard, create_unverified_user_keyboard
 
-from bitrix.sync import BitrixSync
+from bitrix.ops import cancel_in_bitrix, cleanup_cancelled, find_bitrix_order_id, update_quantity
 from database import db
 from models import User, Order
 from config import CONFIG
@@ -501,43 +501,22 @@ async def handle_cancel_callback(query, now, user, context):
         # 🔥 Отменяем заказ в Bitrix (вне контекстной сессии, т.к. это API вызов)
         if not bitrix_id_to_cancel and is_from_bitrix == 1:
             # Заказ из Bitrix, но bitrix_order_id не сохранён локально.
-            try:
-                sync = BitrixSync()
-                order_data = {
+            bitrix_id_to_cancel = await find_bitrix_order_id(
+                {
                     'target_date': str(target_date),
                     'bitrix_id': user_record.bitrix_id,
-                }
-                found_bitrix_id = await sync._find_existing_bitrix_order(
-                    order_data,
-                    user_record.crm_employee_id if hasattr(user_record, 'crm_employee_id') else None
-                )
-                if found_bitrix_id:
-                    bitrix_id_to_cancel = found_bitrix_id
-                    logger.info(f"🔍 Заказ {order_id}: найден Bitrix ID {found_bitrix_id} для отмены")
-                else:
-                    logger.warning(f"⚠️ Заказ {order_id}: не найден заказ в Bitrix для отмены")
-            except Exception as e:
-                logger.error(f"❌ Заказ {order_id}: ошибка при поиске Bitrix ID для отмены: {e}")
+                },
+                user_record.crm_employee_id if hasattr(user_record, 'crm_employee_id') else None,
+                order_id
+            )
 
         if bitrix_id_to_cancel:
-            try:
-                sync = BitrixSync()
-                cancelled_in_bitrix = await sync._cancel_bitrix_order(bitrix_id_to_cancel)
-                if cancelled_in_bitrix:
-                    logger.info(f"✅ Заказ {order_id}: отменён в Bitrix (ID: {bitrix_id_to_cancel})")
-                else:
-                    logger.warning(f"⚠️ Заказ {order_id}: не удалось отменить в Bitrix (ID: {bitrix_id_to_cancel})")
-            except Exception as e:
-                logger.error(f"❌ Заказ {order_id}: ошибка при отмене в Bitrix: {e}")
+            await cancel_in_bitrix(bitrix_id_to_cancel, order_id)
         else:
             # 🔥 НЕМЕДЛЕННОЕ УДАЛЕНИЕ если условия подходят (только для неотправленных заказов)
-            logger.info(f"🔍 DIAG cancel: вызываем cancel_order_immediate_cleanup для order.id={order_id}")
-            try:
-                sync = BitrixSync()
-                cleanup_result = await sync.cancel_order_immediate_cleanup(order_id)
-                logger.info(f"🔍 DIAG cancel: cancel_order_immediate_cleanup result={cleanup_result}")
-            except Exception as e:
-                logger.error(f"❌ Заказ {order_id}: ошибка при cleanup: {e}")
+            logger.info(f"🔍 DIAG cancel: вызываем cleanup_cancelled для order.id={order_id}")
+            cleanup_result = await cleanup_cancelled(order_id)
+            logger.info(f"🔍 DIAG cancel: cleanup_cancelled result={cleanup_result}")
 
         # Логируем успешную отмену
         logger.info(f"USER {user_id}: успешно отменил заказ на {target_date}")
@@ -644,26 +623,15 @@ async def modify_portion_count(query, now, user, context, delta):
 
         # 🔥 Если заказ уже отправлен в Bitrix — обновляем количество там тоже
         if bitrix_id_to_update:
-            try:
-                # Получаем пользователя для crm_employee_id
-                user_record = db.session.query(User).filter(User.id == user_db_id).first()
-                sync = BitrixSync()
-                update_data = {
-                    'quantity': new_qty,
-                    'location': user_record.location if user_record and user_record.location else 'Офис',
-                }
-                crm_id = user_record.crm_employee_id if user_record else None
-                updated_in_bitrix = await sync._update_bitrix_order(
-                    int(bitrix_id_to_update),
-                    update_data,
-                    crm_id
-                )
-                if updated_in_bitrix:
-                    logger.info(f"✅ Заказ {order.id}: количество обновлено в Bitrix (ID: {bitrix_id_to_update}, порций: {new_qty})")
-                else:
-                    logger.warning(f"⚠️ Заказ {order.id}: не удалось обновить количество в Bitrix (ID: {bitrix_id_to_update})")
-            except Exception as e:
-                logger.error(f"❌ Заказ {order.id}: ошибка при обновлении количества в Bitrix: {e}")
+            # Получаем пользователя для crm_employee_id
+            user_record = db.session.query(User).filter(User.id == user_db_id).first()
+            await update_quantity(
+                bitrix_id_to_update,
+                new_qty,
+                user_record.location if user_record and user_record.location else 'Офис',
+                user_record.crm_employee_id if user_record else None,
+                order.id
+            )
 
         # Обновляем интерфейс
         await handle_change_callback(query, now, user, context)

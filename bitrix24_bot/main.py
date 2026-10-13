@@ -23,31 +23,13 @@ from pathlib import Path
 # Add project root to path so shared modules (config, database, etc.) are importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from logging.handlers import RotatingFileHandler
-
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from logging_config import setup_logging
 
-def _setup_logging():
-    logs_dir = Path("data/logs")
-    logs_dir.mkdir(parents=True, exist_ok=True)
-
-    handler = RotatingFileHandler(
-        logs_dir / "bitrix24_bot.log",
-        maxBytes=5 * 1024 * 1024,
-        backupCount=3,
-        encoding="utf-8",
-    )
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[handler, logging.StreamHandler()],
-    )
-
-
-_setup_logging()
+setup_logging('bitrix24_bot.log')
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Bitrix24 Lunch Bot", docs_url=None, redoc_url=None)

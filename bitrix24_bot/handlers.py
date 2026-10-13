@@ -344,11 +344,11 @@ async def _sync_orders_before_report():
     Аналогично Telegram bot в handlers/base_handlers.py:admin_reports_menu."""
     try:
         from bitrix.sync import BitrixSync
-        sync = BitrixSync()
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
-        await sync.sync_orders(start_date, end_date, incremental=True)
-        logger.info("✅ Фоновая синхронизация перед отчётом B24 выполнена")
+        async with BitrixSync() as sync:
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
+            await sync.sync_orders(start_date, end_date, incremental=True)
+            logger.info("✅ Фоновая синхронизация перед отчётом B24 выполнена")
     except Exception as e:
         logger.error(f"Ошибка фоновой синхронизации перед отчётом B24: {e}")
 

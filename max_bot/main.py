@@ -11,27 +11,9 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from logging.handlers import RotatingFileHandler
+from logging_config import setup_logging
 
-
-def setup_logging():
-    logs_dir = Path('data/logs')
-    logs_dir.mkdir(parents=True, exist_ok=True)
-
-    handler = RotatingFileHandler(
-        logs_dir / 'max_bot.log',
-        maxBytes=5 * 1024 * 1024,
-        backupCount=3,
-        encoding='utf-8'
-    )
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[handler, logging.StreamHandler()]
-    )
-
-
-setup_logging()
+setup_logging('max_bot.log')
 logger = logging.getLogger(__name__)
 
 

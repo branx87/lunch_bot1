@@ -34,6 +34,34 @@ class LunchBot:
         # Простой логгер без сложной логики
         self.logger = logging.getLogger(__name__)
 
+    def _rollback_db_session(self, error: BaseException) -> None:
+        """Откатывает невалидную транзакцию БД после обрыва соединения.
+
+        Когда backend Postgres умирает (например, из-за заполненного диска),
+        соединение рвётся, и SQLAlchemy помечает транзакцию сессии как
+        невалидную. После этого ЛЮБОЙ следующий запрос к ней падает с
+        PendingRollbackError, пока не будет сделан rollback().
+
+        Так как все хендлеры делят один глобальный scoped_session
+        (database.py), без отката бот остаётся неработоспособным до
+        перезапуска контейнера. С откатом он оживает сам, как только
+        PostgreSQL снова доступен.
+        """
+        try:
+            from sqlalchemy.exc import DBAPIError, PendingRollbackError
+        except ImportError:
+            return
+
+        if not isinstance(error, (DBAPIError, PendingRollbackError)):
+            return
+
+        try:
+            from database import db
+            db.session.rollback()
+            self.logger.info("✅ Невалидная транзакция БД откачена, сессия снова рабочая")
+        except Exception as rollback_error:
+            self.logger.error(f"❌ Не удалось откатить транзакцию БД: {rollback_error}")
+
     async def error_handler(self, update, context):
         """Обработчик ошибок для игнорирования временных сетевых проблем"""
         error = context.error
@@ -45,6 +73,11 @@ class LunchBot:
 
         # Все остальные ошибки логируем полностью
         self.logger.error(f"Необработанная ошибка: {error}", exc_info=context.error)
+
+        # После обрыва БД сессия остаётся в невалидном состоянии — откатываем
+        # транзакцию, иначе бот не восстановится сам и будет сыпать ошибки
+        # на каждом входящем сообщении.
+        self._rollback_db_session(error)
 
 
     async def run(self):

@@ -538,28 +538,6 @@ async def _display_staff_page(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     return DELETE_STAFF
 
-# Вспомогательные функции
-async def _send_response(update: Update, text: str):
-    """Универсальная отправка ответа"""
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text)
-    else:
-        await update.message.reply_text(text)
-
-async def _edit_or_send_message(update: Update, text: str, reply_markup=None):
-    """Пытается редактировать сообщение, иначе отправляет новое"""
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text, reply_markup=reply_markup)
-
-async def _send_error_response(update: Update, text: str):
-    """Отправляет сообщение об ошибке"""
-    if update.callback_query:
-        await update.callback_query.answer(text, show_alert=True)
-    else:
-        await update.message.reply_text(text)
-
 async def show_holiday_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id

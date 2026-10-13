@@ -1,36 +1,14 @@
 import asyncio
 import logging
-from pathlib import Path
-from logging.handlers import RotatingFileHandler
 from datetime import datetime, time
 import signal
 import atexit
 import sys
 
-# 1. СНАЧАЛА настраиваем логирование
-def setup_logging():
-    # Создаем папку для логов, если ее нет
-    logs_dir = Path('data/logs')
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    
-    handler = RotatingFileHandler(
-        logs_dir / 'bot.log',
-        maxBytes=5*1024*1024,
-        backupCount=3,
-        encoding='utf-8'
-    )
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[handler, logging.StreamHandler()]
-    )
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    # DEBUG: временно включаем для диагностики polling
-    logging.getLogger("telegram.ext._updater").setLevel(logging.DEBUG)
-    logging.getLogger("telegram.ext._application").setLevel(logging.DEBUG)
+from logging_config import setup_logging
 
-# Настраиваем логирование СРАЗУ
-setup_logging()
+# 1. СНАЧАЛА настраиваем логирование
+setup_logging(telegram_debug=True)
 logger = logging.getLogger(__name__)
 
 # 2. ПОТОМ импортируем остальные модули

@@ -82,18 +82,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await show_main_menu(update, user.id)
                 return ConversationHandler.END
 
-            # ДОБАВЛЯЕМ СИНХРОНИЗАЦИЮ ДЛЯ НЕВЕРИФИЦИРОВАННЫХ ОБЫЧНЫХ ПОЛЬЗОВАТЕЛЕЙ
-            from bitrix.sync import BitrixSync
-            bitrix_sync = BitrixSync()
-            await bitrix_sync.sync_employees()
-            logger.info(f"Синхронизация сотрудников выполнена для неверифицированного пользователя {user.id}")
-
+            # Неверифицированный обычный пользователь — продолжаем регистрацию
+            status_label = "неверифицированного"
         else:
-            # ДОБАВЛЯЕМ СИНХРОНИЗАЦИЮ ДЛЯ НОВЫХ ПОЛЬЗОВАТЕЛЕЙ (КОТОРЫХ НЕТ В БАЗЕ)
-            from bitrix.sync import BitrixSync
-            bitrix_sync = BitrixSync()
+            # Новый пользователь, которого нет в базе
+            status_label = "нового"
+
+        # Синхронизируем сотрудников из Bitrix24.
+        # Клиент одноразовый: без close() от него остаётся висящая aiohttp-сессия
+        # ("Unclosed client session" в логах), поэтому закрываем в finally —
+        # даже если синхронизация упадёт.
+        from bitrix.sync import BitrixSync
+        bitrix_sync = BitrixSync()
+        try:
             await bitrix_sync.sync_employees()
-            logger.info(f"Синхронизация сотрудников выполнена для нового пользователя {user.id}")
+            logger.info(
+                f"Синхронизация сотрудников выполнена для "
+                f"{status_label} пользователя {user.id}"
+            )
+        finally:
+            await bitrix_sync.close()
 
         # Показываем кнопку для отправки номера телефона
         keyboard = [[KeyboardButton("📱 Отправить номер телефона", request_contact=True)]]
@@ -493,12 +501,12 @@ async def admin_reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             from bitrix.sync import BitrixSync
             from datetime import datetime, timedelta
             
-            sync = BitrixSync()
-            end_date = datetime.now().strftime('%Y-%m-%d')
-            start_date = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
-            
-            await sync.sync_orders(start_date, end_date, incremental=True)
-            logger.info(f"✅ Фоновая синхронизация выполнена для пользователя {user.id}")
+            async with BitrixSync() as sync:
+                end_date = datetime.now().strftime('%Y-%m-%d')
+                start_date = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
+
+                await sync.sync_orders(start_date, end_date, incremental=True)
+                logger.info(f"✅ Фоновая синхронизация выполнена для пользователя {user.id}")
             
         except Exception as e:
             logger.error(f"Ошибка фоновой синхронизации: {e}")

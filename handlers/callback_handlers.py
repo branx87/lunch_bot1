@@ -12,6 +12,7 @@ from handlers.common_handlers import view_orders
 from handlers.order_callbacks import handle_cancel_callback, handle_change_callback, handle_confirm_callback, handle_order_callback, modify_portion_count
 from utils import can_modify_order
 from view_utils import refresh_day_view
+from bitrix.ops import cancel_in_bitrix
 
 logger = logging.getLogger(__name__)
 
@@ -112,16 +113,7 @@ async def cancel_order(query, user_db_id, target_date, now):
 
         # 🔥 Если заказ уже отправлен в Bitrix — отменяем его там тоже
         if bitrix_id_to_cancel:
-            try:
-                from bitrix.sync import BitrixSync
-                sync = BitrixSync()
-                cancelled_in_bitrix = await sync._cancel_bitrix_order(bitrix_id_to_cancel)
-                if cancelled_in_bitrix:
-                    logger.info(f"✅ Заказ {order.id}: отменён в Bitrix (ID: {bitrix_id_to_cancel})")
-                else:
-                    logger.warning(f"⚠️ Заказ {order.id}: не удалось отменить в Bitrix (ID: {bitrix_id_to_cancel})")
-            except Exception as e:
-                logger.error(f"❌ Заказ {order.id}: ошибка при отмене в Bitrix: {e}")
+            await cancel_in_bitrix(bitrix_id_to_cancel, order.id)
     
     # После отмены просто обновляем представление дня
     day_offset = (target_date - now.date()).days
@@ -178,16 +170,7 @@ async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE
 
             # 🔥 Если заказ уже отправлен в Bitrix — отменяем его там тоже
             if bitrix_id_to_cancel:
-                try:
-                    from bitrix.sync import BitrixSync
-                    sync = BitrixSync()
-                    cancelled_in_bitrix = await sync._cancel_bitrix_order(bitrix_id_to_cancel)
-                    if cancelled_in_bitrix:
-                        logger.info(f"✅ Заказ {order.id}: отменён в Bitrix (ID: {bitrix_id_to_cancel})")
-                    else:
-                        logger.warning(f"⚠️ Заказ {order.id}: не удалось отменить в Bitrix (ID: {bitrix_id_to_cancel})")
-                except Exception as e:
-                    logger.error(f"❌ Заказ {order.id}: ошибка при отмене в Bitrix: {e}")
+                await cancel_in_bitrix(bitrix_id_to_cancel, order.id)
 
         # Обновляем представление дня (а не показываем список заказов)
         await refresh_day_view(query, day_offset, user_db_id, now)
