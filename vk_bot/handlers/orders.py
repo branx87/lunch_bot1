@@ -33,6 +33,8 @@ def _build_day_view(day_offset, user_db_id, session):
     has_order = order is not None
     can_mod = can_modify_order(target_date, CONFIG.are_orders_accepted_now())
 
+    if not CONFIG.are_orders_accepted_now():
+        text += f"\n\n{CONFIG.get_orders_status_message()}"
     if has_order:
         text += f"\n\n🛒 Ваш заказ: {order.quantity} порций"
 

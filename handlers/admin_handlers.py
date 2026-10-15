@@ -30,8 +30,15 @@ async def handle_admin_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         CONFIG.toggle_orders(new_status)
         
         status = "разрешены ✅" if new_status else "запрещены ❌"
+        hint = (
+            "Заказы принимаются во всех мессенджерах."
+            if new_status else
+            "Заказы не принимаются во всех мессенджерах (Telegram, VK, Bitrix24).\n"
+            "Утренние напоминания отключены.\n"
+            "Действие вступит в силу в течение 5 секунд."
+        )
         await update.message.reply_text(
-            f"Прием заказов теперь {status}",
+            f"Прием заказов теперь {status}\n\n{hint}",
             reply_markup=create_admin_keyboard()
         )
 

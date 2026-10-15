@@ -570,6 +570,10 @@ def _can_order_for_inspector(user_db_id: int) -> bool:
 
 
 def _do_create_order_db(user_db_id: int, day_offset: int, session) -> str:
+    # Заглушка: приём заказов выключен админом в общем на все мессенджеры
+    if not CONFIG.are_orders_accepted_now():
+        return "ℹ️ Приём заказов временно приостановлен."
+
     menu, day_name, target_date = get_menu_for_day(day_offset, CONFIG)
     now = datetime.now(TIME_CONFIG.TIMEZONE)
 
@@ -588,6 +592,11 @@ def _do_create_order_db(user_db_id: int, day_offset: int, session) -> str:
 def _do_create_inspector_order_db(user_db_id: int, day_offset: int, session) -> str:
     """Создаёт заказ для инспектора (расходы компании)"""
     from datetime import datetime
+
+    # Заглушка: приём заказов выключен админом в общем на все мессенджеры
+    if not CONFIG.are_orders_accepted_now():
+        return "ℹ️ Приём заказов временно приостановлен."
+
     menu, day_name, target_date = get_menu_for_day(day_offset, CONFIG)
     now = datetime.now(TIME_CONFIG.TIMEZONE)
 

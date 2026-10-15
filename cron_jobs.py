@@ -174,6 +174,12 @@ class CronManager:
 
     async def _morning_reminder(self):
         """Утренние напоминания пользователям без заказов на сегодня"""
+        # Если приём заказов выключен админом — напоминать бессмысленно:
+        # пользователь всё равно не сможет заказать.
+        if not CONFIG.are_orders_accepted_now():
+            logger.info("Напоминания пропущены: приём заказов отключён администратором")
+            return
+
         if await self.is_workday(datetime.now(CONFIG.timezone)):
             now = datetime.now(CONFIG.timezone)
             today = now.date().isoformat()

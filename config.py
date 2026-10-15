@@ -8,6 +8,7 @@ import sqlite3
 from database import db
 from sqlalchemy.orm import Session
 from datetime import datetime, time, timedelta
+from time import monotonic
 from time_config import TIME_CONFIG
 
 # Настройка путей - ОСТАВЛЯЕМ относительные
@@ -17,6 +18,11 @@ CONFIGS_DIR = BASE_DIR / 'data' / 'configs'
 DB_PATH = DATA_DIR / 'db' / 'lunch_bot.db'
 LOGS_DIR = DATA_DIR / 'logs'
 REPORTS_DIR = DATA_DIR / 'reports'
+
+# Как часто процесс перечитывает статус заказов из БД.
+# Компромисс: админ видит переключение во всех мессенджерах почти сразу,
+# но при каждом нажатии кнопки в БД не лезем.
+ORDERS_STATUS_TTL = 5.0
 
 # Создаем папки если их нет
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -43,6 +49,7 @@ class BotConfig:
         self._locations = ["Офис", "ПЦ 1", "ПЦ 2", "Склад"]
         self._db = database
         self._orders_enabled = self._load_orders_status()
+        self._orders_status_at = monotonic()
         
         self._load_env_vars()
         self._load_db_data()
@@ -164,10 +171,30 @@ class BotConfig:
                 setting = session.query(BotSetting).filter(
                     BotSetting.setting_name == 'orders_enabled'
                 ).first()
-                return setting and setting.setting_value == 'True'
+                if not setting:
+                    logger.warning("Настройка orders_enabled не найдена в БД — считаем заказы разрешёнными")
+                    return True
+
+                raw = (setting.setting_value or '').strip()
+                enabled = raw.lower() == 'true'
+                logger.info(f"Статус заказов в БД: setting_value={raw!r} -> {'разрешены' if enabled else 'запрещены'}")
+                return enabled
         except Exception as e:
             logger.error(f"Ошибка загрузки статуса заказов: {e}")
             return True
+
+    def _refresh_orders_status(self):
+        """Перечитывает статус заказов из БД, если кэш устарел.
+
+        Заказы включаются админом в одном мессенджере, а проверять статус
+        должны все три процесса (Telegram / VK / Bitrix24) — у каждого свой
+        процесс и своя копия CONFIG в памяти, поэтому без перечитывания
+        остальные продолжали бы принимать заказы.
+        """
+        if monotonic() - self._orders_status_at < ORDERS_STATUS_TTL:
+            return
+        self._orders_enabled = self._load_orders_status()
+        self._orders_status_at = monotonic()
             
     def toggle_orders(self, enabled: bool):
         """Переключает статус заказов"""
@@ -188,6 +215,7 @@ class BotConfig:
                     session.add(setting)
                 
                 self._orders_enabled = enabled
+                self._orders_status_at = monotonic()
                 logger.info(f"Статус заказов обновлен: {'разрешены' if enabled else 'запрещены'}")
                 
         except Exception as e:
@@ -211,24 +239,27 @@ class BotConfig:
 
     def are_orders_accepted_now(self) -> bool:
         """
-        Старая логика: проверяет только глобальный статус
-        Временные ограничения проверяются отдельно в can_modify_order()
+        Глобальный статус приема заказов.
+        Актуальное значение подтягивается из БД (см. _refresh_orders_status),
+        поэтому переключение админом видно всем мессенджерам.
+        Временные ограничения проверяются отдельно в can_modify_order().
         """
+        self._refresh_orders_status()
         return self._orders_enabled
 
     def get_orders_status_message(self) -> str:
-        """Возвращает сообщение о статусе приема заказов"""
-        if not self._orders_enabled:
-            return "❌ Прием заказов отключен администратором"
-        
+        """Возвращает сообщение о статусе приема заказов (заглушка для кнопок)"""
+        if not self.are_orders_accepted_now():
+            return "❌ Приём заказов временно приостановлен"
+
         try:
             now = datetime.now(self.timezone)
-            if not self.are_orders_accepted_now():
-                if now.weekday() in TIME_CONFIG.WEEKEND_DAYS:
-                    return "❌ Прием заказов не осуществляется в выходные дни"
-                else:
-                    return f"❌ Прием заказов на сегодня завершен (до {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')})"
-            
+            if now.weekday() in TIME_CONFIG.WEEKEND_DAYS:
+                return "❌ Прием заказов не осуществляется в выходные дни"
+
+            if now.time() >= TIME_CONFIG.ORDER_DEADLINE:
+                return f"❌ Прием заказов на сегодня завершен (до {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')})"
+
             return f"✅ Прием заказов открыт (до {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')})"
         except Exception as e:
             logger.error(f"Ошибка получения статуса заказов: {e}")
@@ -281,6 +312,7 @@ class BotConfig:
     
     @property
     def orders_enabled(self):
+        self._refresh_orders_status()
         return self._orders_enabled
 
     @property

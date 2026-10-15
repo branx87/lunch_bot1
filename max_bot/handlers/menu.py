@@ -41,8 +41,11 @@ async def show_today_menu(event: MessageCreated):
         # Check existing order
         order = get_order_for_date(user_db_id, target_date, session)
         has_order = order is not None
-        can_mod = can_modify_order(target_date, CONFIG.are_orders_accepted_now())
+        orders_on = CONFIG.are_orders_accepted_now()
+        can_mod = can_modify_order(target_date, orders_on)
 
+        if not orders_on:
+            text += f"\n\n{CONFIG.get_orders_status_message()}"
         if has_order:
             text += f"\n\n🛒 Ваш заказ: {order.quantity} порций"
 
@@ -81,8 +84,11 @@ async def show_week_menu(event: MessageCreated):
 
             order = get_order_for_date(user_db_id, day_info['target_date'], session)
             has_order = order is not None
-            can_mod = can_modify_order(day_info['target_date'], CONFIG.are_orders_accepted_now())
+            orders_on = CONFIG.are_orders_accepted_now()
+            can_mod = can_modify_order(day_info['target_date'], orders_on)
 
+            if not orders_on:
+                text += f"\n\n{CONFIG.get_orders_status_message()}"
             if has_order:
                 text += f"\n\n🛒 Ваш заказ: {order.quantity} порций"
 
