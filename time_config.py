@@ -1,5 +1,5 @@
 # ##time_config.py
-from datetime import time, timedelta
+from datetime import time, timedelta, date
 import pytz
 
 class TimeConfig:
@@ -8,11 +8,19 @@ class TimeConfig:
     # Часовой пояс
     TIMEZONE = pytz.timezone('Europe/Moscow')
     
+    # --- Старый поставщик (до 26.10.2026) ---
     # Время приема заказов
     ORDER_DEADLINE = time(9, 30)  # До скольки принимаются заказы
     
     # Время для изменений/отмен
     MODIFICATION_DEADLINE = time(9, 30)  # До скольки можно изменять/отменять
+    
+    # --- Новый поставщик питания «Благовар» (с 26.10.2026) ---
+    # Заявки принимаются заранее: на понедельник заказ делается в пятницу до 15:00,
+    # на вторник — в понедельник до 15:00 и т.д. Заказ на сегодня не принимается.
+    NEW_SUPPLIER_START_DATE = date(2026, 10, 26)
+    ADVANCE_ORDER_DEADLINE = time(15, 0)  # Крайний срок заказа на следующий рабочий день
+    ADVANCE_MODIFICATION_DEADLINE = time(15, 0)  # Изменение/отмена — до этого же момента
     
     # Время немедленной синхронизации (для заказов на сегодня после этого времени)
     IMMEDIATE_SYNC_TIME = time(9, 25)
@@ -22,7 +30,9 @@ class TimeConfig:
     
     # Время для cron-задач
     MORNING_REMINDER_TIME = time(9, 0)    # Напоминания в 9:00
-    MORNING_REPORTS_TIME = time(9, 31)    # Отчеты в 9:31
+    # Отчёт по новому поставщику — после закрытия окна заказов (15:00),
+    # иначе в срез не попадут заказы, оформленные после 9:31.
+    DAILY_REPORTS_TIME = time(15, 5)      # Отчеты в 15:05
     ACCOUNTING_REPORT_TIME = time(11, 0)  # Бухгалтерский отчет в 11:00
     SYNC_EMPLOYEES_TIME = time(18, 0)     # Синхронизация в 18:00
     

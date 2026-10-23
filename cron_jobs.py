@@ -9,6 +9,8 @@ from models import User, Order
 from sqlalchemy import text
 from bitrix.sync import BitrixSync
 from time_config import TIME_CONFIG
+from services.time_service import next_working_day, is_new_supplier_date
+from services.menu_service import DAYS_RU
 from backup_manager import backup_manager
 
 logger = logging.getLogger(__name__)
@@ -85,7 +87,7 @@ class CronManager:
         # Логируем информацию о настроенных задачах
         logger.info("Созданные расписания:")
         logger.info(f"  Напоминания: {TIME_CONFIG.MORNING_REMINDER_TIME.strftime('%H:%M')} (Пн-Пт)")
-        logger.info(f"  Отчеты: {TIME_CONFIG.MORNING_REPORTS_TIME.strftime('%H:%M')} (Пн-Пт)")
+        logger.info(f"  Отчеты: {TIME_CONFIG.DAILY_REPORTS_TIME.strftime('%H:%M')} (Пн-Пт)")
         logger.info(f"  Бух.отчет: {TIME_CONFIG.ACCOUNTING_REPORT_TIME.strftime('%H:%M')} (28-31 числа)")
         logger.info(f"  Синхронизация: {TIME_CONFIG.SYNC_EMPLOYEES_TIME.strftime('%H:%M')} (Пн-Пт)")
         logger.info(f"  Бекап: 03:00 (каждый день)")
@@ -123,16 +125,16 @@ class CronManager:
         )
         logger.info(f"📅 Напоминания: {TIME_CONFIG.MORNING_REMINDER_TIME.strftime('%H:%M')} (Пн-Пт)")
 
-        # Утренние отчеты
+        # Ежедневные отчеты
         self.scheduler.add_job(
-            self._morning_reports,
+            self._daily_reports,
             'cron',
-            minute=TIME_CONFIG.MORNING_REPORTS_TIME.minute,
-            hour=TIME_CONFIG.MORNING_REPORTS_TIME.hour,
+            minute=TIME_CONFIG.DAILY_REPORTS_TIME.minute,
+            hour=TIME_CONFIG.DAILY_REPORTS_TIME.hour,
             day_of_week=work_days_cron,
             second=0
         )
-        logger.info(f"📊 Отчеты: {TIME_CONFIG.MORNING_REPORTS_TIME.strftime('%H:%M')} (Пн-Пт)")
+        logger.info(f"📊 Отчеты: {TIME_CONFIG.DAILY_REPORTS_TIME.strftime('%H:%M')} (Пн-Пт)")
 
         # Бухгалтерский отчет (в последние дни месяца)
         self.scheduler.add_job(
@@ -182,8 +184,11 @@ class CronManager:
 
         if await self.is_workday(datetime.now(CONFIG.timezone)):
             now = datetime.now(CONFIG.timezone)
-            today = now.date().isoformat()
-            logger.info(f"Запуск напоминаний в {now} для даты {today}")
+            # Напоминаем про заказ на ближайший рабочий день (завтра или понедельник):
+            # новый поставщик принимает заявки заранее, на сегодня заказ уже нельзя.
+            target = next_working_day(now.date(), CONFIG.holidays)
+            target_iso = target.isoformat()
+            logger.info(f"Запуск напоминаний в {now} для даты {target_iso}")
 
             with db.get_session() as session:
                 # Сначала проверим общее количество подходящих пользователей
@@ -195,16 +200,16 @@ class CronManager:
                 ).count()
                 logger.info(f"Всего подходящих пользователей: {total_users}")
 
-                # Проверим количество пользователей с заказами на сегодня
+                # Проверим количество пользователей с заказами на целевой день
                 users_with_orders = session.query(User).join(
                     Order, User.id == Order.user_id
                 ).filter(
-                    Order.target_date == today,
+                    Order.target_date == target_iso,
                     Order.is_cancelled == False,
                     Order.is_active == True,
                     Order.quantity > 0
                 ).distinct().count()
-                logger.info(f"Пользователей с заказами на сегодня: {users_with_orders}")
+                logger.info(f"Пользователей с заказами на {target_iso}: {users_with_orders}")
 
                 # Основной запрос — получаем telegram_id, max_id, vk_id и bitrix_id
                 users_without_orders = session.execute(text("""
@@ -219,12 +224,12 @@ class CronManager:
                         SELECT 1
                         FROM orders o
                         WHERE o.user_id = u.id
-                        AND o.target_date = :today
+                        AND o.target_date = :target_date
                         AND o.is_cancelled = FALSE
                         AND o.is_active = TRUE
                         AND o.quantity > 0
                     )
-                """), {'today': today}).fetchall()
+                """), {'target_date': target_iso}).fetchall()
 
                 logger.info(f"Найдено {len(users_without_orders)} пользователей без заказов")
 
@@ -237,11 +242,28 @@ class CronManager:
                         Проверьте данные в БД!
                     """, total_users, users_with_orders)
 
-                reminder_text = (
-                    "⏰ <b>Не забудьте заказать обед!</b> 🍽\n\n"
-                    "Прием заказов открыт до 9:30.\n\n"
-                    "Чтобы отключить напоминания отправьте: /notifications_off"
-                )
+                if is_new_supplier_date(now.date()):
+                    day_label = f"{target.strftime('%d.%m')} ({DAYS_RU[target.weekday()].lower()})"
+                    deadline_text = TIME_CONFIG.ADVANCE_ORDER_DEADLINE.strftime('%H:%M')
+                    reminder_text = (
+                        "⏰ <b>Не забудьте заказать обед!</b> 🍽\n\n"
+                        f"Заказ на {day_label} принимается до {deadline_text}.\n\n"
+                        "Чтобы отключить напоминания отправьте: /notifications_off"
+                    )
+                    reminder_plain = (
+                        "⏰ Не забудьте заказать обед! 🍽\n\n"
+                        f"Заказ на {day_label} принимается до {deadline_text}."
+                    )
+                else:
+                    reminder_text = (
+                        "⏰ <b>Не забудьте заказать обед!</b> 🍽\n\n"
+                        "Прием заказов открыт до 9:30.\n\n"
+                        "Чтобы отключить напоминания отправьте: /notifications_off"
+                    )
+                    reminder_plain = (
+                        "⏰ Не забудьте заказать обед! 🍽\n\n"
+                        "Прием заказов открыт до 9:30."
+                    )
 
                 for user in users_without_orders:
                     telegram_id, max_id, vk_id, bitrix_id, has_any_order = (
@@ -274,10 +296,7 @@ class CronManager:
                     if vk_id:
                         try:
                             from vk_client import send_vk_message
-                            plain_text = (
-                                "⏰ Не забудьте заказать обед! 🍽\n\n"
-                                "Прием заказов открыт до 9:30."
-                            )
+                            plain_text = reminder_plain
                             await send_vk_message(vk_id, plain_text)
                             logger.debug(f"VK-напоминание отправлено: {vk_id}")
                         except Exception as e:
@@ -303,7 +322,7 @@ class CronManager:
                         ]
                         ok = await self._b24_client.send_message(
                             str(bitrix_id),
-                            "⏰ Не забудьте заказать обед! 🍽\n\nПрием заказов открыт до 9:30.",
+                            reminder_plain,
                             keyboard=kb,
                         )
                         if ok:
@@ -311,8 +330,8 @@ class CronManager:
                         else:
                             logger.error(f"Ошибка Bitrix24-напоминания {bitrix_id}")
 
-    async def _morning_reports(self):
-        """Утренние отчеты"""
+    async def _daily_reports(self):
+        """Ежедневные отчеты (после закрытия окна заказов — срез полный)"""
         from scheduled_reports import send_scheduled_reports
         if await self.is_workday(datetime.now(CONFIG.timezone)):
             await send_scheduled_reports(self.application, ['admins', 'providers'])

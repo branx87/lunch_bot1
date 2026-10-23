@@ -12,7 +12,8 @@ from time_config import TIME_CONFIG  # ← ДОБАВИТЬ ИМПОРТ
 from constants import SELECT_MONTH_RANGE_STATS
 from handlers.common import show_main_menu
 from handlers.common_handlers import view_orders
-from utils import can_modify_order, check_registration, format_menu, handle_unregistered
+from utils import (can_modify_order, check_registration, format_menu, handle_unregistered,
+                   order_deadline_message, is_new_supplier_date, next_working_day)
 from services.menu_service import DAYS_RU
 from view_utils import refresh_orders_view
 from bitrix.ops import cancel_in_bitrix, cleanup_cancelled
@@ -68,10 +69,15 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = []
     if not CONFIG.are_orders_accepted_now():
-        # Заказы отключены по времени
+        # Заказы отключены администратором
         status_msg = CONFIG.get_orders_status_message()
         message += f"\n\n{status_msg}"
-        keyboard.append([InlineKeyboardButton("⏳ Заказы принимаются через Битрикс", callback_data="noop")])
+        if has_active_order:
+            # Свой уже оформленный заказ отменить можно всегда —
+            # иначе блокировка приёма оставила бы человека без выхода.
+            keyboard.append([InlineKeyboardButton("❌ Отменить заказ", callback_data="cancel_0")])
+        else:
+            keyboard.append([InlineKeyboardButton("⏳ Заказы принимаются через Битрикс", callback_data="noop")])
     elif has_active_order:
         # Есть активный заказ
         message += f"\n\n✅ Заказ: {order_quantity} порции"
@@ -315,7 +321,7 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Проверяем возможность отмены
                 if not can_modify_order(target_date):
                     logger.warning(f"USER {user_id}: отмена невозможна для {target_date} (время истекло)")
-                    await query.answer(f"ℹ️ Отмена невозможна после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}", show_alert=True)  # ← ИСПРАВИТЬ
+                    await query.answer(order_deadline_message(target_date, action='cancel'), show_alert=True)  # ← ИСПРАВИТЬ
                     return
 
                 # Получаем пользователя через SQLAlchemy
@@ -596,7 +602,7 @@ async def handle_cancel_from_view(update: Update, context: ContextTypes.DEFAULT_
         
         # Проверяем возможность отмены
         if not can_modify_order(target_date):
-            await query.answer(f"ℹ️ Отмена невозможна после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}", show_alert=True)  # ← ИСПРАВИТЬ
+            await query.answer(order_deadline_message(target_date, action='cancel'), show_alert=True)  # ← ИСПРАВИТЬ
             return
 
         # Отменяем заказ
@@ -639,7 +645,10 @@ async def handle_cancel_from_view(update: Update, context: ContextTypes.DEFAULT_
         await query.answer("⚠️ Ошибка при отмене заказа", show_alert=True)
 
 async def quick_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Быстрый заказ на 1 порцию на сегодня"""
+    """Быстрый заказ на 1 порцию.
+
+    У старого поставщика — на сегодня, у нового — на ближайший рабочий день.
+    """
     try:
         user = update.effective_user
         user_id = user.id
@@ -648,23 +657,28 @@ async def quick_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         logger.info(f"USER {user_id}: начат быстрый заказ (username: {user.username or 'N/A'}, first_name: {user.first_name or 'N/A'})")
         
-        # Проверяем выходной
-        if today.weekday() in TIME_CONFIG.WEEKEND_DAYS:  # ← ИСПРАВИТЬ
-            logger.info(f"USER {user_id}: выходной день - быстрый заказ недоступен")
-            await update.message.reply_text("⏳ Сегодня выходной! Быстрый заказ недоступен.")
-            return await show_main_menu(update, user_id)
+        if is_new_supplier_date(today):
+            # Новый поставщик: заказ на сегодня не принимается,
+            # быстрый заказ оформляется на ближайший рабочий день.
+            target_date = next_working_day(today, CONFIG.holidays)
+        else:
+            # Старый поставщик: заказ на сегодня, только в рабочий день и не в праздник
+            target_date = today
+            if today.weekday() in TIME_CONFIG.WEEKEND_DAYS:  # ← ИСПРАВИТЬ
+                logger.info(f"USER {user_id}: выходной день - быстрый заказ недоступен")
+                await update.message.reply_text("⏳ Сегодня выходной! Быстрый заказ недоступен.")
+                return await show_main_menu(update, user_id)
+            
+            holiday_name = CONFIG.holidays.get(today.isoformat())
+            if holiday_name:
+                logger.info(f"USER {user_id}: праздник {holiday_name} - быстрый заказ недоступен")
+                await update.message.reply_text(f"🎉 Сегодня праздник - {holiday_name}! Быстрый заказ недоступен.")
+                return await show_main_menu(update, user_id)
         
-        # Проверяем праздник
-        holiday_name = CONFIG.holidays.get(today.isoformat())
-        if holiday_name:
-            logger.info(f"USER {user_id}: праздник {holiday_name} - быстрый заказ недоступен")
-            await update.message.reply_text(f"🎉 Сегодня праздник - {holiday_name}! Быстрый заказ недоступен.")
-            return await show_main_menu(update, user_id)
-        
-        # Проверяем время (до ORDER_DEADLINE)
-        if now.time() >= TIME_CONFIG.ORDER_DEADLINE:  # ← ИСПРАВИТЬ
-            logger.info(f"USER {user_id}: время заказа истекло ({now.time()})")
-            await update.message.reply_text(f"⏳ Время для заказов истекло (после {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}).")  # ← ИСПРАВИТЬ
+        # Проверяем срок заказа: учитывает смену поставщика (заказ на сегодня закрыт)
+        if not can_modify_order(target_date):
+            logger.info(f"USER {user_id}: срок заказа истёк для {target_date}")
+            await update.message.reply_text(order_deadline_message(target_date))
             return await show_main_menu(update, user_id)
         
         # Проверяем, доступны ли заказы в текущее время
@@ -687,15 +701,15 @@ async def quick_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Проверяем существующий заказ через SQLAlchemy
         existing_order = db.session.query(Order).filter(
             Order.user_id == user_db_id,
-            Order.target_date == today,
+            Order.target_date == target_date,
             Order.is_cancelled == False
         ).first()
         
         if existing_order:
             # Если заказ уже есть - показываем его
-            logger.info(f"USER {user_id}: уже есть заказ на {today} - {existing_order.quantity} порции")
+            logger.info(f"USER {user_id}: уже есть заказ на {target_date} - {existing_order.quantity} порции")
             await update.message.reply_text(
-                f"✅ У вас уже есть заказ на сегодня: {existing_order.quantity} порции\n\n"
+                f"✅ У вас уже есть заказ на {target_date.strftime('%d.%m')}: {existing_order.quantity} порции\n\n"
                 f"Чтобы изменить количество, используйте 'Меню на сегодня'."
             )
             return await show_main_menu(update, user_id)
@@ -705,12 +719,12 @@ async def quick_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Создаем новый заказ на 1 порцию через SQLAlchemy
         new_order = Order(
             user_id=user_db_id,
-            target_date=today,
+            target_date=target_date,
             order_time=now.strftime("%H:%M:%S"),
             quantity=1,
             bitrix_quantity_id='821',  # ID для 1 порции в Битрикс
             is_active=True,
-            is_preliminary=False,
+            is_preliminary=(target_date > today),
             created_at=datetime.now()
         )
         db.session.add(new_order)
@@ -732,11 +746,11 @@ async def quick_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         #     except Exception as sync_error:
         #         logger.error(f"USER {user_id}: ошибка синхронизации быстрого заказа на сегодня ID {order_id}: {sync_error}")
 
-        logger.info(f"USER {user_id}: быстрый заказ успешно оформлен - 1 порция на {today}")
+        logger.info(f"USER {user_id}: быстрый заказ успешно оформлен - 1 порция на {target_date}")
         await update.message.reply_text(
             "✅ Быстрый заказ оформлен!\n"
             "• Порции: 1\n" 
-            "• Дата: сегодня\n"
+            f"• Дата: {target_date.strftime('%d.%m.%Y')}\n"
             "• Статус: активен"
         )
         

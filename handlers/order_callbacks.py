@@ -12,7 +12,7 @@ from models import User, Order
 from config import CONFIG
 from handlers.common import show_main_menu
 from middleware import check_user_access
-from utils import can_modify_order
+from utils import can_modify_order, order_deadline_message
 from services.menu_service import DAYS_RU
 from view_utils import refresh_day_view
 from notifications import show_access_denied
@@ -77,10 +77,10 @@ async def handle_inspector_order_callback(query, now, user, context):
         await query.answer("❌ Предзаказ можно сделать только на будущие даты", show_alert=True)
         return
 
-    if day_offset == 0:
-        if now.time() >= TIME_CONFIG.ORDER_DEADLINE:
-            await query.answer(f"ℹ️ Приём заказов на сегодня завершён в {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}", show_alert=True)
-            return
+    # Единая проверка срока: учитывает смену поставщика и режим «заказ на сегодня закрыт»
+    if not can_modify_order(target_date):
+        await query.answer(order_deadline_message(target_date), show_alert=True)
+        return
 
     # user_record уже получен выше при проверке прав
     user_db_id = user_record.id
@@ -174,12 +174,11 @@ async def handle_order_callback(query, now, user, context):
             await query.answer("❌ Предзаказ можно сделать только на будущие даты", show_alert=True)
             return
 
-        # Ручная проверка 3: Обычные заказы только на сегодня и до ORDER_DEADLINE
-        if day_offset == 0:
-            if now.time() >= TIME_CONFIG.ORDER_DEADLINE:
-                logger.warning(f"USER {user_id}: попытка заказа на сегодня после {TIME_CONFIG.ORDER_DEADLINE}")
-                await query.answer(f"ℹ️ Приём заказов на сегодня завершён в {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}", show_alert=True)
-                return
+        # Ручная проверка 3: единый срок заказа (учитывает смену поставщика)
+        if not can_modify_order(target_date):
+            logger.warning(f"USER {user_id}: срок заказа истёк для {target_date}")
+            await query.answer(order_deadline_message(target_date), show_alert=True)
+            return
 
         # Получаем пользователя через SQLAlchemy
         user_record = db.session.query(User).filter(User.telegram_id == user.id).first()
@@ -268,7 +267,7 @@ async def handle_change_callback(query, now, user, context):
         
         # Проверка возможности изменения
         if not can_modify_order(target_date):
-            await query.answer(f"ℹ️ Изменение невозможно после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}", show_alert=True)
+            await query.answer(order_deadline_message(target_date, action='modify'), show_alert=True)
             if 'user_db_id' in context.user_data:
                 await refresh_day_view(query, day_offset, context.user_data['user_db_id'], now)
             return
@@ -445,7 +444,7 @@ async def handle_cancel_callback(query, now, user, context):
             # Проверяем можно ли отменять заказ
             if not can_modify_order(target_date):
                 logger.warning(f"USER {user_id}: отмена невозможна для {target_date} (время истекло)")
-                await query.answer(f"ℹ️ Отмена невозможна после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}", show_alert=True)
+                await query.answer(order_deadline_message(target_date, action='cancel'), show_alert=True)
                 return
 
             # Получаем заказ (свежие данные из БД, включая bitrix_order_id)
@@ -578,7 +577,7 @@ async def modify_portion_count(query, now, user, context, delta):
         
         # Проверка возможности изменения
         if not can_modify_order(target_date):
-            await query.answer(f"ℹ️ Изменение невозможно после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}", show_alert=True)
+            await query.answer(order_deadline_message(target_date, action='modify'), show_alert=True)
             if 'user_db_id' in context.user_data:
                 await refresh_day_view(query, day_offset, context.user_data['user_db_id'], now)
             return

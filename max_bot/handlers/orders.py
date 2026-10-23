@@ -11,7 +11,8 @@ from time_config import TIME_CONFIG
 from services.order_service import (
     create_order, cancel_order, modify_quantity, get_order_for_date
 )
-from services.time_service import can_modify_order
+from services.time_service import (can_modify_order, order_deadline_message,
+                                   is_new_supplier_date, next_working_day)
 from services.menu_service import get_menu_for_day, format_menu_text, DAYS_RU
 from services.user_service import get_user_db_id, MESSENGER_MAX
 from max_bot.keyboards import order_buttons, quantity_buttons, main_menu_keyboard
@@ -54,19 +55,26 @@ async def _refresh_day_view(event, day_offset, user_db_id, session):
 
 @router.message_created(F.message.body.text == "✅ Быстрый заказ")
 async def quick_order(event):
-    """Quick order for today (1 portion)."""
+    """Quick order (1 portion).
+
+    У старого поставщика — на сегодня, у нового — на ближайший рабочий день.
+    """
     user_id = event.user.user_id
     now = datetime.now(TIME_CONFIG.TIMEZONE)
-    target_date = now.date()
+    today = now.date()
+
+    if is_new_supplier_date(today):
+        # Новый поставщик: заказ на сегодня не принимается
+        target_date = next_working_day(today, CONFIG.holidays)
+    else:
+        target_date = today
 
     if not CONFIG.are_orders_accepted_now():
         await event.message.answer(CONFIG.get_orders_status_message())
         return
 
-    if now.time() >= TIME_CONFIG.ORDER_DEADLINE:
-        await event.message.answer(
-            f"ℹ️ Приём заказов на сегодня завершён в {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}"
-        )
+    if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
+        await event.message.answer(order_deadline_message(target_date))
         return
 
     with db.get_session() as session:
@@ -81,7 +89,7 @@ async def quick_order(event):
             return
 
         session.commit()
-        await event.message.answer("✅ Заказ на сегодня оформлен (1 порция)")
+        await event.message.answer(f"✅ Заказ на {target_date.strftime('%d.%m')} оформлен (1 порция)")
         await _refresh_day_view(event, 0, user_db_id, session)
 
 
@@ -99,10 +107,8 @@ async def on_order(event: MessageCallback):
         await event.answer(notification=CONFIG.get_orders_status_message())
         return
 
-    if day_offset == 0 and now.time() >= TIME_CONFIG.ORDER_DEADLINE:
-        await event.answer(
-            notification=f"ℹ️ Приём заказов на сегодня завершён в {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}"
-        )
+    if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
+        await event.answer(notification=order_deadline_message(target_date))
         return
 
     with db.get_session() as session:
@@ -133,7 +139,7 @@ async def on_change(event: MessageCallback):
 
     if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
         await event.answer(
-            notification=f"ℹ️ Изменение невозможно после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}"
+            notification=order_deadline_message(target_date, action='modify')
         )
         return
 
@@ -180,7 +186,7 @@ async def _modify(event: MessageCallback, delta: int):
 
     if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
         await event.answer(
-            notification=f"ℹ️ Изменение невозможно после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}"
+            notification=order_deadline_message(target_date, action='modify')
         )
         return
 
@@ -237,9 +243,11 @@ async def on_cancel(event: MessageCallback):
         day_offset = int(parts[1])
         target_date = (now + timedelta(days=day_offset)).date()
 
-    if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
+    # Отмена доступна всегда, даже при выключенном приёме заказов:
+    # заблокировав приём, нельзя оставить человека без возможности отменить свой заказ.
+    if not can_modify_order(target_date, True):
         await event.answer(
-            notification=f"ℹ️ Отмена невозможна после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}"
+            notification=order_deadline_message(target_date, action='cancel')
         )
         return
 

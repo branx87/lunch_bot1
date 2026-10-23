@@ -13,7 +13,9 @@ from models import User, Order
 from time_config import TIME_CONFIG
 
 # Re-export from services for backwards compatibility
-from services.time_service import get_next_workday, can_modify_order as _can_modify_order
+from services.time_service import (get_next_workday, can_modify_order as _can_modify_order,
+                                  order_deadline_message, next_working_day,
+                                  order_deadline_for, is_new_supplier_date)
 from services.menu_service import get_menu_for_day as _get_menu_for_day, format_menu_text, DAYS_RU
 
 logger = logging.getLogger(__name__)
@@ -32,16 +34,41 @@ def is_order_time_expired():
 
 
 def get_order_time_restriction():
+    """Ограничение на оформление заказа. None — заказывать можно."""
     from services.time_service import is_weekend
+
     now = datetime.now(TIME_CONFIG.TIMEZONE)
+    today = now.date()
 
     if is_weekend(now):
-        next_workday = get_next_workday(now)
-        return f"⏳ Сегодня выходной. Вы можете оформить предварительный заказ на {next_workday.strftime('%d.%m')} (понедельник)"
+        nxt = next_working_day(today)
+        return f"⏳ Сегодня выходной. Заказ можно оформить на {nxt.strftime('%d.%m')}"
 
-    if now.hour >= 10:
-        next_workday = get_next_workday(now)
-        return f"⏳ Прием заказов на сегодня завершен в 10:00. Вы можете оформить предварительный заказ на {next_workday.strftime('%d.%m')}"
+    if is_new_supplier_date(today):
+        # Новый поставщик: заказ на сегодня не принимается,
+        # на следующий рабочий день — до 15:00.
+        nxt = next_working_day(today)
+        deadline = order_deadline_for(nxt)
+        if deadline and now < deadline:
+            return (
+                f"⏳ Заказы на сегодня не принимаются. "
+                f"Заказ на {nxt.strftime('%d.%m')} доступен "
+                f"до {TIME_CONFIG.ADVANCE_ORDER_DEADLINE.strftime('%H:%M')}."
+            )
+        nxt2 = next_working_day(nxt)
+        return (
+            f"⏳ Заказ на {nxt.strftime('%d.%m')} уже закрыт "
+            f"(до {TIME_CONFIG.ADVANCE_ORDER_DEADLINE.strftime('%H:%M')}). "
+            f"Следующий доступный день — {nxt2.strftime('%d.%m')}."
+        )
+
+    # Старый поставщик: заказ на сегодня до 09:30
+    if now.time() >= TIME_CONFIG.ORDER_DEADLINE:
+        nxt = next_working_day(today)
+        return (
+            f"⏳ Прием заказов на сегодня завершен. "
+            f"Вы можете оформить предварительный заказ на {nxt.strftime('%d.%m')}"
+        )
 
     return None
 

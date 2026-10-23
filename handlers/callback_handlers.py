@@ -10,7 +10,7 @@ from telegram.ext import CommandHandler, MessageHandler, CallbackQueryHandler, C
 from handlers.common import show_main_menu
 from handlers.common_handlers import view_orders
 from handlers.order_callbacks import handle_cancel_callback, handle_change_callback, handle_confirm_callback, handle_order_callback, modify_portion_count
-from utils import can_modify_order
+from utils import can_modify_order, order_deadline_message
 from view_utils import refresh_day_view
 from bitrix.ops import cancel_in_bitrix
 
@@ -32,7 +32,7 @@ async def handle_quantity_change(query, now, user, context):
         max_portions = 3
 
         if not can_modify_order(target_date):
-            await query.answer("ℹ️ Изменение невозможно после 9:30", show_alert=True)
+            await query.answer(order_deadline_message(target_date, action='modify'), show_alert=True)
             return
 
         # Получаем пользователя через SQLAlchemy
@@ -139,7 +139,7 @@ async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE
         target_date = (now + timedelta(days=day_offset)).date()
         
         if not can_modify_order(target_date):
-            await query.answer("ℹ️ Отмена невозможна после 9:30", show_alert=True)
+            await query.answer(order_deadline_message(target_date, action='cancel'), show_alert=True)
             return
 
         # Получаем пользователя через SQLAlchemy

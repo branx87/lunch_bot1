@@ -33,18 +33,19 @@ def order_buttons(day_offset, has_order=False, can_modify=True):
     """Build inline order buttons for a menu day."""
     kb = Keyboard(inline=True)
 
-    if not can_modify:
-        kb.add(Callback("⏳ Прием заказов завершен", payload={"cmd": "noop"}))
-        return kb.get_json()
-
     if has_order:
-        kb.add(Callback("✏️ Изменить количество", payload={"cmd": "change", "d": day_offset}))
-        kb.row()
+        if can_modify:
+            kb.add(Callback("✏️ Изменить количество", payload={"cmd": "change", "d": day_offset}))
+            kb.row()
+        # Отмена доступна всегда: заблокировав приём заказов,
+        # нельзя оставлять человека без возможности отменить свой заказ.
         kb.add(Callback("❌ Отменить заказ", payload={"cmd": "cancel", "d": day_offset}),
                color=KeyboardButtonColor.NEGATIVE)
-    else:
+    elif can_modify:
         kb.add(Callback("✅ Заказать", payload={"cmd": "order", "d": day_offset}),
                color=KeyboardButtonColor.POSITIVE)
+    else:
+        kb.add(Callback("⏳ Прием заказов завершен", payload={"cmd": "noop"}))
     return kb.get_json()
 
 

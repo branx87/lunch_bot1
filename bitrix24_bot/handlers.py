@@ -20,6 +20,8 @@ from services.order_service import (
     get_user_monthly_stats, QUANTITY_MAP,
 )
 from services.menu_service import get_menu_for_day, format_menu_text, get_week_menus
+from services.time_service import (can_modify_order, order_deadline_message,
+                                   is_new_supplier_date, next_working_day_offset)
 from services.report_service import (
     generate_provider_report_text,
     generate_accounting_report_file,
@@ -148,7 +150,7 @@ def _build_select_day_kb() -> list:
 def _order_view_kb(has_order: bool, can_modify: bool, user_db_id: int = None) -> list:
     rows = []
     if not has_order:
-        if can_modify:
+        if can_modify and CONFIG.are_orders_accepted_now():
             rows.append([_btn("✅ Заказать 1 порцию", "заказать порцию", "#2a7a2a")])
             # Кнопка заказа для инспектора (проверка по bitrix_id)
             if user_db_id and _can_order_for_inspector(user_db_id):
@@ -159,6 +161,8 @@ def _order_view_kb(has_order: bool, can_modify: bool, user_db_id: int = None) ->
                 _btn("➕ Добавить порцию", "добавить порцию", "#2a7a2a"),
                 _btn("➖ Убрать порцию",   "убрать порцию",   "#7a5c3e"),
             ])
+            # Отмена доступна, пока не истёк срок заказа.
+            # Глобальный флаг «приём отключён» на отмену не влияет.
             rows.append([_btn("❌ Отменить заказ", "отменить заказ", "#7a2a2a")])
     rows.append([_btn("🏠 Главное меню", "главное меню", "#555")])
     return _kb(*rows)
@@ -167,7 +171,7 @@ def _order_view_kb(has_order: bool, can_modify: bool, user_db_id: int = None) ->
 def _week_day_order_kb(day_offset: int, has_order: bool, can_modify: bool, qty: int = 0) -> list:
     rows = []
     if not has_order:
-        if can_modify:
+        if can_modify and CONFIG.are_orders_accepted_now():
             rows.append([_btn("✅ Заказать", f"заказать день {day_offset}", "#2a7a2a")])
     else:
         if can_modify:
@@ -437,7 +441,7 @@ def _help_text(role: str) -> str:
     if role in ("admin", "provider", "accountant"):
         lines.append("📊 [B]отчёты[/B] — формирование отчётов")
     if role in ("admin", "employee"):
-        lines.append("✅ [B]быстрый заказ[/B] — заказать 1 порцию на сегодня")
+        lines.append("✅ [B]быстрый заказ[/B] — заказать 1 порцию на ближайший рабочий день")
         lines.append("📋 [B]мои заказы[/B] — посмотреть и отменить заказы")
         lines.append("📊 [B]статистика за месяц[/B] — сводка заказов за месяц")
         lines.append("🍽 [B]меню на сегодня[/B] — меню и управление заказом на сегодня")
@@ -532,11 +536,9 @@ def _fetch_order_view(user_db_id: int, day_offset: int, session) -> tuple:
     if order:
         session.expunge(order)
 
-    now = datetime.now(TIME_CONFIG.TIMEZONE)
-    can_modify = (
-        target_date > now.date() or
-        (target_date == now.date() and now.time() < TIME_CONFIG.MODIFICATION_DEADLINE)
-    )
+    # Срок заказа (только время): глобальный флаг заказов проверяется отдельно,
+    # чтобы кнопка отмены оставалась доступной при отключённом приёме.
+    can_modify = can_modify_order(target_date, True)
     return menu_text, order, target_date, can_modify
 
 
@@ -580,8 +582,8 @@ def _do_create_order_db(user_db_id: int, day_offset: int, session) -> str:
     if target_date.weekday() in TIME_CONFIG.WEEKEND_DAYS:
         return "ℹ️ Заказы на выходные не принимаются."
 
-    if target_date == now.date() and now.time() >= TIME_CONFIG.ORDER_DEADLINE:
-        return f"ℹ️ Приём заказов на сегодня завершён в {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}."
+    if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
+        return order_deadline_message(target_date)
 
     order, err = create_order(user_db_id, target_date, session, is_preliminary=(day_offset > 0))
     if err:
@@ -603,8 +605,8 @@ def _do_create_inspector_order_db(user_db_id: int, day_offset: int, session) -> 
     if target_date.weekday() in TIME_CONFIG.WEEKEND_DAYS:
         return "ℹ️ Заказы на выходные не принимаются."
 
-    if target_date == now.date() and now.time() >= TIME_CONFIG.ORDER_DEADLINE:
-        return f"ℹ️ Приём заказов на сегодня завершён в {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}."
+    if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
+        return order_deadline_message(target_date)
 
     # Проверяем существующий заказ
     existing = get_order_for_date(user_db_id, target_date, session)
@@ -628,9 +630,10 @@ def _do_create_inspector_order_db(user_db_id: int, day_offset: int, session) -> 
 
 
 def _do_cancel_order_db(user_db_id: int, target_date, session) -> str:
-    now = datetime.now(TIME_CONFIG.TIMEZONE)
-    if (target_date <= now.date() and now.time() >= TIME_CONFIG.MODIFICATION_DEADLINE):
-        return f"ℹ️ Отмена невозможна после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}."
+    # Отмена доступна всегда, пока не истёк срок заказа.
+    # Глобальный флаг «приём отключён» на отмену не влияет.
+    if not can_modify_order(target_date, True):
+        return order_deadline_message(target_date, action='cancel')
 
     order, err = cancel_order(user_db_id, target_date, session)
     if err:
@@ -647,10 +650,7 @@ def _fetch_week_order_status(user_db_id: int, work_days: list, session) -> list:
         menu_text   = format_menu_text(day["menu"], day["day_name"], target_date)
         order       = get_order_for_date(user_db_id, target_date, session)
         has_order   = order is not None
-        can_modify  = (
-            target_date > now_local.date() or
-            (target_date == now_local.date() and now_local.time() < TIME_CONFIG.MODIFICATION_DEADLINE)
-        )
+        can_modify  = can_modify_order(target_date, True)
         qty = order.quantity if has_order else 0
         if order:
             session.expunge(order)
@@ -669,8 +669,8 @@ def _do_modify_qty_db(user_db_id: int, day_offset: int, delta: int, session) -> 
     menu, day_name, target_date = get_menu_for_day(day_offset, CONFIG)
     now = datetime.now(TIME_CONFIG.TIMEZONE)
 
-    if target_date == now.date() and now.time() >= TIME_CONFIG.MODIFICATION_DEADLINE:
-        return f"ℹ️ Изменение невозможно после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}."
+    if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
+        return order_deadline_message(target_date, action='modify')
 
     new_qty, order, err = modify_quantity(user_db_id, target_date, delta, session)
     if err:
@@ -771,9 +771,14 @@ async def _handle_employee_inner(
 
     # ---- Быстрый заказ ----
     if raw == "быстрый заказ":
+        # У нового поставщика заказ на сегодня не принимается —
+        # быстрый заказ оформляется на ближайший рабочий день.
+        today = datetime.now(TIME_CONFIG.TIMEZONE).date()
+        quick_offset = (next_working_day_offset(today, CONFIG.holidays)
+                        if is_new_supplier_date(today) else 0)
         prompt = await _check_location_or_prompt(
             dialog_id, from_user_id, user_db_id,
-            {"action": "quick_order", "day_offset": 0})
+            {"action": "quick_order", "day_offset": quick_offset})
         if prompt:
             return prompt
         result = await _run_sync(_do_create_order_db, user_db_id, 0)

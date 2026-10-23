@@ -178,6 +178,14 @@ def setup_handlers(application):
         
         await update.message.reply_text("🔒 Запускаю проверку безопасности отправки...")
         
+        # Время выгрузки в Bitrix — по режиму поставщика
+        from time_config import TIME_CONFIG
+        from services.time_service import is_new_supplier_date
+        if is_new_supplier_date(datetime.now(CONFIG.timezone).date()):
+            push_time = TIME_CONFIG.ADVANCE_ORDER_DEADLINE.strftime('%H:%M')
+        else:
+            push_time = TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')
+        
         try:
             checker = BitrixChecker()
             is_safe, orders, issues = await checker.check_send_orders_safety()
@@ -188,7 +196,7 @@ def setup_handlers(application):
                     f"📦 Заказов для отправки: {len(orders)}\n"
                     f"🔒 Риск дублей: НЕТ\n"
                     f"🌐 Подключение к Bitrix: РАБОТАЕТ\n\n"
-                    f"Можно запускать отправку в 9:25!"
+                    f"Можно запускать отправку в {push_time}!"
                 )
             else:
                 message = "🚨 ОПАСНОСТЬ ДУБЛЕЙ!\n\nПРОБЛЕМЫ:\n"
@@ -212,6 +220,16 @@ def setup_handlers(application):
         # Импортируем TIME_CONFIG
         from time_config import TIME_CONFIG
         
+        # Режим поставщика: старый — заказ на сегодня до 09:30,
+        # новый — заказ на следующий рабочий день до 15:00.
+        from services.time_service import is_new_supplier_date
+        if is_new_supplier_date(datetime.now(CONFIG.timezone).date()):
+            deadline_text = TIME_CONFIG.ADVANCE_ORDER_DEADLINE.strftime('%H:%M')
+            deadline_note = "заказ на следующий рабочий день"
+        else:
+            deadline_text = TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')
+            deadline_note = "заказ на сегодня"
+        
         message = (
             f"🔧 ТЕКУЩАЯ КОНФИГУРАЦИЯ:\n"
             f"👑 Админы: {CONFIG.admin_ids}\n"
@@ -221,15 +239,16 @@ def setup_handlers(application):
             f"✅ Вы админ: {user.id in CONFIG.admin_ids}\n"
             f"🔄 Заказы включены: {CONFIG.orders_enabled}\n\n"
             f"⏰ НАСТРОЙКИ ВРЕМЕНИ:\n"
-            f"🕘 Прием заказов до: {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}\n"
-            f"✏️ Изменение до: {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}\n"
+            f"🕘 Прием заказов до: {deadline_text} ({deadline_note})\n"
+            f"✏️ Изменение/отмена до: {deadline_text}\n"
+            f"🏢 Новый поставщик с: {TIME_CONFIG.NEW_SUPPLIER_START_DATE.strftime('%d.%m.%Y')}\n"
             f"🔄 Синхронизация с: {TIME_CONFIG.IMMEDIATE_SYNC_TIME.strftime('%H:%M')}\n"
             f"📅 Выходные дни: {[['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][i] for i in TIME_CONFIG.WEEKEND_DAYS]}\n"
             f"🏢 Рабочие дни: {[['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][i] for i in TIME_CONFIG.WORK_DAYS]}\n"
             f"⏰ Часовой пояс: {TIME_CONFIG.TIMEZONE}\n\n"
             f"🔔 CRON ЗАДАЧИ:\n"
             f"⏰ Напоминания: {TIME_CONFIG.MORNING_REMINDER_TIME.strftime('%H:%M')}\n"
-            f"📊 Отчеты: {TIME_CONFIG.MORNING_REPORTS_TIME.strftime('%H:%M')}\n"
+            f"📊 Отчеты: {TIME_CONFIG.DAILY_REPORTS_TIME.strftime('%H:%M')}\n"
             f"💰 Бух. отчет: {TIME_CONFIG.ACCOUNTING_REPORT_TIME.strftime('%H:%M')}\n"
             f"🔄 Синхр. сотр.: {TIME_CONFIG.SYNC_EMPLOYEES_TIME.strftime('%H:%M')}"
         )

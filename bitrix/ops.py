@@ -17,6 +17,7 @@ from typing import Optional
 from database import db
 from models import Order
 from time_config import TIME_CONFIG
+from services.time_service import order_deadline_for
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +77,13 @@ async def cleanup_cancelled(order_id) -> bool:
                         f"target_date={order.target_date}, session={id(session)}")
 
             # 🔥 ДОБАВИТЬ ПРОВЕРКУ ВРЕМЕНИ ДЛЯ УДАЛЕНИЯ
-            if order.target_date == today and now.time() >= TIME_CONFIG.MODIFICATION_DEADLINE:
-                logger.warning(f"⏰ Время для удаления заказов на сегодня истекло ({TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')})")
-                return False
+            # Срок берётся по дате заказа с учётом режима поставщика:
+            # у нового поставщика это 15:00 предыдущего рабочего дня.
+            if order.target_date == today:
+                deadline = order_deadline_for(today)
+                if deadline and now >= deadline:
+                    logger.warning(f"⏰ Срок по заказу на сегодня истёк ({deadline.strftime('%d.%m %H:%M')})")
+                    return False
 
             # 🔥 ИСПРАВЛЕНИЕ: правильное преобразование target_date
             # Если target_date уже date объект - используем как есть

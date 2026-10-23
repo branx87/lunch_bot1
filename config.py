@@ -248,19 +248,32 @@ class BotConfig:
         return self._orders_enabled
 
     def get_orders_status_message(self) -> str:
-        """Возвращает сообщение о статусе приема заказов (заглушка для кнопок)"""
+        """Статус приема заказов: на какой день и до какого времени можно заказать."""
         if not self.are_orders_accepted_now():
             return "❌ Приём заказов временно приостановлен"
 
         try:
+            from services.time_service import next_working_day, is_new_supplier_date
+            from services.menu_service import DAYS_RU
+
             now = datetime.now(self.timezone)
             if now.weekday() in TIME_CONFIG.WEEKEND_DAYS:
                 return "❌ Прием заказов не осуществляется в выходные дни"
 
-            if now.time() >= TIME_CONFIG.ORDER_DEADLINE:
-                return f"❌ Прием заказов на сегодня завершен (до {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')})"
+            today = now.date()
 
-            return f"✅ Прием заказов открыт (до {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')})"
+            if not is_new_supplier_date(today):
+                # Старый поставщик: заказ на сегодня до 09:30
+                if now.time() >= TIME_CONFIG.ORDER_DEADLINE:
+                    return f"❌ Прием заказов на сегодня завершен (до {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')})"
+                return f"✅ Прием заказов открыт (до {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')})"
+
+            # Новый поставщик: заказ на следующий рабочий день до 15:00
+            nxt = next_working_day(today, self.holidays)
+            return (
+                f"✅ Приём заказов открыт до {TIME_CONFIG.ADVANCE_ORDER_DEADLINE.strftime('%H:%M')} — "
+                f"на {nxt.strftime('%d.%m')} ({DAYS_RU[nxt.weekday()].lower()})"
+            )
         except Exception as e:
             logger.error(f"Ошибка получения статуса заказов: {e}")
             return "❌ Ошибка проверки статуса заказов"

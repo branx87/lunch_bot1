@@ -9,7 +9,7 @@ from database import db
 from config import CONFIG
 from time_config import TIME_CONFIG
 from services.order_service import create_order, cancel_order, modify_quantity, get_order_for_date
-from services.time_service import can_modify_order
+from services.time_service import can_modify_order, order_deadline_message, is_new_supplier_date, next_working_day
 from services.menu_service import get_menu_for_day, format_menu_text, DAYS_RU
 from services.user_service import get_user_db_id, MESSENGER_VK
 from vk_bot.keyboards import order_buttons, quantity_buttons
@@ -63,19 +63,26 @@ async def _edit_day_view(event, day_offset, user_db_id, session):
 
 @orders_labeler.private_message(text="✅ Быстрый заказ")
 async def quick_order(message: Message):
-    """Quick order for today (1 portion)."""
+    """Quick order (1 portion).
+
+    У старого поставщика — на сегодня, у нового — на ближайший рабочий день.
+    """
     user_id = message.from_id
     now = datetime.now(TIME_CONFIG.TIMEZONE)
-    target_date = now.date()
+    today = now.date()
+
+    if is_new_supplier_date(today):
+        # Новый поставщик: заказ на сегодня не принимается
+        target_date = next_working_day(today, CONFIG.holidays)
+    else:
+        target_date = today
 
     if not CONFIG.are_orders_accepted_now():
         await message.answer(CONFIG.get_orders_status_message())
         return
 
-    if now.time() >= TIME_CONFIG.ORDER_DEADLINE:
-        await message.answer(
-            f"ℹ️ Приём заказов на сегодня завершён в {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}"
-        )
+    if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
+        await message.answer(order_deadline_message(target_date))
         return
 
     with db.get_session() as session:
@@ -90,7 +97,7 @@ async def quick_order(message: Message):
             return
 
         session.commit()
-        await message.answer("✅ Заказ на сегодня оформлен (1 порция)")
+        await message.answer(f"✅ Заказ на {target_date.strftime('%d.%m')} оформлен (1 порция)")
         await _refresh_day_view(message.ctx_api, message.peer_id, 0, user_db_id, session)
 
 
@@ -124,8 +131,8 @@ async def on_order_callback(event: MessageEvent):
             await event.show_snackbar(CONFIG.get_orders_status_message()[:90])
             return
 
-        if day_offset == 0 and now.time() >= TIME_CONFIG.ORDER_DEADLINE:
-            await event.show_snackbar(f"Приём заказов завершён в {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')}")
+        if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
+            await event.show_snackbar(order_deadline_message(target_date)[:120])
             return
 
         with db.get_session() as session:
@@ -147,7 +154,7 @@ async def on_order_callback(event: MessageEvent):
     # --- CHANGE ---
     if cmd == "change":
         if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
-            await event.show_snackbar(f"Изменение невозможно после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}")
+            await event.show_snackbar(order_deadline_message(target_date, action='modify'))
             return
 
         with db.get_session() as session:
@@ -177,7 +184,7 @@ async def on_order_callback(event: MessageEvent):
         delta = 1 if cmd == "inc" else -1
 
         if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
-            await event.show_snackbar(f"Изменение невозможно после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}")
+            await event.show_snackbar(order_deadline_message(target_date, action='modify'))
             return
 
         with db.get_session() as session:
@@ -212,8 +219,10 @@ async def on_order_callback(event: MessageEvent):
 
     # --- CANCEL ---
     if cmd == "cancel":
-        if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
-            await event.show_snackbar(f"Отмена невозможна после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}")
+        # Отмена доступна всегда, даже при выключенном приёме заказов:
+        # заблокировав приём, нельзя оставить человека без возможности отменить свой заказ.
+        if not can_modify_order(target_date, True):
+            await event.show_snackbar(order_deadline_message(target_date, action='cancel'))
             return
 
         with db.get_session() as session:
@@ -255,8 +264,10 @@ async def on_order_callback(event: MessageEvent):
             await event.show_snackbar("Ошибка формата даты")
             return
 
-        if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
-            await event.show_snackbar(f"Отмена невозможна после {TIME_CONFIG.MODIFICATION_DEADLINE.strftime('%H:%M')}")
+        # Отмена из списка заказов — глобальный статус заказов тут не учитывается,
+        # отменить свой заказ можно всегда.
+        if not can_modify_order(target_date, True):
+            await event.show_snackbar(order_deadline_message(target_date, action='cancel'))
             return
 
         with db.get_session() as session:

@@ -48,21 +48,22 @@ def order_buttons(day_offset, has_order=False, can_modify=True):
     """Build inline order buttons for a menu day."""
     builder = InlineKeyboardBuilder()
 
-    if not can_modify:
-        builder.row(CallbackButton(text="⏳ Прием заказов завершен", payload="noop"))
-        return builder.as_markup()
-
     if has_order:
-        builder.row(
-            CallbackButton(text="✏️ Изменить количество", payload=f"change_{day_offset}"),
-        )
+        if can_modify:
+            builder.row(
+                CallbackButton(text="✏️ Изменить количество", payload=f"change_{day_offset}"),
+            )
+        # Отмена доступна всегда: заблокировав приём заказов,
+        # нельзя оставлять человека без возможности отменить свой заказ.
         builder.row(
             CallbackButton(text="❌ Отменить заказ", payload=f"cancel_{day_offset}"),
         )
-    else:
+    elif can_modify:
         builder.row(
             CallbackButton(text="✅ Заказать", payload=f"order_{day_offset}"),
         )
+    else:
+        builder.row(CallbackButton(text="⏳ Прием заказов завершен", payload="noop"))
     return builder.as_markup()
 
 
