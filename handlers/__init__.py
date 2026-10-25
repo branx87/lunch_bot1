@@ -22,7 +22,8 @@ from decorators import admin_filter, provider_or_admin_filter
 from constants import (
     ADMIN_REPORTS_MENU, AWAIT_MESSAGE_TEXT, FULL_NAME, LOCATION, MAIN_MENU, 
     ORDER_ACTION, ORDER_CONFIRMATION, PHONE, 
-    SELECT_MONTH_RANGE, SELECT_MONTH_RANGE_STATS, SELECT_REPORT_TYPE
+    SELECT_MONTH_RANGE, SELECT_MONTH_RANGE_STATS, SELECT_REPORT_TYPE,
+    SELECT_REPORT_DATE, SELECT_REPORT_DATE_STAFF
 )
 from handlers.admin_config_handlers import handle_deletion, setup_admin_config_handlers
 from handlers.admin_handlers import handle_admin_choice
@@ -34,7 +35,7 @@ from handlers.base_handlers import (
 from handlers.callback_handlers import handle_cancel_order
 from handlers.common import show_main_menu
 from handlers.common_handlers import view_orders
-from handlers.common_report_handlers import select_month_range
+from handlers.common_report_handlers import select_month_range, select_report_date
 from handlers.menu_handlers import (
     handle_cancel_from_view, 
     handle_order_confirmation, 
@@ -317,6 +318,9 @@ def setup_handlers(application):
                     select_month_range
                 ),
                 MessageHandler(filters.Regex(r'^🏠 Главное меню$'), admin_reports_menu)
+            ],
+            SELECT_REPORT_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, select_report_date)
             ]
         },
         fallbacks=[
@@ -397,6 +401,9 @@ def setup_handlers(application):
                 ),
                 MessageHandler(filters.Regex(r'^🏠 Главное меню$'), admin_reports_menu),
                 MessageHandler(filters.Regex(r'^Вернуться в главное меню$'), show_main_menu)
+            ],
+            SELECT_REPORT_DATE_STAFF: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, select_report_date)
             ],
             PHONE: [
                 MessageHandler(filters.CONTACT, get_phone),

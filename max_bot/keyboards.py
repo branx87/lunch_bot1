@@ -89,6 +89,16 @@ def month_selection_keyboard():
     return builder.as_markup()
 
 
+def report_date_keyboard():
+    """Build day selection buttons for daily report."""
+    from services.time_service import report_date_options
+
+    builder = InlineKeyboardBuilder()
+    for d, label in report_date_options():
+        builder.row(CallbackButton(text=label, payload=f"rday_{d.isoformat()}"))
+    return builder.as_markup()
+
+
 def report_type_keyboard():
     """Build report type selection buttons."""
     builder = InlineKeyboardBuilder()

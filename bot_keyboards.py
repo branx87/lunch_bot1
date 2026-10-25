@@ -55,6 +55,27 @@ def create_admin_reports_menu():
         ["🏠 Главное меню"]
     ], resize_keyboard=True)
 
+def create_report_date_keyboard(days=5):
+    """Клавиатура выбора дня для дневного отчёта.
+
+    Под новым поставщиком заказ на сегодня не принимается, поэтому
+    «за сегодня» отчёт пустой — день выбирается явно.
+    """
+    from services.time_service import report_date_options
+
+    buttons = []
+    row = []
+    for _d, label in report_date_options(days):
+        row.append(label)
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append(["🏠 Главное меню"])
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+
+
 def create_report_type_menu():
     """Меню выбора типа отчета (бухгалтерский/поставщика/админский)"""
     return ReplyKeyboardMarkup([

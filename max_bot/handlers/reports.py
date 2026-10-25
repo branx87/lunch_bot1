@@ -12,8 +12,10 @@ from services.report_service import (
     generate_provider_report_text,
     generate_accounting_report_file,
     generate_admin_report_file,
+    date_caption,
 )
-from max_bot.keyboards import month_selection_keyboard, report_type_keyboard, main_menu_keyboard
+from max_bot.keyboards import (month_selection_keyboard, report_type_keyboard,
+                                main_menu_keyboard, report_date_keyboard)
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -21,7 +23,11 @@ router = Router()
 
 @router.message_created(F.message.body.text == "📊 Отчет за день")
 async def daily_report(event: MessageCreated):
-    """Generate and send daily report."""
+    """Выбор дня для дневного отчёта.
+
+    Под новым поставщиком заказ на сегодня не принимается, поэтому
+    день отчёта выбирается явно.
+    """
     user_id = event.user.user_id
     role = get_user_role(user_id, MESSENGER_MAX, CONFIG)
 
@@ -29,19 +35,7 @@ async def daily_report(event: MessageCreated):
         await event.message.answer("❌ У вас нет прав для просмотра отчетов.")
         return
 
-    today = datetime.now(CONFIG.timezone).date()
-
-    with db.get_session() as session:
-        if role in ('provider', 'admin'):
-            text, total = generate_provider_report_text(today, today, session)
-            await event.message.answer(text)
-
-        if role in ('admin',):
-            file_path, file_name, caption = generate_admin_report_file(today, today, session, is_daily=True)
-            if file_path:
-                await event.message.answer(caption, attachments=[InputMedia(path=file_path)])
-            else:
-                await event.message.answer(caption)  # "no data" message
+    await event.message.answer("📅 Выберите день для отчёта:", attachments=[report_date_keyboard()])
 
 
 @router.message_created(F.message.body.text == "📅 Отчет за месяц")
@@ -98,6 +92,46 @@ async def on_month_selected(event: MessageCallback):
         f"Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\nВыберите тип отчета:",
         attachments=[report_type_keyboard()]
     )
+    await event.answer()
+
+
+@router.message_callback(F.callback.payload.startswith("rday_"))
+async def on_report_date(event: MessageCallback):
+    """Формирует дневной отчёт за выбранный день."""
+    user_id = event.user.user_id
+    role = get_user_role(user_id, MESSENGER_MAX, CONFIG)
+
+    if role not in ('admin', 'provider', 'accountant'):
+        await event.answer(notification="❌ Нет прав")
+        return
+
+    raw_date = event.callback.payload[len("rday_"):]
+    try:
+        target = datetime.strptime(raw_date, "%Y-%m-%d").date()
+    except ValueError:
+        await event.answer(notification="❌ Некорректная дата")
+        return
+
+    caption_text = date_caption(target)
+
+    with db.get_session() as session:
+        if role in ('provider', 'admin'):
+            text, total = generate_provider_report_text(
+                target, target, session, caption_text)
+            await event.message.answer(text)
+
+        if role == 'admin':
+            file_path, file_name, caption = generate_admin_report_file(
+                target, target, session, is_daily=True, caption=caption_text)
+            if file_path:
+                await event.message.answer(caption, attachments=[InputMedia(path=file_path)])
+            else:
+                await event.message.answer(caption)
+        elif role == 'accountant':
+            file_path, file_name, caption = generate_accounting_report_file(
+                target, target, session)
+            await event.message.answer(caption, attachments=[InputMedia(path=file_path)])
+
     await event.answer()
 
 

@@ -82,7 +82,8 @@ async def cleanup_cancelled(order_id) -> bool:
             if order.target_date == today:
                 deadline = order_deadline_for(today)
                 if deadline and now >= deadline:
-                    logger.warning(f"⏰ Срок по заказу на сегодня истёк ({deadline.strftime('%d.%m %H:%M')})")
+                    deadline_text = f"{deadline.strftime('%d.%m')} в {deadline.strftime('%H:%M')}"
+                    logger.warning(f"⏰ Срок по заказу на сегодня истёк ({deadline_text})")
                     return False
 
             # 🔥 ИСПРАВЛЕНИЕ: правильное преобразование target_date

@@ -13,8 +13,10 @@ from services.report_service import (
     generate_provider_report_text,
     generate_accounting_report_file,
     generate_admin_report_file,
+    date_caption,
 )
-from vk_bot.keyboards import month_selection_keyboard, report_type_keyboard
+from vk_bot.keyboards import (month_selection_keyboard, report_type_keyboard,
+                             report_date_keyboard)
 
 logger = logging.getLogger(__name__)
 reports_labeler = BotLabeler()
@@ -22,7 +24,11 @@ reports_labeler = BotLabeler()
 
 @reports_labeler.private_message(text="📊 Отчет за день")
 async def daily_report(message: Message):
-    """Generate and send daily report."""
+    """Выбор дня для дневного отчёта.
+
+    Под новым поставщиком заказ на сегодня не принимается, поэтому
+    день отчёта выбирается явно.
+    """
     user_id = message.from_id
     role = get_user_role(user_id, MESSENGER_VK, CONFIG)
 
@@ -30,24 +36,7 @@ async def daily_report(message: Message):
         await message.answer("❌ У вас нет прав для просмотра отчетов.")
         return
 
-    today = datetime.now(CONFIG.timezone).date()
-
-    with db.get_session() as session:
-        if role in ('provider', 'admin'):
-            text, total = generate_provider_report_text(today, today, session)
-            await message.answer(text)
-
-        if role == 'admin':
-            file_path, file_name, caption = generate_admin_report_file(today, today, session, is_daily=True)
-            if file_path:
-                doc_uploader = DocMessagesUploader(message.ctx_api)
-                doc = await doc_uploader.upload(
-                    file_source=file_path,
-                    peer_id=message.peer_id,
-                )
-                await message.answer(caption, attachment=doc)
-            else:
-                await message.answer(caption)
+    await message.answer("📅 Выберите день для отчёта:", keyboard=report_date_keyboard())
 
 
 @reports_labeler.private_message(text="📅 Отчет за месяц")
@@ -63,7 +52,7 @@ async def monthly_report_menu(message: Message):
     await message.answer("Выберите период:", keyboard=month_selection_keyboard())
 
 
-REPORT_CMDS = {"month", "report"}
+REPORT_CMDS = {"month", "report", "rday"}
 
 
 @reports_labeler.raw_event(
@@ -110,6 +99,49 @@ async def on_report_callback(event: MessageEvent):
             "Выберите тип отчета:",
             keyboard=report_type_keyboard()
         )
+        return
+
+    if cmd == "rday":
+        role = get_user_role(user_id, MESSENGER_VK, CONFIG)
+        if role not in ('admin', 'provider', 'accountant'):
+            await event.show_snackbar("Нет прав")
+            return
+
+        try:
+            target = datetime.strptime(payload.get("d", ""), "%Y-%m-%d").date()
+        except ValueError:
+            await event.show_snackbar("Некорректная дата")
+            return
+
+        caption_text = date_caption(target)
+
+        with db.get_session() as session:
+            if role in ('provider', 'admin'):
+                text, total = generate_provider_report_text(
+                    target, target, session, caption_text)
+                await event.edit_message(text)
+
+            if role == 'admin':
+                file_path, file_name, caption = generate_admin_report_file(
+                    target, target, session, is_daily=True, caption=caption_text)
+                if file_path:
+                    doc_uploader = DocMessagesUploader(event.ctx_api)
+                    doc = await doc_uploader.upload(file_source=file_path, peer_id=user_id)
+                    await event.ctx_api.messages.send(
+                        peer_id=user_id, message=caption, attachment=doc, random_id=0
+                    )
+                    await event.send_empty_answer()
+                else:
+                    await event.edit_message(caption)
+            elif role == 'accountant':
+                file_path, file_name, caption = generate_accounting_report_file(
+                    target, target, session)
+                doc_uploader = DocMessagesUploader(event.ctx_api)
+                doc = await doc_uploader.upload(file_source=file_path, peer_id=user_id)
+                await event.ctx_api.messages.send(
+                    peer_id=user_id, message=caption, attachment=doc, random_id=0
+                )
+                await event.send_empty_answer()
         return
 
     if cmd == "report":

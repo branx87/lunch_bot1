@@ -134,6 +134,9 @@ async def export_daily_admin_report(
     logger.info(f"Создание дневного админ отчета, дата: {target_date}")
     if not target_date:
         target_date = datetime.now(CONFIG.timezone).date()
+    if caption is None:
+        from services.report_service import date_caption
+        caption = date_caption(target_date)
     return await export_monthly_report(
         update,
         context,
@@ -154,4 +157,7 @@ async def export_daily_orders_for_provider(
     logger.info(f"Создание дневного отчета для поставщика, дата: {target_date}")
     if not target_date:
         target_date = datetime.now(CONFIG.timezone).date()
+    if caption is None:
+        from services.report_service import date_caption
+        caption = date_caption(target_date)
     return await export_orders_for_provider(update, context, target_date, target_date, caption)

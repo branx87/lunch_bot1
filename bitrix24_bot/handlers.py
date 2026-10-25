@@ -21,11 +21,13 @@ from services.order_service import (
 )
 from services.menu_service import get_menu_for_day, format_menu_text, get_week_menus
 from services.time_service import (can_modify_order, order_deadline_message,
-                                   is_new_supplier_date, next_working_day_offset)
+                                   is_new_supplier_date, next_working_day_offset,
+                                   report_target_date, report_date_options)
 from services.report_service import (
     generate_provider_report_text,
     generate_accounting_report_file,
     generate_admin_report_file,
+    date_caption,
 )
 from services.user_service import get_user_role, MESSENGER_BITRIX24
 from time_config import TIME_CONFIG
@@ -45,6 +47,7 @@ S_DAY    = "day"
 
 STEP_IDLE        = "idle"
 STEP_PERIOD      = "select_period"
+STEP_REPORT_DATE = "select_report_date"
 STEP_RTYPE       = "select_rtype"
 STEP_MONTH_RANGE = "select_month_range"
 STEP_SELECT_DAY  = "select_day"
@@ -208,15 +211,48 @@ def _notifications_kb(enabled: bool) -> list:
     )
 
 
+def _report_dates_kb() -> list:
+    """Клавиатура выбора дня для дневного отчёта."""
+    rows = []
+    row = []
+    for d, label in report_date_options():
+        row.append(_btn(label, f"отчёт {d.isoformat()}", "#3b7abf"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([_btn("🏠 Главное меню", "главное меню", "#555")])
+    return rows
+
+
 def _main_kb(role: str) -> list:
     if role == "admin":
-        return KB_MAIN_ADMIN
+        base = KB_MAIN_ADMIN
     elif role == "accountant":
-        return KB_MAIN_ACCOUNTANT
+        base = KB_MAIN_ACCOUNTANT
     elif role == "employee":
-        return KB_MAIN_EMPLOYEE
+        base = KB_MAIN_EMPLOYEE
     else:
-        return KB_MAIN_PROVIDER
+        base = KB_MAIN_PROVIDER
+
+    if role not in ("admin", "provider"):
+        return base
+
+    # Под новым поставщиком заказ на сегодня не принимается, поэтому
+    # кнопка называет конкретный день — ближайший с обедами.
+    label = f"📋 Заказы на {report_target_date().strftime('%d.%m')}"
+
+    result = []
+    for row in base:
+        new_row = []
+        for btn in row:
+            if btn.get("ACTION_VALUE") == "заказы сегодня":
+                btn = dict(btn)
+                btn["TEXT"] = label
+            new_row.append(btn)
+        result.append(new_row)
+    return result
 
 
 # ------------------------------------------------------------------
@@ -271,14 +307,30 @@ async def handle_message(
 
     if raw == "заказы сегодня":
         _state.pop(dialog_id, None)
-        return await _do_orders_today(role)
+        return await _do_orders_for_day(role)
+
+    # ---- SELECT REPORT DATE ----
+    if step == STEP_REPORT_DATE:
+        target = None
+        if raw.startswith("отчёт "):
+            try:
+                target = datetime.strptime(
+                    raw[len("отчёт "):].strip(), "%Y-%m-%d").date()
+            except ValueError:
+                target = None
+        if target:
+            _state[dialog_id] = {
+                S_STEP: STEP_RTYPE, S_PERIOD: "day", S_DAY: target.isoformat()
+            }
+            kb = KB_RTYPE_ADMIN if role == "admin" else KB_RTYPE_LIMITED
+            return [_msg("Выберите тип отчёта:", keyboard=kb, replace=True)]
+        return [_msg("Выберите день для отчёта:", keyboard=_report_dates_kb(), replace=True)]
 
     # ---- SELECT PERIOD ----
     if step == STEP_PERIOD or raw in ("за сегодня", "за месяц"):
         if raw == "за сегодня":
-            _state[dialog_id] = {S_STEP: STEP_RTYPE, S_PERIOD: "day"}
-            kb = KB_RTYPE_ADMIN if role == "admin" else KB_RTYPE_LIMITED
-            return [_msg("Выберите тип отчёта:", keyboard=kb, replace=True)]
+            _state[dialog_id] = {S_STEP: STEP_REPORT_DATE, S_PERIOD: "day"}
+            return [_msg("Выберите день для отчёта:", keyboard=_report_dates_kb(), replace=True)]
 
         if raw == "за месяц":
             _state[dialog_id] = {S_STEP: STEP_MONTH_RANGE, S_PERIOD: "month"}
@@ -297,7 +349,14 @@ async def handle_message(
 
         if period == "day":
             _state.pop(dialog_id, None)
-            return await _do_report(rtype, "day", role)
+            target = state.get(S_DAY)
+            target_date = None
+            if target:
+                try:
+                    target_date = datetime.strptime(target, "%Y-%m-%d").date()
+                except ValueError:
+                    target_date = None
+            return await _do_report(rtype, "day", role, target_date)
 
         _state[dialog_id] = {S_STEP: STEP_MONTH_RANGE, S_PERIOD: "month", S_RTYPE: rtype}
         return [_msg("Выберите период:", keyboard=KB_MONTH_RANGE, replace=True)]
@@ -357,18 +416,28 @@ async def _sync_orders_before_report():
         logger.error(f"Ошибка фоновой синхронизации перед отчётом B24: {e}")
 
 
-async def _do_orders_today(role: str) -> list[dict]:
-    today = datetime.now(CONFIG.timezone).date()
+async def _do_orders_for_day(role: str, target_date=None) -> list[dict]:
+    """Список заказов за ближайший день с обедами.
+
+    Под новым поставщиком заказ на сегодня не принимается, поэтому
+    «заказы сегодня» — это ближайший рабочий день с обедами.
+    """
+    if target_date is None:
+        target_date = report_target_date()
+    caption_text = date_caption(target_date)
 
     # Синхронизация статусов с Bitrix перед формированием отчёта
     await _sync_orders_before_report()
 
-    text, _ = await _run_sync(generate_provider_report_text, today, today)
+    text, _ = await _run_sync(
+        generate_provider_report_text, target_date, target_date, caption_text
+    )
     messages = [_msg(text)]
 
     if role == "admin":
         file_path, file_name, caption = await _run_sync(
-            generate_admin_report_file, today, today, is_daily=True
+            generate_admin_report_file, target_date, target_date,
+            is_daily=True, caption=caption_text
         )
         if file_path:
             messages.append(_msg(caption, file_path=file_path, file_name=file_name))
@@ -379,7 +448,7 @@ async def _do_orders_today(role: str) -> list[dict]:
     return messages
 
 
-async def _do_report(rtype: str, period: str, role: str) -> list[dict]:
+async def _do_report(rtype: str, period: str, role: str, target_date=None) -> list[dict]:
     now   = datetime.now(CONFIG.timezone)
     today = now.date()
 
@@ -387,7 +456,9 @@ async def _do_report(rtype: str, period: str, role: str) -> list[dict]:
     await _sync_orders_before_report()
 
     if period == "day":
-        start_date = end_date = today
+        if target_date is None:
+            target_date = report_target_date()
+        start_date = end_date = target_date
     elif period == "month_current":
         start_date = today.replace(day=1)
         end_date   = today
@@ -401,15 +472,18 @@ async def _do_report(rtype: str, period: str, role: str) -> list[dict]:
         rtype = "accounting"
 
     messages = []
+    caption_text = date_caption(start_date) if period == "day" else None
 
     if rtype in ("admin", "provider"):
-        text, _ = await _run_sync(generate_provider_report_text, start_date, end_date)
+        text, _ = await _run_sync(
+            generate_provider_report_text, start_date, end_date, caption_text
+        )
         messages.append(_msg(text))
 
     if rtype == "admin":
         file_path, file_name, caption = await _run_sync(
             generate_admin_report_file, start_date, end_date,
-            is_daily=(period == "day")
+            is_daily=(period == "day"), caption=caption_text
         )
         if file_path:
             messages.append(_msg(caption, file_path=file_path, file_name=file_name))
@@ -437,7 +511,7 @@ async def _do_report(rtype: str, period: str, role: str) -> list[dict]:
 def _help_text(role: str) -> str:
     lines = ["[B]Бот ЕРС Обеды[/B]\n"]
     if role in ("admin", "provider"):
-        lines.append("📋 [B]заказы сегодня[/B] — список заказов на сегодня по локациям")
+        lines.append("📋 [B]заказы сегодня[/B] — список заказов на ближайший день с обедами")
     if role in ("admin", "provider", "accountant"):
         lines.append("📊 [B]отчёты[/B] — формирование отчётов")
     if role in ("admin", "employee"):

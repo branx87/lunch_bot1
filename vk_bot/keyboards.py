@@ -80,6 +80,17 @@ def month_selection_keyboard():
     return kb.get_json()
 
 
+def report_date_keyboard():
+    """Выбор дня для дневного отчёта (inline)."""
+    from services.time_service import report_date_options
+
+    kb = Keyboard(inline=True)
+    for d, label in report_date_options():
+        kb.add(Callback(label, payload={"cmd": "rday", "d": d.isoformat()}))
+        kb.row()
+    return kb.get_json()
+
+
 def report_type_keyboard():
     """Report type selection inline keyboard."""
     kb = Keyboard(inline=True)

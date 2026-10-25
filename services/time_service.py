@@ -250,6 +250,123 @@ def can_modify_order(target_date, orders_enabled=True, holidays=None):
     return now < deadline
 
 
+def report_target_date(reference_date=None, holidays=None) -> date:
+    """День по умолчанию для дневного отчёта по запросу.
+
+    Под новым поставщиком заказ на сегодня не принимается, поэтому отчёт
+    «за сегодня» обычно пустой. По умолчанию берём ближайший рабочий день
+    с обедами: сегодня, если сегодня рабочий день, иначе следующий рабочий.
+    """
+    now = datetime.now(TIME_CONFIG.TIMEZONE)
+    base = _as_date(reference_date) if reference_date is not None else now.date()
+    holidays = _resolve_holidays(holidays)
+
+    if is_working_day(base, holidays):
+        return base
+    return next_working_day(base, holidays)
+
+
+def report_date_options(days=5, holidays=None, today=None) -> list:
+    """Варианты дня для дневного отчёта: [(дата, подпись), ...].
+
+    Подпись: «Сегодня 25.10» для сегодняшнего дня, иначе «Понедельник 26.10».
+    """
+    from services.menu_service import DAYS_RU
+
+    now = datetime.now(TIME_CONFIG.TIMEZONE)
+    base = _as_date(today) if today is not None else now.date()
+    holidays = _resolve_holidays(holidays)
+
+    options = []
+    candidate = report_target_date(base, holidays)
+    for _ in range(days):
+        if candidate > base:
+            label = f"{DAYS_RU[candidate.weekday()]} {candidate.strftime('%d.%m')}"
+        else:
+            label = f"Сегодня {candidate.strftime('%d.%m')}"
+        options.append((candidate, label))
+        candidate = next_working_day(candidate, holidays)
+    return options
+
+
+def report_target_date(reference_date=None, holidays=None) -> date:
+    """День по умолчанию для дневного отчёта по запросу.
+
+    Под новым поставщиком заказ на сегодня не принимается, поэтому отчёт
+    «за сегодня» обычно пустой. По умолчанию берём ближайший рабочий день
+    с обедами: сегодня, если сегодня рабочий день, иначе следующий рабочий.
+    """
+    now = datetime.now(TIME_CONFIG.TIMEZONE)
+    base = _as_date(reference_date) if reference_date is not None else now.date()
+    holidays = _resolve_holidays(holidays)
+
+    if is_working_day(base, holidays):
+        return base
+    return next_working_day(base, holidays)
+
+
+def report_date_options(days=5, holidays=None, today=None) -> list:
+    """Варианты дня для дневного отчёта: [(дата, подпись), ...].
+
+    Подпись: «Сегодня 25.10» для сегодняшнего дня, иначе «Понедельник 26.10».
+    """
+    from services.menu_service import DAYS_RU
+
+    now = datetime.now(TIME_CONFIG.TIMEZONE)
+    base = _as_date(today) if today is not None else now.date()
+    holidays = _resolve_holidays(holidays)
+
+    options = []
+    candidate = report_target_date(base, holidays)
+    for _ in range(days):
+        if candidate > base:
+            label = f"{DAYS_RU[candidate.weekday()]} {candidate.strftime('%d.%m')}"
+        else:
+            label = f"Сегодня {candidate.strftime('%d.%m')}"
+        options.append((candidate, label))
+        candidate = next_working_day(candidate, holidays)
+    return options
+
+
+def report_target_date(reference_date=None, holidays=None) -> date:
+    """День по умолчанию для дневного отчёта по запросу.
+
+    Под новым поставщиком заказ на сегодня не принимается, поэтому отчёт
+    «за сегодня» обычно пустой. По умолчанию берём ближайший рабочий день
+    с обедами: сегодня, если сегодня рабочий день, иначе следующий рабочий.
+    """
+    now = datetime.now(TIME_CONFIG.TIMEZONE)
+    base = _as_date(reference_date) if reference_date is not None else now.date()
+    holidays = _resolve_holidays(holidays)
+
+    if is_working_day(base, holidays):
+        return base
+    return next_working_day(base, holidays)
+
+
+def report_date_options(days=5, holidays=None, today=None) -> list:
+    """Варианты дня для дневного отчёта: [(дата, подпись), ...].
+
+    Подпись: «Сегодня 25.10» для сегодняшнего дня, иначе «Понедельник 26.10».
+    """
+    from services.menu_service import DAYS_RU
+
+    now = datetime.now(TIME_CONFIG.TIMEZONE)
+    base = _as_date(today) if today is not None else now.date()
+    holidays = _resolve_holidays(holidays)
+
+    options = []
+    candidate = report_target_date(base, holidays)
+    for _ in range(days):
+        if candidate > base:
+            label = f"{DAYS_RU[candidate.weekday()]} {candidate.strftime('%d.%m')}"
+        else:
+            label = f"Сегодня {candidate.strftime('%d.%m')}"
+        options.append((candidate, label))
+        candidate = next_working_day(candidate, holidays)
+    return options
+
+
 def next_orderable_date(today=None, holidays=None, now=None) -> date:
     """Ближайший рабочий день, заказ на который ещё можно оформить.
 
@@ -304,7 +421,7 @@ def order_deadline_message(target_date, holidays=None, action='order', now=None)
         )
         # Если дедлайн не сегодня — указываем и дату, иначе «до 15:00» неоднозначно
         if nxt_deadline and nxt_deadline.date() != now.date():
-            deadline_part = nxt_deadline.strftime('%d.%m %H:%M')
+            deadline_part = nxt_deadline.strftime('%d.%m в %H:%M')
         else:
             deadline_part = deadline_text
 
@@ -316,5 +433,5 @@ def order_deadline_message(target_date, holidays=None, action='order', now=None)
 
     return (
         f"⏳ {title} на {d.strftime('%d.%m')} завершён "
-        f"в {deadline.strftime('%d.%m %H:%M')}."
+        f"{deadline.strftime('%d.%m')} в {deadline.strftime('%H:%M')}."
     )
