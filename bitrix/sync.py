@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 import asyncio
 import inspect
 import logging
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.ext import ContextTypes
 import os
@@ -20,7 +20,7 @@ import urllib3
 import aiohttp
 import warnings
 from time_config import TIME_CONFIG
-from services.time_service import order_dates_for_push, is_new_supplier_date, meal_date_for_placement
+from services.time_service import meal_date_for_placement
 
 # Отключаем SSL предупреждения для requests
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -34,6 +34,18 @@ ssl_context.verify_mode = ssl.CERT_NONE
 
 logger = logging.getLogger(__name__)
 logging.getLogger('bitrix.sync').setLevel(logging.INFO)  # или DEBUG для детальных логов
+
+
+def _parse_date(value):
+    """'YYYY-MM-DD' -> date. None, если значение не разобрано."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return datetime.strptime(str(value).strip(), '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        return None
 logging.getLogger('fast_bitrix24').setLevel(logging.WARNING)
 
 class BitrixSync:
@@ -155,36 +167,65 @@ class BitrixSync:
         # Получаем рабочие дни в формате cron
         work_days_cron = self._get_cron_days(TIME_CONFIG.WORK_DAYS)
 
-        # Крайний срок заказа — по режиму поставщика на сегодня.
-        # Старый поставщик: 09:30 в день заказа.
-        # Новый поставщик: 15:00 предыдущего рабочего дня.
-        now = datetime.now(TIME_CONFIG.TIMEZONE)
-        if is_new_supplier_date(now.date()):
-            deadline_clock = TIME_CONFIG.ADVANCE_ORDER_DEADLINE
-        else:
-            deadline_clock = TIME_CONFIG.ORDER_DEADLINE
+        # Выгрузка заказов в Bitrix24 для учёта — в день обеда (как раньше).
+        # Не путать с окном приёма заказов: под новым поставщиком заказ
+        # на следующий рабочий день принимается до 15:00 предыдущего дня.
+        push_clock = TIME_CONFIG.BITRIX_PUSH_TIME
+        push_hour, push_minute = self._shift_clock(push_clock, -9)
+        final_hour, final_minute = self._shift_clock(push_clock, -1)
 
-        push_hour, push_minute = self._shift_clock(deadline_clock, -9)
-        final_hour, final_minute = self._shift_clock(deadline_clock, -1)
+        # Окно приёма заказов закрывается в 15:00 — это НЕ время выгрузки в Bitrix.
+        deadline_clock = TIME_CONFIG.ADVANCE_ORDER_DEADLINE
 
         logger.info(
-            "Расписание выгрузки в Bitrix: %02d:%02d и %02d:%02d:%02d, закрытие %02d:%02d",
+            "Расписание выгрузки в Bitrix: %02d:%02d и %02d:%02d:%02d, "
+            "выгрузка закрывается %02d:%02d",
             push_hour, push_minute, final_hour, final_minute, 50,
+            push_clock.hour, push_clock.minute
+        )
+        logger.info(
+            "Закрытие окна приёма заказов: %02d:%02d (новый поставщик)",
             deadline_clock.hour, deadline_clock.minute
         )
 
-        # Синхронизация из Bitrix каждые 5 минут (в рабочее время).
-        # Окно 72 часа — иначе заказы, оформленные в пятницу после обеда,
-        # не попадали бы в выборку в понедельник (окно 24ч начиналось с воскресенья).
-        # Часы до 16: заказ на следующий рабочий день принимается до 15:00,
-        # и заказы из формы, оформленные днём, должны попасть в отчёт.
-        self.scheduler.add_job(
-            self.sync_recent_orders,
-            'cron',
-            minute='*/5',
-            hour='6-16',
-            day_of_week=work_days_cron,
-            kwargs={'hours': 72}
+        # Синхронизация заказов из Bitrix24.
+        #
+        # Что из старой схемы осталось живого:
+        #   • импорт заказов из формы отключён (флаг accept_bitrix_form_orders);
+        #   • свои заказы бот привязывает к Bitrix ID сразу при выгрузке
+        #     (_push_to_bitrix пишет bitrix_order_id и is_sent_to_bitrix);
+        #   • остаётся подхватывать ручные правки в Bitrix24 — отмена
+        #     или изменение количества, сделанные не из бота.
+        # Поэтому вместо синхронизации каждые 5 минут — раз в час.
+        if TIME_CONFIG.BITRIX_SYNC_ENABLED:
+            self.scheduler.add_job(
+                self.sync_recent_orders,
+                'cron',
+                minute=TIME_CONFIG.BITRIX_SYNC_CRON_MINUTE,
+                hour=TIME_CONFIG.BITRIX_SYNC_CRON_HOURS,
+                day_of_week=work_days_cron,
+                kwargs={'hours': 72}
+            )
+            logger.info(
+                "Синхронизация заказов из Bitrix24: раз в час в %s",
+                TIME_CONFIG.BITRIX_SYNC_CRON_HOURS
+            )
+
+        # Сверка перед отчётами: отчёт «на сегодня» (9:31) и «на завтра» (15:05)
+        # должны строиться по свежим данным из Bitrix24.
+        for sync_hour, sync_minute in TIME_CONFIG.BITRIX_SYNC_BEFORE_REPORTS:
+            self.scheduler.add_job(
+                self.sync_recent_orders,
+                'cron',
+                minute=sync_minute,
+                hour=sync_hour,
+                day_of_week=work_days_cron,
+                second=0,
+                kwargs={'hours': 72}
+            )
+        logger.info(
+            "Сверка заказов с Bitrix24 перед отчётами: %s",
+            ', '.join('%02d:%02d' % hm for hm in TIME_CONFIG.BITRIX_SYNC_BEFORE_REPORTS)
         )
         
         # Отправка накопленных заказов
@@ -217,9 +258,9 @@ class BitrixSync:
             second=0
         )
 
-        # Дозагрузка заказов, чей срок прошёл, пока бот был выключен
+        # Дозагрузка заказов на сегодня, если бот поднялся позже времени выгрузки
         self.scheduler.add_job(
-            self._push_overdue_orders,
+            self._push_today_orders_on_start,
             'date',
             run_date=datetime.now(TIME_CONFIG.TIMEZONE) + timedelta(seconds=90)
         )
@@ -768,6 +809,14 @@ class BitrixSync:
                 stats['skipped'] += 1
                 return
             else:
+                # Заказ из формы Bitrix24. Форма отключена — такие заказы игнорируем.
+                if self._is_form_order(order) and not CONFIG.accept_bitrix_form_orders:
+                    logger.info(
+                        f"⛔ Заказ из формы Bitrix24 {bitrix_id} пропущен: "
+                        f"приём заказов через форму выключен"
+                    )
+                    stats['skipped'] += 1
+                    return
                 success = self._add_local_order(user_id, order)
                 if success:
                     stats['added'] += 1
@@ -980,6 +1029,12 @@ class BitrixSync:
             logger.error(f"❌ Ошибка обновления заказа {order_id}: {e}")
             return False
 
+    @staticmethod
+    def _is_form_order(order: Dict) -> bool:
+        """Заказ оформлен через форму Bitrix24 (не нашим ботом)."""
+        source_desc = order.get('sourceDescription', '') or ''
+        return not source_desc.startswith('order_id:')
+
     def _add_local_order(self, user_id: int, order: Dict) -> bool:
         """Добавляет новый заказ - РАЗРЕШАЕМ НЕСКОЛЬКО ЗАКАЗОВ В ДЕНЬ"""
         try:
@@ -987,18 +1042,28 @@ class BitrixSync:
             source_desc = order.get('sourceDescription', '') or ''
             is_bot_push = source_desc.startswith('order_id:')
 
+            # Форма Bitrix24 отключена — заказы из неё не создаём.
+            if not is_bot_push and not CONFIG.accept_bitrix_form_orders:
+                logger.info(
+                    f"⛔ Заказ из формы Bitrix24 {bitrix_id} не создан: "
+                    f"приём заказов через форму выключен"
+                )
+                return False
+
+            raw_date = order.get('date') or datetime.now().strftime('%Y-%m-%d')
+
             if is_bot_push:
                 # Наш собственный заказ: в Bitrix уже стоит дата обеда
                 # (createdTime = target_date), сдвигать её нельзя.
-                target_date = str(order.get('date', datetime.now().strftime('%Y-%m-%d')))
+                target_date = _parse_date(raw_date) or datetime.now().date()
             else:
                 # Заказ из формы Bitrix: поля даты нет, в Bitrix записана дата
                 # оформления. Дата обеда — ближайший рабочий день, чьё окно
                 # заказов на момент оформления ещё было открыто
                 # (у нового поставщика заказ в пятницу до 15:00 — это понедельник).
-                meal_date = meal_date_for_placement(order.get('created_time') or order.get('date'))
-                target_date = str(meal_date or order.get('date', datetime.now().strftime('%Y-%m-%d')))
-                if str(meal_date) != str(order.get('date')):
+                meal_date = meal_date_for_placement(order.get('created_time') or raw_date)
+                target_date = meal_date or _parse_date(raw_date) or datetime.now().date()
+                if meal_date and str(meal_date) != str(raw_date):
                     logger.info(
                         f"📅 Заказ из формы Bitrix: оформлен {order.get('created_time')}, "
                         f"дата обеда {target_date}"
@@ -1481,46 +1546,59 @@ class BitrixSync:
         logger.debug(f"Нормализация имени: '{name}' -> '{normalized}'")
         return normalized
     
-    async def _push_overdue_orders(self):
-        """Дозагрузка заказов, чей срок уже прошёл.
+    async def _push_today_orders_on_start(self):
+        """Дозагрузка заказов на сегодня, если бот поднялся позже 9:30.
 
-        Нужна, если бот был выключен в момент дедлайна — иначе эти заказы
-        никогда не уйдут поставщику.
+        Выгрузка в Bitrix идёт в день обеда в 9:21 и 9:29:50. Если в это
+        время бот был выключен, заказы на сегодня уйдут сразу после старта.
         """
         try:
-            logger.info("Дозагрузка заказов с прошедшим сроком в Bitrix")
-            await self._push_to_bitrix(only_overdue=True)
+            now = datetime.now(TIME_CONFIG.TIMEZONE)
+            if now.time() < TIME_CONFIG.BITRIX_PUSH_TIME:
+                logger.info(
+                    "⏭ Дозагрузка в Bitrix не нужна: время выгрузки ещё не наступило"
+                )
+                return
+            logger.info(
+                "🔁 Дозагрузка заказов на сегодня в Bitrix "
+                "(бот поднялся после %s)",
+                TIME_CONFIG.BITRIX_PUSH_TIME.strftime('%H:%M')
+            )
+            await self._push_to_bitrix()
         except Exception as e:
-            logger.error(f"Ошибка дозагрузки просроченных заказов в Bitrix: {e}")
+            logger.error(f"Ошибка дозагрузки заказов в Bitrix: {e}")
 
-    async def _push_to_bitrix(self, only_overdue: bool = False) -> bool:
+    @staticmethod
+    def _select_orders_to_push(target_date) -> list:
+        """Заказы, которые уходят в Bitrix24 при выгрузке.
+
+        Выгрузка идёт в день обеда — берём заказы на этот день.
+        Отправленные, отменённые и заведённые через форму заказы не берём.
+        """
+        with db.get_session() as session:
+            orders_ids = session.query(Order.id).filter(
+                Order.is_sent_to_bitrix == False,
+                Order.is_cancelled == False,
+                Order.target_date == target_date,
+                Order.bitrix_order_id == None,
+                Order.is_from_bitrix == False
+            ).all()
+            return [order_id[0] for order_id in orders_ids]
+
+    async def _push_to_bitrix(self) -> bool:
         """Отправка заказов в Bitrix с правильным управлением сессиями"""
         if self._push_lock.locked():
             logger.warning("⏳ _push_to_bitrix уже выполняется, пропускаем")
             return True
         async with self._push_lock:
             try:
-                today = datetime.now(TIME_CONFIG.TIMEZONE).date().isoformat()
-
-                # Какие даты уходят поставщику сейчас:
-                # у нового поставщика — те, чей срок истекает сегодня (заказ
-                # на следующий рабочий день), плюс «просроченные», если бот
-                # был выключен в момент дедлайна.
-                push_dates = order_dates_for_push(only_overdue=only_overdue)
-                logger.info(f"Даты выгрузки в Bitrix: {[str(d) for d in push_dates]}")
+                # Выгрузка в Bitrix идёт в день обеда: забираем заказы на сегодня.
+                today_date = datetime.now(TIME_CONFIG.TIMEZONE).date()
+                today = today_date.isoformat()
+                logger.info(f"Дата выгрузки в Bitrix: {today}")
 
                 # 🔥 ШАГ 1: Получаем ID заказов (не объекты!)
-                with db.get_session() as session:
-                    orders_ids = session.query(Order.id).filter(
-                        Order.is_sent_to_bitrix == False,
-                        Order.is_cancelled == False,
-                        Order.target_date.in_(push_dates),
-                        Order.bitrix_order_id == None,
-                        Order.is_from_bitrix == False
-                    ).all()
-                    
-                    # Извлекаем только ID
-                    order_ids_list = [order_id[0] for order_id in orders_ids]
+                order_ids_list = self._select_orders_to_push(today_date)
 
                 if not order_ids_list:
                     logger.info("📦 Нет заказов для отправки в Bitrix24")

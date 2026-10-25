@@ -250,50 +250,38 @@ def can_modify_order(target_date, orders_enabled=True, holidays=None):
     return now < deadline
 
 
-def order_dates_for_push(today=None, holidays=None, overdue_days=10, only_overdue=False):
+def next_orderable_date(today=None, holidays=None, now=None) -> date:
+    """Ближайший рабочий день, заказ на который ещё можно оформить.
+
+    Важно: окно заказа на «просто следующий рабочий день» может быть уже
+    закрыто — в воскресенье заказ на понедельник закрылся в пятницу в 15:00,
+    а в понедельник после 15:00 закрывается заказ на вторник. Поэтому ищем
+    первый рабочий день, чьё окно ещё открыто.
     """
-    Даты, заказы по которым уходят в Bitrix.
-
-    Основное правило: дедлайн по этим датам приходится на сегодня —
-    это финальный срез перед передачей поставщику.
-    Дополнительно берутся даты с уже прошедшим дедлайном, но ещё не наступившим
-    днём (бот был выключен в момент дедлайна) — чтобы ничего не потерять.
-    Уже отправленные заказы отсекаются выборкой по is_sent_to_bitrix.
-
-    only_overdue=True — только заказы с уже прошедшим сроком (дозагрузка при старте).
-    """
-    now = datetime.now(TIME_CONFIG.TIMEZONE)
-    if today is None:
-        base = now.date()
-    else:
-        base = _as_date(today)
-
+    if now is None:
+        now = datetime.now(TIME_CONFIG.TIMEZONE)
+    base = _as_date(today) if today is not None else now.date()
     holidays = _resolve_holidays(holidays)
-    result = []
-    d = base - timedelta(days=overdue_days)
 
-    while d <= base + timedelta(days=7):
-        deadline = order_deadline_for(d, holidays)
-        if deadline is not None:
-            deadline_day = deadline.date()
-            if only_overdue:
-                if deadline < now and d >= base:
-                    result.append(d)
-            elif deadline_day == base:
-                result.append(d)
-            elif deadline_day < base and d >= base:
-                result.append(d)
-        d += timedelta(days=1)
+    candidate = base
+    for _ in range(14):
+        if is_working_day(candidate, holidays):
+            deadline = order_deadline_for(candidate, holidays)
+            if deadline is not None and deadline > now:
+                return candidate
+        candidate = next_working_day(candidate, holidays)
 
-    return result
+    return base
 
 
-def order_deadline_message(target_date, holidays=None, action='order') -> str:
+def order_deadline_message(target_date, holidays=None, action='order', now=None) -> str:
     """Человекочитаемое объяснение, почему заказ на дату недоступен.
 
     action: 'order' | 'modify' | 'cancel'
+    now — текущий момент (по умолчанию системное время), параметр для тестов.
     """
-    now = datetime.now(TIME_CONFIG.TIMEZONE)
+    if now is None:
+        now = datetime.now(TIME_CONFIG.TIMEZONE)
     d = _as_date(target_date)
     deadline = order_deadline_for(d, holidays)
 
@@ -308,11 +296,22 @@ def order_deadline_message(target_date, holidays=None, action='order') -> str:
         title = "Приём заказов"
 
     if d == now.date():
-        nxt = next_working_day(now.date(), holidays)
+        nxt = next_orderable_date(now.date(), holidays, now=now)
+        nxt_deadline = order_deadline_for(nxt, holidays)
+        deadline_text = (
+            nxt_deadline.strftime('%H:%M') if nxt_deadline
+            else TIME_CONFIG.ADVANCE_ORDER_DEADLINE.strftime('%H:%M')
+        )
+        # Если дедлайн не сегодня — указываем и дату, иначе «до 15:00» неоднозначно
+        if nxt_deadline and nxt_deadline.date() != now.date():
+            deadline_part = nxt_deadline.strftime('%d.%m %H:%M')
+        else:
+            deadline_part = deadline_text
+
         return (
             f"⏳ Заказы на сегодня не принимаются. "
             f"Оформить заказ можно на {nxt.strftime('%d.%m')} "
-            f"до {TIME_CONFIG.ADVANCE_ORDER_DEADLINE.strftime('%H:%M')}."
+            f"до {deadline_part}."
         )
 
     return (

@@ -33,7 +33,8 @@ async def export_orders_for_provider(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     start_date: Optional[date] = None,
-    end_date: Optional[date] = None
+    end_date: Optional[date] = None,
+    caption: Optional[str] = None
 ):
     """
     Формирует текстовый отчёт для поставщиков.
@@ -43,7 +44,7 @@ async def export_orders_for_provider(
     try:
         with db.get_session() as session:
             from services.report_service import generate_provider_report_text
-            message, _ = generate_provider_report_text(start_date, end_date, session)
+            message, _ = generate_provider_report_text(start_date, end_date, session, caption)
 
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
@@ -91,7 +92,8 @@ async def export_monthly_report(
     context: ContextTypes.DEFAULT_TYPE,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    is_daily: bool = False
+    is_daily: bool = False,
+    caption: Optional[str] = None
 ):
     """Генерация административного отчёта с возможностью указания дат"""
     try:
@@ -101,13 +103,17 @@ async def export_monthly_report(
 
         with db.get_session() as session:
             from services.report_service import generate_admin_report_file
-            file_path, file_name, caption = generate_admin_report_file(start_date, end_date, session, is_daily)
+            file_path, file_name, caption_text = generate_admin_report_file(
+                start_date, end_date, session, is_daily, caption
+            )
 
         if file_path is None:
-            await update.message.reply_text(caption)
+            await update.message.reply_text(caption_text)
             return
 
-        await _send_document_with_retry(context.bot, update.effective_chat.id, file_path, caption, file_name)
+        await _send_document_with_retry(
+            context.bot, update.effective_chat.id, file_path, caption_text, file_name
+        )
 
     except Forbidden:
         raise
@@ -119,26 +125,33 @@ async def export_monthly_report(
             pass
         
 async def export_daily_admin_report(
-    update: Update, 
-    context: ContextTypes.DEFAULT_TYPE, 
-    target_date: Optional[date] = None
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    target_date: Optional[date] = None,
+    caption: Optional[str] = None
 ):
     """Формирует дневной административный отчет"""
     logger.info(f"Создание дневного админ отчета, дата: {target_date}")
     if not target_date:
         target_date = datetime.now(CONFIG.timezone).date()
     return await export_monthly_report(
-        update, 
-        context, 
-        target_date, 
+        update,
+        context,
         target_date,
-        is_daily=True  # Передаём флаг, что это дневной отчёт
+        target_date,
+        is_daily=True,  # Передаём флаг, что это дневной отчёт
+        caption=caption
     )
         
     
-async def export_daily_orders_for_provider(update: Update, context: ContextTypes.DEFAULT_TYPE, target_date: Optional[date] = None):
+async def export_daily_orders_for_provider(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    target_date: Optional[date] = None,
+    caption: Optional[str] = None
+):
     """Формирует дневной отчет для поставщиков"""
     logger.info(f"Создание дневного отчета для поставщика, дата: {target_date}")
     if not target_date:
         target_date = datetime.now(CONFIG.timezone).date()
-    return await export_orders_for_provider(update, context, target_date, target_date)
+    return await export_orders_for_provider(update, context, target_date, target_date, caption)

@@ -178,13 +178,10 @@ def setup_handlers(application):
         
         await update.message.reply_text("🔒 Запускаю проверку безопасности отправки...")
         
-        # Время выгрузки в Bitrix — по режиму поставщика
+        # Выгрузка в Bitrix идёт в день обеда (9:21 и 9:29:50, окно до 9:30).
+        # Это не окно приёма заказов — оно закрывается в 15:00 накануне.
         from time_config import TIME_CONFIG
-        from services.time_service import is_new_supplier_date
-        if is_new_supplier_date(datetime.now(CONFIG.timezone).date()):
-            push_time = TIME_CONFIG.ADVANCE_ORDER_DEADLINE.strftime('%H:%M')
-        else:
-            push_time = TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')
+        push_time = TIME_CONFIG.BITRIX_PUSH_TIME.strftime('%H:%M')
         
         try:
             checker = BitrixChecker()
@@ -237,7 +234,8 @@ def setup_handlers(application):
             f"💰 Бухгалтеры: {CONFIG.accounting_ids}\n"
             f"🔑 Ваш ID: {user.id}\n"
             f"✅ Вы админ: {user.id in CONFIG.admin_ids}\n"
-            f"🔄 Заказы включены: {CONFIG.orders_enabled}\n\n"
+            f"🔄 Заказы включены: {CONFIG.orders_enabled}\n"
+            f"📝 Заказы через форму Bitrix24: {CONFIG.accept_bitrix_form_orders}\n\n"
             f"⏰ НАСТРОЙКИ ВРЕМЕНИ:\n"
             f"🕘 Прием заказов до: {deadline_text} ({deadline_note})\n"
             f"✏️ Изменение/отмена до: {deadline_text}\n"
@@ -248,7 +246,9 @@ def setup_handlers(application):
             f"⏰ Часовой пояс: {TIME_CONFIG.TIMEZONE}\n\n"
             f"🔔 CRON ЗАДАЧИ:\n"
             f"⏰ Напоминания: {TIME_CONFIG.MORNING_REMINDER_TIME.strftime('%H:%M')}\n"
-            f"📊 Отчеты: {TIME_CONFIG.DAILY_REPORTS_TIME.strftime('%H:%M')}\n"
+            f"📊 Отчёт на сегодня: {TIME_CONFIG.TODAY_REPORTS_TIME.strftime('%H:%M')}\n"
+            f"📊 Отчёт на завтра: {TIME_CONFIG.TOMORROW_REPORTS_TIME.strftime('%H:%M')}\n"
+            f"📤 Выгрузка в Bitrix24: {TIME_CONFIG.BITRIX_PUSH_TIME.strftime('%H:%M')} (день обеда)\n"
             f"💰 Бух. отчет: {TIME_CONFIG.ACCOUNTING_REPORT_TIME.strftime('%H:%M')}\n"
             f"🔄 Синхр. сотр.: {TIME_CONFIG.SYNC_EMPLOYEES_TIME.strftime('%H:%M')}"
         )

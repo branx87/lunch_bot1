@@ -9,7 +9,7 @@ from config import CONFIG
 from time_config import TIME_CONFIG
 from services.menu_service import get_menu_for_day, format_menu_text, get_week_menus
 from services.order_service import get_order_for_date
-from services.time_service import can_modify_order
+from services.time_service import can_modify_order, order_deadline_message
 from services.user_service import get_user_db_id, MESSENGER_VK
 from vk_bot.keyboards import order_buttons
 
@@ -43,6 +43,8 @@ async def show_today_menu(message: Message):
 
         if not orders_on:
             text += f"\n\n{CONFIG.get_orders_status_message()}"
+        elif not can_mod:
+            text += f"\n\n{order_deadline_message(target_date)}"
         if has_order:
             text += f"\n\n🛒 Ваш заказ: {order.quantity} порций"
 
@@ -86,6 +88,8 @@ async def show_week_menu(message: Message):
 
             if not orders_on:
                 text += f"\n\n{CONFIG.get_orders_status_message()}"
+            elif not can_mod:
+                text += f"\n\n{order_deadline_message(day_info['target_date'])}"
             if has_order:
                 text += f"\n\n🛒 Ваш заказ: {order.quantity} порций"
 

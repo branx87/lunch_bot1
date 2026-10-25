@@ -24,10 +24,34 @@ MONTH_NAMES = {
 }
 
 
-def generate_provider_report_text(start_date, end_date, session):
+def date_caption(target_date, today=None) -> str:
+    """Подпись отчёта: «сегодня» или название дня недели.
+
+    В пятницу «завтра» — это суббота, а заказывать надо на понедельник,
+    поэтому подписью всегда называем конкретный день недели.
+    """
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+    if today is None:
+        today = datetime.now(CONFIG.timezone).date()
+    elif isinstance(today, datetime):
+        today = today.date()
+
+    if not isinstance(target_date, date):
+        return "сегодня"
+    if target_date == today:
+        return "сегодня"
+
+    from services.menu_service import DAYS_RU
+    return DAYS_RU[target_date.weekday()].lower()
+
+
+def generate_provider_report_text(start_date, end_date, session, caption: Optional[str] = None):
     """
     Generate provider text report (location-based order summary).
     Returns (report_text, total_portions).
+
+    caption — подпись отчёта: «сегодня», «понедельник» и т.п.
     """
     if not start_date or not end_date:
         today = datetime.now(CONFIG.timezone).date()
@@ -59,8 +83,9 @@ def generate_provider_report_text(start_date, end_date, session):
         else f"{start_date.strftime('%d.%m.%Y')} — {end_date.strftime('%d.%m.%Y')}"
     )
 
+    title = f"Заказы на {caption}" if caption else "Заказы"
     lines = [
-        f"📋 *Заказы на* | {period_text}",
+        f"📋 *{title}* | {period_text}",
         f"━━━━━━━━━━━━━━━━━━",
         f"📌 Всего: *{total_portions}* порций\n",
         f"• 🏢 Офис: *{office_portions}*",
@@ -230,10 +255,12 @@ def generate_accounting_report_file(start_date, end_date, session):
     return file_path, file_name, caption
 
 
-def generate_admin_report_file(start_date, end_date, session, is_daily=False):
+def generate_admin_report_file(start_date, end_date, session, is_daily=False, caption: Optional[str] = None):
     """
     Generate admin Excel report (orders by location).
     Returns (file_path, file_name, caption) or (None, None, no_data_message).
+
+    caption — подпись отчёта: «сегодня», «понедельник» и т.п.
     """
     now = datetime.now(CONFIG.timezone)
 
@@ -360,11 +387,19 @@ def generate_admin_report_file(start_date, end_date, session, is_daily=False):
     wb.save(file_path)
 
     if is_daily:
-        caption = f"📅 Админ отчет за {start_date.strftime('%d.%m.%Y')}\n🍽 Всего порций: {total}"
+        cap = caption or date_caption(start_date)
+        caption_text = (
+            f"📅 Админ отчёт: заказы на {cap} ({start_date.strftime('%d.%m.%Y')})\n"
+            f"🍽 Всего порций: {total}"
+        )
     else:
-        caption = f"📅 Админ отчет за период {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}\n🍽 Всего порций: {total}"
+        caption_text = (
+            f"📅 Админ отчет за период {start_date.strftime('%d.%m.%Y')} - "
+            f"{end_date.strftime('%d.%m.%Y')}\n"
+            f"🍽 Всего порций: {total}"
+        )
 
-    return file_path, file_name, caption
+    return file_path, file_name, caption_text
 
 
 # --- Helpers ---

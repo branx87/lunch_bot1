@@ -87,7 +87,10 @@ class CronManager:
         # Логируем информацию о настроенных задачах
         logger.info("Созданные расписания:")
         logger.info(f"  Напоминания: {TIME_CONFIG.MORNING_REMINDER_TIME.strftime('%H:%M')} (Пн-Пт)")
-        logger.info(f"  Отчеты: {TIME_CONFIG.DAILY_REPORTS_TIME.strftime('%H:%M')} (Пн-Пт)")
+        logger.info(
+            f"  Отчеты: {TIME_CONFIG.TODAY_REPORTS_TIME.strftime('%H:%M')} (на сегодня) "
+            f"и {TIME_CONFIG.TOMORROW_REPORTS_TIME.strftime('%H:%M')} (на завтра) (Пн-Пт)"
+        )
         logger.info(f"  Бух.отчет: {TIME_CONFIG.ACCOUNTING_REPORT_TIME.strftime('%H:%M')} (28-31 числа)")
         logger.info(f"  Синхронизация: {TIME_CONFIG.SYNC_EMPLOYEES_TIME.strftime('%H:%M')} (Пн-Пт)")
         logger.info(f"  Бекап: 03:00 (каждый день)")
@@ -125,16 +128,31 @@ class CronManager:
         )
         logger.info(f"📅 Напоминания: {TIME_CONFIG.MORNING_REMINDER_TIME.strftime('%H:%M')} (Пн-Пт)")
 
-        # Ежедневные отчеты
+        # Отчёт на сегодня — в день обеда, срез полный (заказ сделан накануне)
         self.scheduler.add_job(
-            self._daily_reports,
+            self._today_reports,
             'cron',
-            minute=TIME_CONFIG.DAILY_REPORTS_TIME.minute,
-            hour=TIME_CONFIG.DAILY_REPORTS_TIME.hour,
+            minute=TIME_CONFIG.TODAY_REPORTS_TIME.minute,
+            hour=TIME_CONFIG.TODAY_REPORTS_TIME.hour,
             day_of_week=work_days_cron,
             second=0
         )
-        logger.info(f"📊 Отчеты: {TIME_CONFIG.DAILY_REPORTS_TIME.strftime('%H:%M')} (Пн-Пт)")
+        logger.info(
+            f"📊 Отчёт на сегодня: {TIME_CONFIG.TODAY_REPORTS_TIME.strftime('%H:%M')} (Пн-Пт)"
+        )
+
+        # Отчёт на следующий рабочий день — после закрытия окна заказов в 15:00
+        self.scheduler.add_job(
+            self._next_day_reports,
+            'cron',
+            minute=TIME_CONFIG.TOMORROW_REPORTS_TIME.minute,
+            hour=TIME_CONFIG.TOMORROW_REPORTS_TIME.hour,
+            day_of_week=work_days_cron,
+            second=0
+        )
+        logger.info(
+            f"📊 Отчёт на завтра: {TIME_CONFIG.TOMORROW_REPORTS_TIME.strftime('%H:%M')} (Пн-Пт)"
+        )
 
         # Бухгалтерский отчет (в последние дни месяца)
         self.scheduler.add_job(
@@ -330,11 +348,17 @@ class CronManager:
                         else:
                             logger.error(f"Ошибка Bitrix24-напоминания {bitrix_id}")
 
-    async def _daily_reports(self):
-        """Ежедневные отчеты (после закрытия окна заказов — срез полный)"""
+    async def _today_reports(self):
+        """Отчёт на сегодня — день обеда, срез полный (заказ сделан накануне)."""
         from scheduled_reports import send_scheduled_reports
         if await self.is_workday(datetime.now(CONFIG.timezone)):
-            await send_scheduled_reports(self.application, ['admins', 'providers'])
+            await send_scheduled_reports(self.application, ['admins', 'providers'], target='today')
+
+    async def _next_day_reports(self):
+        """Отчёт на следующий рабочий день — после закрытия окна заказов в 15:00."""
+        from scheduled_reports import send_scheduled_reports
+        if await self.is_workday(datetime.now(CONFIG.timezone)):
+            await send_scheduled_reports(self.application, ['admins', 'providers'], target='next')
 
     async def _accounting_report(self):
         """Бухгалтерский отчет"""

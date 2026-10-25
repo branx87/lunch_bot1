@@ -77,7 +77,7 @@ async def show_today_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # иначе блокировка приёма оставила бы человека без выхода.
             keyboard.append([InlineKeyboardButton("❌ Отменить заказ", callback_data="cancel_0")])
         else:
-            keyboard.append([InlineKeyboardButton("⏳ Заказы принимаются через Битрикс", callback_data="noop")])
+            keyboard.append([InlineKeyboardButton("⏸ Заказы приостановлены", callback_data="noop")])
     elif has_active_order:
         # Есть активный заказ
         message += f"\n\n✅ Заказ: {order_quantity} порции"
@@ -166,7 +166,7 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Заказы отключены по времени
                 status_msg = CONFIG.get_orders_status_message()
                 message += f"\n\n{status_msg}"
-                keyboard.append([InlineKeyboardButton("⏳ Заказы принимаются через Битрикс", callback_data="noop")])
+                keyboard.append([InlineKeyboardButton("⏸ Заказы приостановлены", callback_data="noop")])
             else:
                 # Логика для включенных заказов
                 if order:
@@ -175,6 +175,9 @@ async def show_week_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         keyboard.append([InlineKeyboardButton("✏️ Изменить", callback_data=f"change_{day_offset}")])
                 elif can_modify_order(day_date):
                     keyboard.append([InlineKeyboardButton("✅ Заказать", callback_data=f"order_{day_offset}")])
+                else:
+                    # Окно заказов на этот день закрыто — говорим, куда и до когда заказать
+                    menu_text += f"\n\n{order_deadline_message(day_date)}"
 
             await update.message.reply_text(
                 menu_text,
@@ -249,7 +252,7 @@ async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_
             # Заказы отключены по времени
             status_msg = CONFIG.get_orders_status_message()
             message += f"\n\n{status_msg}"
-            keyboard.append([InlineKeyboardButton("⏳ Заказы принимаются через Битрикс", callback_data="noop")])
+            keyboard.append([InlineKeyboardButton("⏸ Заказы приостановлены", callback_data="noop")])
         else:
             # Существующая логика для включенных заказов
             can_modify = can_modify_order(target_date)
@@ -268,6 +271,7 @@ async def show_day_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, day_
                     if user_record and user_record.bitrix_id and user_record.bitrix_id in CONFIG.inspector_allowed_bitrix_ids:
                         keyboard.append([InlineKeyboardButton("🕵️ Заказать инспектору", callback_data=f"inspector_{day_offset}")])
                 else:
+                    message += f"\n\n{order_deadline_message(target_date)}"
                     keyboard.append([InlineKeyboardButton("⏳ Время для заказов истекло", callback_data="noop")])
         
         await update.message.reply_text(

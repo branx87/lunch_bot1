@@ -50,6 +50,9 @@ class BotConfig:
         self._db = database
         self._orders_enabled = self._load_orders_status()
         self._orders_status_at = monotonic()
+        # Заказы через форму Bitrix24 отключены (пользуются 3-4 человека).
+        self._accept_bitrix_form_orders = self._load_flag('accept_bitrix_form_orders', False)
+        self._form_orders_at = monotonic()
         
         self._load_env_vars()
         self._load_db_data()
@@ -182,6 +185,70 @@ class BotConfig:
         except Exception as e:
             logger.error(f"Ошибка загрузки статуса заказов: {e}")
             return True
+
+    def _load_flag(self, name: str, default: bool) -> bool:
+        """Читает булев флаг из таблицы BotSetting.
+
+        Отсутствующая строка — это не ошибка, а значение по умолчанию.
+        """
+        try:
+            with self._db.get_session() as session:
+                from models import BotSetting
+                setting = session.query(BotSetting).filter(
+                    BotSetting.setting_name == name
+                ).first()
+                if not setting:
+                    logger.warning(
+                        f"Настройка {name} не найдена в БД — "
+                        f"берём значение по умолчанию: {default}"
+                    )
+                    return default
+
+                raw = (setting.setting_value or '').strip()
+                value = raw.lower() == 'true'
+                logger.info(f"Флаг {name} в БД: setting_value={raw!r} -> {value}")
+                return value
+        except Exception as e:
+            logger.error(f"Ошибка загрузки флага {name}: {e}")
+            return default
+
+    def _refresh_form_orders_flag(self):
+        """Перечитывает флаг приёма заказов из формы Bitrix24 (кэш 5 секунд).
+
+        Флаг живёт в БД, поэтому его смена видна всем процессам
+        (Telegram / VK / MAX / Bitrix24) без перезапуска.
+        """
+        if monotonic() - self._form_orders_at < ORDERS_STATUS_TTL:
+            return
+        self._accept_bitrix_form_orders = self._load_flag('accept_bitrix_form_orders', False)
+        self._form_orders_at = monotonic()
+
+    def set_accept_bitrix_form_orders(self, enabled: bool):
+        """Включает/выключает приём заказов через форму Bitrix24."""
+        try:
+            with self._db.get_session() as session:
+                from models import BotSetting
+                setting = session.query(BotSetting).filter(
+                    BotSetting.setting_name == 'accept_bitrix_form_orders'
+                ).first()
+                if setting:
+                    setting.setting_value = str(enabled)
+                else:
+                    session.add(BotSetting(
+                        setting_name='accept_bitrix_form_orders',
+                        setting_value=str(enabled)
+                    ))
+                session.commit()
+
+            self._accept_bitrix_form_orders = enabled
+            self._form_orders_at = monotonic()
+            logger.info(
+                f"Приём заказов через форму Bitrix24: "
+                f"{'разрешён' if enabled else 'запрещён'}"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка сохранения флага accept_bitrix_form_orders: {e}")
+            raise
 
     def _refresh_orders_status(self):
         """Перечитывает статус заказов из БД, если кэш устарел.
@@ -327,6 +394,16 @@ class BotConfig:
     def orders_enabled(self):
         self._refresh_orders_status()
         return self._orders_enabled
+
+    @property
+    def accept_bitrix_form_orders(self) -> bool:
+        """Разрешены ли заказы через форму Bitrix24.
+
+        По умолчанию — нет: заказы оформляются через бот,
+        а в Bitrix24 они попадают выгрузкой в день обеда.
+        """
+        self._refresh_form_orders_flag()
+        return self._accept_bitrix_form_orders
 
     @property
     def max_admin_ids(self) -> list[int]:

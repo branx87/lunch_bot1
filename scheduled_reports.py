@@ -7,6 +7,7 @@ from config import CONFIG
 from settings import SETTINGS_CONFIG
 
 from report_generators import export_accounting_report, export_daily_admin_report, export_daily_orders_for_provider
+from services.report_service import date_caption
 from services.time_service import next_working_day
 
 logger = logging.getLogger(__name__)
@@ -29,29 +30,36 @@ class FakeUpdate:
         async def reply_document(self, document, **kwargs):
             await self.bot.send_document(chat_id=self.chat_id, document=document, **kwargs)
 
-async def send_scheduled_reports(application: Application, report_types: list):
-    """Основная функция отправки отчетов"""
-    logger.info("Начало отправки отчетов: %s", report_types)
-    
+async def send_scheduled_reports(application: Application, report_types: list, target: str = 'today'):
+    """Основная функция отправки отчетов.
+
+    target='today' — отчёт на сегодня (день обеда), срез полный.
+    target='next'  — отчёт на следующий рабочий день (заказ на завтра),
+                    отправляется после закрытия окна заказов в 15:00.
+    """
+    logger.info("Начало отправки отчетов: %s (цель: %s)", report_types, target)
+
     today = datetime.now(CONFIG.timezone).date()
 
-    # Новый поставщик питания: заказы принимаются заранее, поэтому провайдеру
-    # и админу нужен отчёт на следующий рабочий день (завтра или понедельник),
-    # а не на сегодня.
-    report_day = next_working_day(today, CONFIG.holidays)
-    logger.info("Отчёт за дату: %s (сегодня %s)", report_day, today)
+    if target == 'next':
+        report_day = next_working_day(today, CONFIG.holidays)
+    else:
+        report_day = today
+
+    caption = date_caption(report_day, today)
+    logger.info("Отчёт «на %s», дата %s (сегодня %s)", caption, report_day, today)
 
     # Используем прямое обращение к атрибутам CONFIG вместо .get()
     reports = {
         'admins': {
             'ids': getattr(CONFIG, 'admin_ids', []),
             'func': export_daily_admin_report,
-            'args': [report_day]
+            'args': [report_day, caption]
         },
         'providers': {
             'ids': getattr(CONFIG, 'provider_ids', []),
             'func': export_daily_orders_for_provider,
-            'args': [report_day]
+            'args': [report_day, caption]
         },
         'accounting': {
             'ids': getattr(CONFIG, 'accounting_ids', []),

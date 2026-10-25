@@ -792,8 +792,11 @@ async def _handle_employee_inner(
         menu_text, order, target_date, can_modify = await _run_sync(
             _fetch_order_view, user_db_id, day_offset)
         status = _order_status_text(order)
-        if not can_modify:
-            status += "\n⏰ Приём/изменение заказов закрыт"
+        if not CONFIG.are_orders_accepted_now():
+            status += f"\n{CONFIG.get_orders_status_message()}"
+        elif not can_modify:
+            # Окно заказов на этот день закрыто — говорим, куда и до когда заказать
+            status += f"\n{order_deadline_message(target_date)}"
         return [_msg(f"{menu_text}{status}",
                      keyboard=_order_view_kb(order is not None, can_modify, user_db_id), replace=True)]
 
@@ -810,6 +813,8 @@ async def _handle_employee_inner(
             text = st["menu_text"]
             if st["has_order"]:
                 text += f"\n\n[B]🛒 Заказано: {st['qty']} порц.[/B]"
+            elif not st["can_modify"]:
+                text += f"\n\n{order_deadline_message(st['target_date'])}"
             kb_rows = _week_day_order_kb(st["offset"], st["has_order"], st["can_modify"], st["qty"])
             if i == len(day_statuses) - 1:
                 kb_rows = kb_rows + [[_btn("🏠 Главное меню", "главное меню", "#555")]]
@@ -888,8 +893,11 @@ async def _handle_employee_inner(
         menu_text, order, target_date, can_modify = await _run_sync(
             _fetch_order_view, user_db_id, day_offset)
         status = _order_status_text(order)
-        if not can_modify:
-            status += "\n⏰ Приём/изменение заказов закрыт"
+        if not CONFIG.are_orders_accepted_now():
+            status += f"\n{CONFIG.get_orders_status_message()}"
+        elif not can_modify:
+            # Окно заказов на этот день закрыто — говорим, куда и до когда заказать
+            status += f"\n{order_deadline_message(target_date)}"
         return [_msg(f"{menu_text}{status}",
                      keyboard=_order_view_kb(order is not None, can_modify, user_db_id), replace=True)]
 
