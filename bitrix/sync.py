@@ -36,6 +36,16 @@ logger = logging.getLogger(__name__)
 logging.getLogger('bitrix.sync').setLevel(logging.INFO)  # или DEBUG для детальных логов
 
 
+def _host_from_url(url: str) -> str:
+    """Хост адреса без пути и токена — только для логов."""
+    if not url:
+        return 'не задан'
+    try:
+        return url.split('/')[2]
+    except IndexError:
+        return url
+
+
 def _parse_date(value):
     """'YYYY-MM-DD' -> date. None, если значение не разобрано."""
     if isinstance(value, datetime):
@@ -57,6 +67,12 @@ class BitrixSync:
             self.rest_webhook = os.getenv('BITRIX_REST_WEBHOOK')
             if not self.webhook or not self.rest_webhook:
                 raise ValueError("BITRIX_WEBHOOK или BITRIX_REST_WEBHOOK не найден в .env")
+
+            # Какой портал используем — видно в логах, без токенов.
+            logger.info(
+                "Bitrix24: портал=%s, REST3=%s",
+                _host_from_url(self.webhook), _host_from_url(self.rest_webhook)
+            )
             
             # 🔥 ЯВНО ЗАПРЕЩАЕМ ПРОКСИ ДЛЯ BITRIX24
             # Прокси нужен только для Telegram API (обходит блокировки),

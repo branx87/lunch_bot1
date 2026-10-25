@@ -429,8 +429,9 @@ async def _do_orders_for_day(role: str, target_date=None) -> list[dict]:
     # Синхронизация статусов с Bitrix перед формированием отчёта
     await _sync_orders_before_report()
 
+    # caption — keyword: сессия в _run_sync подставляется после позиционных аргументов
     text, _ = await _run_sync(
-        generate_provider_report_text, target_date, target_date, caption_text
+        generate_provider_report_text, target_date, target_date, caption=caption_text
     )
     messages = [_msg(text)]
 
@@ -475,8 +476,9 @@ async def _do_report(rtype: str, period: str, role: str, target_date=None) -> li
     caption_text = date_caption(start_date) if period == "day" else None
 
     if rtype in ("admin", "provider"):
+        # caption — keyword: сессия в _run_sync подставляется после позиционных аргументов
         text, _ = await _run_sync(
-            generate_provider_report_text, start_date, end_date, caption_text
+            generate_provider_report_text, start_date, end_date, caption=caption_text
         )
         messages.append(_msg(text))
 

@@ -13,6 +13,16 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def endpoint_host(url: str) -> str:
+    """Хост адреса без пути и токена — только для логов."""
+    if not url:
+        return 'не задан'
+    try:
+        return url.split('/')[2]
+    except IndexError:
+        return url
+
+
 class BitrixBotClient:
     """Sends proactive bot messages via PHP relay on the Bitrix24 server."""
 

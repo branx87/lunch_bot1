@@ -28,6 +28,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from logging_config import setup_logging
+from bitrix24_bot.client import endpoint_host
 
 setup_logging('bitrix24_bot.log')
 logger = logging.getLogger(__name__)
@@ -45,7 +46,13 @@ async def on_startup():
         sys.exit(1)
 
     Base.metadata.create_all(bind=db.engine)
-    logger.info("=== Bitrix24 bot started ===")
+
+    # Куда ходим и на каком порту слушаем — видно сразу в логах.
+    logger.info(
+        "=== Bitrix24 bot started: порт=%s, отправка через %s ===",
+        os.getenv("B24_BOT_PORT", "7777"),
+        endpoint_host(os.getenv("B24_PHP_SENDER_URL", ""))
+    )
 
 
 @app.get("/health")
