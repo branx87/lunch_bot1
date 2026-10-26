@@ -12,7 +12,7 @@ from models import User, Order
 from config import CONFIG
 from handlers.common import show_main_menu
 from middleware import check_user_access
-from utils import can_modify_order, order_deadline_message
+from utils import can_modify_order, order_deadline_message, is_new_supplier_date
 from services.menu_service import DAYS_RU
 from view_utils import refresh_day_view
 from notifications import show_access_denied
@@ -104,7 +104,7 @@ async def handle_inspector_order_callback(query, now, user, context):
         quantity=1,
         bitrix_quantity_id=QUANTITY_MAP[1],
         is_active=True,
-        is_preliminary=day_offset > 0,
+        is_preliminary=(day_offset > 0 and not is_new_supplier_date(target_date)),
         is_for_inspector=True,
         created_at=datetime.now()
     )
@@ -211,7 +211,7 @@ async def handle_order_callback(query, now, user, context):
             quantity=initial_quantity,
             bitrix_quantity_id=bitrix_quantity_id,
             is_active=True,
-            is_preliminary=day_offset > 0,
+            is_preliminary=(day_offset > 0 and not is_new_supplier_date(target_date)),
             created_at=datetime.now()
         )
         db.session.add(new_order)

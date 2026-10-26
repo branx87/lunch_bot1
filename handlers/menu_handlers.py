@@ -728,7 +728,7 @@ async def quick_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             quantity=1,
             bitrix_quantity_id='821',  # ID для 1 порции в Битрикс
             is_active=True,
-            is_preliminary=(target_date > today),
+            is_preliminary=(target_date > today and not is_new_supplier_date(target_date)),
             created_at=datetime.now()
         )
         db.session.add(new_order)

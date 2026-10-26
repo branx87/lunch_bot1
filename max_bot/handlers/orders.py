@@ -90,7 +90,9 @@ async def quick_order(event):
 
         session.commit()
         await event.message.answer(f"✅ Заказ на {target_date.strftime('%d.%m')} оформлен (1 порция)")
-        await _refresh_day_view(event, 0, user_db_id, session)
+        # Показываем меню того дня, на который оформлен заказ,
+        # а не «сегодня» — на сегодня заказы не принимаются.
+        await _refresh_day_view(event, (target_date - today).days, user_db_id, session)
 
 
 # --- Order callback ---

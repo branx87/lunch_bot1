@@ -98,7 +98,10 @@ async def quick_order(message: Message):
 
         session.commit()
         await message.answer(f"✅ Заказ на {target_date.strftime('%d.%m')} оформлен (1 порция)")
-        await _refresh_day_view(message.ctx_api, message.peer_id, 0, user_db_id, session)
+        # Показываем меню того дня, на который оформлен заказ,
+        # а не «сегодня» — на сегодня заказы не принимаются.
+        await _refresh_day_view(
+            message.ctx_api, message.peer_id, (target_date - today).days, user_db_id, session)
 
 
 # --- All inline callback events ---

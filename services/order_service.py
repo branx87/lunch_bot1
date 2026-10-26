@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, date, timedelta
 from models import Order
 from time_config import TIME_CONFIG
+from services.time_service import is_new_supplier_date
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,11 @@ def create_order(user_db_id, target_date, session, is_preliminary=False):
     existing = get_order_for_date(user_db_id, target_date, session)
     if existing:
         return None, f"У вас уже заказано {existing.quantity} порций"
+
+    # У нового поставщика заказ на будущий день — обычный заказ:
+    # окно приёма закрывается в 15:00 накануне, подтверждать его не нужно.
+    if is_new_supplier_date(target_date):
+        is_preliminary = False
 
     quantity = 1
     order = Order(

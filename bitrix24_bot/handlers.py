@@ -21,7 +21,7 @@ from services.order_service import (
 )
 from services.menu_service import get_menu_for_day, format_menu_text, get_week_menus
 from services.time_service import (can_modify_order, order_deadline_message,
-                                   is_new_supplier_date, next_working_day_offset,
+                                   is_new_supplier_date, next_orderable_date,
                                    report_target_date, report_date_options)
 from services.report_service import (
     generate_provider_report_text,
@@ -697,7 +697,7 @@ def _do_create_inspector_order_db(user_db_id: int, day_offset: int, session) -> 
         quantity=quantity,
         bitrix_quantity_id=QUANTITY_MAP[1],
         is_active=True,
-        is_preliminary=(day_offset > 0),
+        is_preliminary=(day_offset > 0 and not is_new_supplier_date(target_date)),
         is_for_inspector=True,
         created_at=now.replace(tzinfo=None),
     )
@@ -847,17 +847,20 @@ async def _handle_employee_inner(
 
     # ---- Быстрый заказ ----
     if raw == "быстрый заказ":
-        # У нового поставщика заказ на сегодня не принимается —
-        # быстрый заказ оформляется на ближайший рабочий день.
+        # У нового поставщика заказ на сегодня не принимается — быстрый заказ
+        # оформляется на ближайший день, чьё окно заказа ещё открыто.
         today = datetime.now(TIME_CONFIG.TIMEZONE).date()
-        quick_offset = (next_working_day_offset(today, CONFIG.holidays)
-                        if is_new_supplier_date(today) else 0)
+        if is_new_supplier_date(today):
+            target_date = next_orderable_date(today, CONFIG.holidays)
+        else:
+            target_date = today
+        quick_offset = (target_date - today).days
         prompt = await _check_location_or_prompt(
             dialog_id, from_user_id, user_db_id,
             {"action": "quick_order", "day_offset": quick_offset})
         if prompt:
             return prompt
-        result = await _run_sync(_do_create_order_db, user_db_id, 0)
+        result = await _run_sync(_do_create_order_db, user_db_id, quick_offset)
         _state.pop(dialog_id, None)
         return [_msg(result, keyboard=main_kb, replace=True)]
 
