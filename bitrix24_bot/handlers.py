@@ -10,6 +10,7 @@ import base64
 import logging
 import re
 from datetime import datetime, timedelta
+from time import monotonic
 
 from config import CONFIG
 from database import db
@@ -39,6 +40,15 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------
 
 _state: dict[str, dict] = {}
+
+# Синхронизация сотрудников по первому обращению неизвестного пользователя.
+# Не чаще раза в EMPLOYEE_SYNC_COOLDOWN_USER на пользователя и
+# EMPLOYEE_SYNC_COOLDOWN_GLOBAL на всех — чтобы не долбить портал.
+_employee_sync_lock = asyncio.Lock()
+_employee_sync_at: dict[str, float] = {}
+_employee_sync_global_at: float = 0.0
+EMPLOYEE_SYNC_COOLDOWN_USER = 600   # 10 минут на пользователя
+EMPLOYEE_SYNC_COOLDOWN_GLOBAL = 300  # 5 минут на всех
 
 S_STEP   = "step"
 S_PERIOD = "period"
@@ -259,6 +269,53 @@ def _main_kb(role: str) -> list:
 # Entry point
 # ------------------------------------------------------------------
 
+async def _sync_employee_if_needed(from_user_id: int) -> bool:
+    """Подтягивает сотрудников из Bitrix24, если пользователя нет в базе.
+
+    Список сотрудников обновляется раз в сутки (18:00), а новый сотрудник
+    может написать в чат сразу после приёма. Telegram и VK в том же случае
+    делают запрос к Bitrix24 при первом обращении — здесь нужно то же самое,
+    иначе чат-бот отвечает «Вы не зарегистрированы» тому, кто в системе уже есть.
+    """
+    global _employee_sync_global_at
+
+    key = str(from_user_id)
+    now = monotonic()
+
+    if now - _employee_sync_at.get(key, 0) < EMPLOYEE_SYNC_COOLDOWN_USER:
+        return False
+    if now - _employee_sync_global_at < EMPLOYEE_SYNC_COOLDOWN_GLOBAL:
+        # Синхронизация недавно была — возможно, она уже добавила сотрудника
+        return False
+
+    async with _employee_sync_lock:
+        now = monotonic()
+        if now - _employee_sync_at.get(key, 0) < EMPLOYEE_SYNC_COOLDOWN_USER:
+            return False
+        if now - _employee_sync_global_at < EMPLOYEE_SYNC_COOLDOWN_GLOBAL:
+            return False
+
+        from bitrix.sync import BitrixSync
+        bitrix_sync = BitrixSync()
+        try:
+            stats = await bitrix_sync.sync_employees()
+            logger.info(
+                "[B24Bot] Синхронизация сотрудников для user=%s: %s",
+                from_user_id, stats
+            )
+        except Exception as e:
+            logger.error(
+                f"[B24Bot] Ошибка синхронизации сотрудников: {e}", exc_info=True
+            )
+            return False
+        finally:
+            await bitrix_sync.close()
+
+        _employee_sync_at[key] = monotonic()
+        _employee_sync_global_at = monotonic()
+        return True
+
+
 async def handle_message(
     dialog_id: str,
     from_user_id: int,
@@ -268,7 +325,18 @@ async def handle_message(
 ) -> list[dict]:
     role = get_user_role(from_user_id, MESSENGER_BITRIX24, CONFIG)
     if not role:
-        return [_msg("⛔ Вы не зарегистрированы в системе.")]
+        # Сотрудник мог быть принят недавно — подтягиваем список из Bitrix24
+        # и проверяем ещё раз (так же, как Telegram и VK при первом обращении).
+        if await _sync_employee_if_needed(from_user_id):
+            role = get_user_role(from_user_id, MESSENGER_BITRIX24, CONFIG)
+
+    if not role:
+        return [_msg(
+            "⛔ Вы не найдены в списке сотрудников.\n\n"
+            "Попробуйте написать ещё раз через пару минут — бот заново "
+            "запросит список сотрудников из Битрикс24.\n"
+            "Если не получилось — обратитесь к администратору."
+        )]
 
     raw = text.strip().lower()
 
