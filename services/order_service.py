@@ -4,7 +4,7 @@ Messenger-agnostic — used by both Telegram and Max bots.
 """
 import logging
 from datetime import datetime, date, timedelta
-from models import Order
+from models import Order, User
 from time_config import TIME_CONFIG
 from services.time_service import is_new_supplier_date
 
@@ -33,9 +33,60 @@ def get_active_orders(user_db_id, from_date, session):
     ).order_by(Order.target_date).all()
 
 
-def create_order(user_db_id, target_date, session, is_preliminary=False):
+def find_employees(query, session, limit=10):
+    """Поиск сотрудников по ФИО или Bitrix ID.
+
+    Нужно администратору, чтобы оформить заказ за другого сотрудника
+    (кто-то забыл заказать) или заказать обед инспектору.
+
+    Сравнение по ФИО делается в Python: ILIKE в PostgreSQL зависит от локали
+    БД, а lower() в SQLite не работает с кириллицей — на обеих СУБД
+    результат должен быть одинаковым. Активных сотрудников несколько
+    сотен, такой перебор занимает единицы миллисекунд.
+
+    Возвращает список словарей: id, full_name, position, department,
+    location, bitrix_id.
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    needle = q.lower()
+    candidates = session.query(User).filter(
+        User.is_employee == True,
+        User.is_deleted == False,
+    ).order_by(User.full_name).all()
+
+    matched = []
+    for row in candidates:
+        name = (row.full_name or "").lower()
+        if needle in name:
+            matched.append(row)
+            continue
+        if q.isdigit() and row.bitrix_id and str(row.bitrix_id) == q:
+            matched.append(row)
+
+    return [
+        {
+            "id": r.id,
+            "full_name": r.full_name,
+            "position": r.position,
+            "department": r.department,
+            "location": r.location,
+            "bitrix_id": r.bitrix_id,
+        }
+        for r in matched[:limit]
+    ]
+
+
+def create_order(user_db_id, target_date, session, is_preliminary=False,
+                 quantity=1, is_for_inspector=False):
     """
     Create a new order. Does NOT commit.
+
+    quantity — количество порций (1..MAX_PORTIONS).
+    is_for_inspector — заказ для инспектора (расходы компании):
+    в Bitrix24 такой заказ уходит на CRM ID инспектора.
 
     Returns (order, error_message). If error, order is None.
     """
@@ -45,7 +96,14 @@ def create_order(user_db_id, target_date, session, is_preliminary=False):
     if target_date.weekday() in TIME_CONFIG.WEEKEND_DAYS:
         return None, "Заказы на выходные не принимаются"
 
+    # Check quantity
+    if quantity < 1 or quantity > TIME_CONFIG.MAX_PORTIONS:
+        return None, f"Количество порций должно быть от 1 до {TIME_CONFIG.MAX_PORTIONS}"
+
     # Check existing order
+    # flush нужен, чтобы увидеть заказ, добавленный в этой же сессии:
+    # сессии создаются с autoflush=False, иначе дубль прошёл бы незамеченным.
+    session.flush()
     existing = get_order_for_date(user_db_id, target_date, session)
     if existing:
         return None, f"У вас уже заказано {existing.quantity} порций"
@@ -55,7 +113,6 @@ def create_order(user_db_id, target_date, session, is_preliminary=False):
     if is_new_supplier_date(target_date):
         is_preliminary = False
 
-    quantity = 1
     order = Order(
         user_id=user_db_id,
         target_date=target_date,
@@ -64,6 +121,7 @@ def create_order(user_db_id, target_date, session, is_preliminary=False):
         bitrix_quantity_id=QUANTITY_MAP[quantity],
         is_active=True,
         is_preliminary=is_preliminary,
+        is_for_inspector=is_for_inspector,
         created_at=now.replace(tzinfo=None),
     )
     session.add(order)

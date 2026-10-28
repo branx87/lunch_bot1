@@ -19,11 +19,14 @@ from services.order_service import (
     get_order_for_date, get_active_orders,
     create_order, cancel_order, modify_quantity,
     get_user_monthly_stats, QUANTITY_MAP,
+    find_employees,
 )
-from services.menu_service import get_menu_for_day, format_menu_text, get_week_menus
+from services.menu_service import get_menu_for_day, format_menu_text, get_week_menus, DAYS_RU
 from services.time_service import (can_modify_order, order_deadline_message,
                                    is_new_supplier_date, next_orderable_date,
-                                   report_target_date, report_date_options)
+                                   report_target_date, report_date_options,
+                                   admin_can_order_date, admin_order_dates,
+                                   admin_today_note)
 from services.report_service import (
     generate_provider_report_text,
     generate_accounting_report_file,
@@ -67,6 +70,36 @@ STEP_STATS       = "stats_period"
 STEP_LOCATION    = "select_location"
 S_LOCATION_PENDING = "location_pending"
 
+# Админский заказ: за другого сотрудника или для инспектора
+STEP_ADMIN_ORDER = "admin_order"
+S_KIND  = "kind"
+S_EMP   = "emp"
+S_DATE  = "date"
+S_QTY   = "qty"
+S_STAGE = "stage"
+
+STAGE_TYPE    = "type"
+STAGE_SEARCH  = "search"
+STAGE_DATE    = "date"
+STAGE_QTY     = "qty"
+STAGE_CONFIRM = "confirm"
+
+# Команды, которые обрабатываются в других ветках бота. Внутри админского
+# заказа их нельзя считать поисковым запросом по сотруднику — иначе админ
+# не смог бы переключиться на отчёты, не выйдя из заказа.
+_BOT_COMMANDS = {
+    "главное меню", "/start", "start", "помощь", "help", "/help",
+    "отчёты", "отчеты", "/reports",
+    "за сегодня", "за месяц", "текущий месяц", "прошлый месяц",
+    "тип авто", "тип админский", "тип бухгалтерский", "тип поставщика",
+    "заказы сегодня", "быстрый заказ", "мои заказы",
+    "меню", "меню на сегодня", "меню на неделю",
+    "статистика за месяц", "статистика текущий месяц", "статистика прошлый месяц",
+    "уведомления", "уведомления отключить", "уведомления включить",
+    "заказать", "заказать порцию", "добавить порцию", "убрать порцию",
+    "отменить заказ", "заказать инспектору",
+}
+
 # ------------------------------------------------------------------
 # Keyboards
 # ACTION_VALUE is what gets sent to the bot when button is clicked.
@@ -84,7 +117,8 @@ def _btn(text: str, value: str, bg: str = "#29619b") -> dict:
 
 KB_MAIN_ADMIN = _kb(
     [_btn("📊 Отчёты", "отчёты"), _btn("📋 Заказы сегодня", "заказы сегодня")],
-    [_btn("✅ Быстрый заказ", "быстрый заказ", "#2a7a2a")],
+    [_btn("✅ Быстрый заказ", "быстрый заказ", "#2a7a2a"),
+     _btn("👨‍💼 Заказать за сотрудника", "заказать за сотрудника", "#7a5c3e")],
     [_btn("📋 Мои заказы", "мои заказы"), _btn("📊 Статистика за месяц", "статистика за месяц", "#555")],
     [_btn("🍽 Меню на сегодня", "меню на сегодня", "#3b7abf"), _btn("📅 Меню на неделю", "меню на неделю", "#3b7abf")],
     [_btn("🔔 Уведомления", "уведомления", "#555")],
@@ -236,6 +270,102 @@ def _report_dates_kb() -> list:
     return rows
 
 
+def _admin_order_type_kb() -> list:
+    """Клавиатура выбора типа админского заказа."""
+    return _kb(
+        [_btn("🍽 Заказ сотруднику", "админ тип сотруднику", "#2a7a2a")],
+        [_btn("🕵️ Заказ инспектору", "админ тип инспектору", "#7a5c3e")],
+        [_btn("🏠 Главное меню", "главное меню", "#555")],
+    )
+
+
+def _admin_order_dates_kb() -> list:
+    """Клавиатура выбора даты для админского заказа."""
+    today = datetime.now(TIME_CONFIG.TIMEZONE).date()
+    rows = []
+    row = []
+    for d in admin_order_dates():
+        if d == today:
+            label = f"Сегодня {d.strftime('%d.%m')}"
+        else:
+            label = f"{DAYS_RU[d.weekday()]} {d.strftime('%d.%m')}"
+        row.append(_btn(label, f"админ дата {d.isoformat()}", "#3b7abf"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([_btn("🏠 Главное меню", "главное меню", "#555")])
+    return rows
+
+
+def _admin_order_qty_kb() -> list:
+    """Клавиатура выбора количества порций."""
+    return _kb(
+        [_btn(str(i), f"админ количество {i}", "#2a7a2a")
+         for i in range(1, TIME_CONFIG.MAX_PORTIONS + 1)],
+        [_btn("🏠 Главное меню", "главное меню", "#555")],
+    )
+
+
+def _admin_order_confirm_kb() -> list:
+    """Клавиатура подтверждения админского заказа."""
+    return _kb(
+        [_btn("✅ Оформить заказ", "админ создать", "#2a7a2a")],
+        [_btn("🏠 Главное меню", "главное меню", "#555")],
+    )
+
+
+def _admin_employee_label(emp: dict) -> str:
+    """Подпись сотрудника в кнопке выбора."""
+    label = emp.get("full_name") or "Без имени"
+    detail = emp.get("position") or emp.get("location")
+    if detail:
+        label += f" — {detail}"
+    if emp.get("bitrix_id"):
+        label += f" (B24: {emp['bitrix_id']})"
+    else:
+        label += " ⚠️ нет Bitrix ID"
+    return label
+
+
+def _admin_date_label(target_date) -> str:
+    today = datetime.now(TIME_CONFIG.TIMEZONE).date()
+    if target_date == today:
+        return f"Сегодня {target_date.strftime('%d.%m')}"
+    return f"{DAYS_RU[target_date.weekday()]} {target_date.strftime('%d.%m')}"
+
+
+def _admin_date_prompt(kind: str, emp: dict) -> str:
+    """Текст шага выбора даты."""
+    header = "🕵️ Заказ инспектору" if kind == "inspector" else "🍽 Заказ сотруднику"
+    role = "Организатор" if kind == "inspector" else "Сотрудник"
+    text = f"{header}\n{role}: {emp.get('full_name')}\n\nВыберите дату обеда:"
+    note = admin_today_note()
+    if note:
+        text += f"\n\n{note}"
+    return text
+
+
+def _admin_confirm_text(kind: str, emp: dict, target_date, qty: int) -> str:
+    """Текст подтверждения админского заказа."""
+    if kind == "inspector":
+        lines = [
+            "🕵️ Заказ для инспектора (расходы компании)",
+            f"Организатор: {emp.get('full_name')}",
+        ]
+    else:
+        lines = [
+            "🍽 Заказ сотруднику",
+            f"Сотрудник: {emp.get('full_name')}",
+        ]
+    lines.append(f"Дата: {_admin_date_label(target_date)}")
+    lines.append(f"Порций: {qty}")
+    lines.append("")
+    lines.append("Всё верно?")
+    return "\n".join(lines)
+
+
 def _main_kb(role: str) -> list:
     if role == "admin":
         base = KB_MAIN_ADMIN
@@ -347,6 +477,16 @@ async def handle_message(
 
     state = _state.get(dialog_id, {S_STEP: STEP_IDLE})
     step  = state.get(S_STEP, STEP_IDLE)
+
+    # ---- Админский заказ: за другого сотрудника или для инспектора ----
+    if role == "admin":
+        admin_order = await _handle_admin_order(dialog_id, from_user_id, raw, state, step)
+        if admin_order is not None:
+            return admin_order
+        # Поток мог сбросить состояние (например, админ отправил команду бота) —
+        # перечитываем, чтобы маршрутизация шла по актуальному шагу.
+        state = _state.get(dialog_id, {S_STEP: STEP_IDLE})
+        step = state.get(S_STEP, STEP_IDLE)
 
     # Employee ordering commands
     _employee_root = {"заказать", "мои заказы", "меню", "быстрый заказ", "меню на сегодня", "меню на неделю",
@@ -823,6 +963,224 @@ def _do_modify_qty_db(user_db_id: int, day_offset: int, delta: int, session) -> 
         order.is_cancelled = True
         return f"✅ Заказ на {target_date.strftime('%d.%m')} отменён."
     return f"✅ Количество порций: {new_qty}."
+
+
+# ------------------------------------------------------------------
+# Админский заказ: за другого сотрудника или для инспектора
+# ------------------------------------------------------------------
+
+def _parse_iso_date(value):
+    """Дата из ISO-строки (None, если разобрать не удалось)."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _fetch_employee(emp_id: int, session):
+    """Данные сотрудника по внутреннему id."""
+    row = session.query(User).filter(User.id == emp_id).first()
+    if not row:
+        return None
+    return {
+        "id": row.id,
+        "full_name": row.full_name,
+        "position": row.position,
+        "department": row.department,
+        "location": row.location,
+        "bitrix_id": row.bitrix_id,
+    }
+
+
+def _find_employees(query: str, session, limit: int = 10):
+    """Поиск сотрудников по ФИО или Bitrix ID."""
+    return find_employees(query, session, limit=limit)
+
+
+def _admin_create_order(emp_id: int, target_date, quantity: int, is_for_inspector: bool, session):
+    """Создаёт админский заказ. Возвращает (текст, успех)."""
+    user = session.query(User).filter(User.id == emp_id).first()
+    if not user:
+        return "❌ Сотрудник не найден в базе.", False
+
+    if not user.bitrix_id:
+        return (f"❌ У сотрудника {user.full_name} нет Bitrix ID — такой заказ "
+                "не попадёт в выгрузку поставщику.\n\n"
+                "Обновите сотрудников в Битрикс24 и попробуйте снова."), False
+
+    existing = get_order_for_date(emp_id, target_date, session)
+    if existing:
+        return (f"ℹ️ У {user.full_name} уже есть заказ на "
+                f"{target_date.strftime('%d.%m')} — {existing.quantity} порц. "
+                "Дубликат не создаём."), False
+
+    order, err = create_order(emp_id, target_date, session,
+                              quantity=quantity, is_for_inspector=is_for_inspector)
+    if err:
+        return f"❌ {err}", False
+
+    session.commit()
+
+    if is_for_inspector:
+        text = (f"✅ Заказ для инспектора оформлен — "
+                f"{_admin_date_label(target_date)}, {quantity} порц.\n"
+                f"Организатор: {user.full_name}\n"
+                "⚠️ Расходы компании: в Битрикс24 заказ уйдёт на инспектора.")
+    else:
+        text = (f"✅ Заказ оформлен — {_admin_date_label(target_date)}, {quantity} порц.\n"
+                f"Сотрудник: {user.full_name}")
+    return text, True
+
+
+async def _handle_admin_order(dialog_id, from_user_id, raw, state, step):
+    """Админский заказ за сотрудника / для инспектора.
+
+    Возвращает список сообщений или None, если текст к потоку не относится.
+    """
+    if step != STEP_ADMIN_ORDER and raw != "заказать за сотрудника":
+        return None
+
+    kind = state.get(S_KIND)
+    stage = state.get(S_STAGE, STAGE_TYPE)
+
+    # ---- Старт ----
+    if raw == "заказать за сотрудника":
+        _state[dialog_id] = {S_STEP: STEP_ADMIN_ORDER, S_STAGE: STAGE_TYPE}
+        return [_msg("Что оформляем?", keyboard=_admin_order_type_kb(), replace=True)]
+
+    # ---- Тип заказа ----
+    if raw in ("админ тип сотруднику", "админ тип инспектору"):
+        kind = "normal" if raw == "админ тип сотруднику" else "inspector"
+        _state[dialog_id] = {S_STEP: STEP_ADMIN_ORDER, S_KIND: kind, S_STAGE: STAGE_SEARCH}
+        if kind == "inspector":
+            prompt = ("Введите ФИО сотрудника-организатора заказа инспектору "
+                      "(или его Bitrix ID).\n\n"
+                      "Этот сотрудник будет указан заказчиком в Битрикс24.")
+        else:
+            prompt = ("Введите ФИО сотрудника, которому оформляется обед "
+                      "(или его Bitrix ID).")
+        return [_msg(prompt, replace=True)]
+
+    # ---- Сотрудник из списка совпадений ----
+    if raw.startswith("админ сотрудник "):
+        try:
+            emp_id = int(raw.split("админ сотрудник ", 1)[1].strip())
+        except ValueError:
+            return [_msg("Некорректный выбор сотрудника.",
+                         keyboard=_admin_order_type_kb(), replace=True)]
+        emp = await _run_sync(_fetch_employee, emp_id)
+        if not emp:
+            return [_msg("❌ Сотрудник не найден в базе.", replace=True)]
+        if not emp.get("bitrix_id"):
+            return [_msg(f"❌ У сотрудника {emp['full_name']} нет Bitrix ID — такой заказ "
+                         "не попадёт в выгрузку поставщику.\n\n"
+                         "Обновите сотрудников в Битрикс24 и попробуйте снова.",
+                         replace=True)]
+        _state[dialog_id] = {S_STEP: STEP_ADMIN_ORDER, S_KIND: kind,
+                             S_EMP: emp["id"], S_STAGE: STAGE_DATE}
+        return [_msg(_admin_date_prompt(kind, emp),
+                     keyboard=_admin_order_dates_kb(), replace=True)]
+
+    # ---- Дата ----
+    if raw.startswith("админ дата "):
+        try:
+            target_date = datetime.strptime(
+                raw.split("админ дата ", 1)[1].strip(), "%Y-%m-%d").date()
+        except ValueError:
+            return [_msg("Некорректная дата.",
+                         keyboard=_admin_order_dates_kb(), replace=True)]
+        if not admin_can_order_date(target_date):
+            return [_msg(f"⏳ На {target_date.strftime('%d.%m')} заказ уже нельзя оформить.",
+                         keyboard=_admin_order_dates_kb(), replace=True)]
+        _state[dialog_id] = {S_STEP: STEP_ADMIN_ORDER, S_KIND: kind,
+                             S_EMP: state.get(S_EMP), S_DATE: target_date.isoformat(),
+                             S_STAGE: STAGE_QTY}
+        return [_msg("Сколько порций заказать?",
+                     keyboard=_admin_order_qty_kb(), replace=True)]
+
+    # ---- Количество ----
+    if raw.startswith("админ количество "):
+        try:
+            qty = int(raw.split("админ количество ", 1)[1].strip())
+        except ValueError:
+            return [_msg("Некорректное количество.",
+                         keyboard=_admin_order_qty_kb(), replace=True)]
+        if qty < 1 or qty > TIME_CONFIG.MAX_PORTIONS:
+            return [_msg(f"Количество порций — от 1 до {TIME_CONFIG.MAX_PORTIONS}.",
+                         keyboard=_admin_order_qty_kb(), replace=True)]
+        target_date = _parse_iso_date(state.get(S_DATE))
+        emp = await _run_sync(_fetch_employee, state.get(S_EMP)) if state.get(S_EMP) else None
+        if not target_date or not emp:
+            return [_msg("❌ Данные заказа не найдены. Начните заново.",
+                         keyboard=_admin_order_type_kb(), replace=True)]
+        _state[dialog_id] = {S_STEP: STEP_ADMIN_ORDER, S_KIND: kind,
+                             S_EMP: state.get(S_EMP), S_DATE: target_date.isoformat(),
+                             S_QTY: qty, S_STAGE: STAGE_CONFIRM}
+        return [_msg(_admin_confirm_text(kind, emp, target_date, qty),
+                     keyboard=_admin_order_confirm_kb(), replace=True)]
+
+    # ---- Создание заказа ----
+    if raw == "админ создать":
+        target_date = _parse_iso_date(state.get(S_DATE))
+        emp_id = state.get(S_EMP)
+        qty = int(state.get(S_QTY, 1))
+        if not target_date or not emp_id:
+            _state.pop(dialog_id, None)
+            return [_msg("❌ Данные заказа не найдены. Начните заново.",
+                         keyboard=_admin_order_type_kb(), replace=True)]
+        if not admin_can_order_date(target_date):
+            return [_msg(f"⏳ На {target_date.strftime('%d.%m')} заказ уже нельзя оформить.",
+                         keyboard=_admin_order_dates_kb(), replace=True)]
+        text, ok = await _run_sync(_admin_create_order, emp_id, target_date, qty,
+                                   kind == "inspector")
+        _state.pop(dialog_id, None)
+        logger.info(
+            "[B24Bot] ADMIN %s: заказ за сотрудника %s — %s, порций=%s, инспектор=%s (%s)",
+            from_user_id, emp_id, target_date.isoformat(), qty,
+            kind == "inspector", "оформлен" if ok else "не оформлен",
+        )
+        return [_msg(text, keyboard=_main_kb("admin"), replace=True)]
+
+    # ---- Свободный текст: поиск сотрудника ----
+    if stage == STAGE_SEARCH:
+        # Команда бота — это не поисковый запрос: отдаём её обычной маршрутизации
+        if (raw in _BOT_COMMANDS
+                or re.match(r'^(день \d+|отменить \d{2}\.\d{2}|выбрать локацию .+)$', raw)):
+            _state.pop(dialog_id, None)
+            return None
+
+        employees = await _run_sync(_find_employees, raw)
+        if not employees:
+            return [_msg(f"❌ По запросу «{raw}» сотрудник не найден.\n\n"
+                         "Проверьте ФИО или введите Bitrix ID.", replace=True)]
+        if len(employees) == 1:
+            emp = employees[0]
+            if not emp.get("bitrix_id"):
+                return [_msg(f"❌ У сотрудника {emp['full_name']} нет Bitrix ID — такой заказ "
+                             "не попадёт в выгрузку поставщику.\n\n"
+                             "Обновите сотрудников в Битрикс24 и попробуйте снова.",
+                             replace=True)]
+            _state[dialog_id] = {S_STEP: STEP_ADMIN_ORDER, S_KIND: kind,
+                                 S_EMP: emp["id"], S_STAGE: STAGE_DATE}
+            return [_msg(_admin_date_prompt(kind, emp),
+                         keyboard=_admin_order_dates_kb(), replace=True)]
+        rows = [[_btn(_admin_employee_label(e), f"админ сотрудник {e['id']}", "#3b7abf")]
+                for e in employees]
+        rows.append([_btn("🏠 Главное меню", "главное меню", "#555")])
+        return [_msg(f"Найдено сотрудников: {len(employees)}. Выберите нужного:",
+                     keyboard=rows, replace=True)]
+
+    # ---- Прочее: подсказываем текущий шаг ----
+    if stage == STAGE_TYPE:
+        return [_msg("Выберите тип заказа:", keyboard=_admin_order_type_kb(), replace=True)]
+    if stage == STAGE_DATE:
+        return [_msg("Выберите дату обеда:", keyboard=_admin_order_dates_kb(), replace=True)]
+    if stage == STAGE_QTY:
+        return [_msg("Сколько порций заказать?", keyboard=_admin_order_qty_kb(), replace=True)]
+    return [_msg("Нажмите «✅ Оформить заказ» или вернитесь в главное меню.",
+                 keyboard=_admin_order_confirm_kb(), replace=True)]
 
 
 # ------------------------------------------------------------------

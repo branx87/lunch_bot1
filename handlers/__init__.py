@@ -26,6 +26,7 @@ from constants import (
     SELECT_REPORT_DATE, SELECT_REPORT_DATE_STAFF
 )
 from handlers.admin_config_handlers import handle_deletion, setup_admin_config_handlers
+from handlers.admin_order_handlers import setup_admin_order_handlers
 from handlers.admin_handlers import handle_admin_choice
 from handlers.base_handlers import (
     admin_reports_menu, error_handler, handle_admin_reports_menu, 
@@ -331,6 +332,9 @@ def setup_handlers(application):
         allow_reentry=True
     )
     application.add_handler(admin_reports_conv)
+    
+    # 5b. Админский заказ: за другого сотрудника или для инспектора
+    setup_admin_order_handlers(application)
     
     # 6. Обработчик изменения локации (ДОБАВЛЯЕМ ЭТОТ НОВЫЙ HANDLER)
     change_location_conv = ConversationHandler(

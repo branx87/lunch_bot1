@@ -289,82 +289,61 @@ def report_date_options(days=5, holidays=None, today=None) -> list:
     return options
 
 
-def report_target_date(reference_date=None, holidays=None) -> date:
-    """День по умолчанию для дневного отчёта по запросу.
+def admin_can_order_date(target_date, now=None, holidays=None) -> bool:
+    """Может ли админ оформить заказ на эту дату.
 
-    Под новым поставщиком заказ на сегодня не принимается, поэтому отчёт
-    «за сегодня» обычно пустой. По умолчанию берём ближайший рабочий день
-    с обедами: сегодня, если сегодня рабочий день, иначе следующий рабочий.
+    Админский заказ обходит окно приёма сотрудников (15:00 предыдущего
+    рабочего дня) — иначе не получится заказать за того, кто забыл.
+    Но выгрузка в Bitrix24 идёт в день обеда в 09:30, поэтому на сегодня
+    заказ возможен только до этого времени. Будущие рабочие дни доступны
+    без ограничений.
     """
-    now = datetime.now(TIME_CONFIG.TIMEZONE)
-    base = _as_date(reference_date) if reference_date is not None else now.date()
+    if now is None:
+        now = datetime.now(TIME_CONFIG.TIMEZONE)
+    d = _as_date(target_date)
+    if d is None:
+        return False
     holidays = _resolve_holidays(holidays)
 
-    if is_working_day(base, holidays):
-        return base
-    return next_working_day(base, holidays)
+    if not is_working_day(d, holidays):
+        return False
+    if d < now.date():
+        return False
+    if d == now.date():
+        return now.time() < TIME_CONFIG.BITRIX_PUSH_TIME
+    return True
 
 
-def report_date_options(days=5, holidays=None, today=None) -> list:
-    """Варианты дня для дневного отчёта: [(дата, подпись), ...].
-
-    Подпись: «Сегодня 25.10» для сегодняшнего дня, иначе «Понедельник 26.10».
-    """
-    from services.menu_service import DAYS_RU
-
-    now = datetime.now(TIME_CONFIG.TIMEZONE)
-    base = _as_date(today) if today is not None else now.date()
+def admin_order_dates(now=None, days=10, holidays=None) -> list:
+    """Даты, доступные админу для заказа: сегодня (до 09:30) и будущие рабочие дни."""
+    if now is None:
+        now = datetime.now(TIME_CONFIG.TIMEZONE)
+    base = now.date()
     holidays = _resolve_holidays(holidays)
 
-    options = []
-    candidate = report_target_date(base, holidays)
-    for _ in range(days):
-        if candidate > base:
-            label = f"{DAYS_RU[candidate.weekday()]} {candidate.strftime('%d.%m')}"
-        else:
-            label = f"Сегодня {candidate.strftime('%d.%m')}"
-        options.append((candidate, label))
+    result = []
+    candidate = base
+    for _ in range(days * 3 + 10):
+        if len(result) >= days:
+            break
+        if admin_can_order_date(candidate, now=now, holidays=holidays):
+            result.append(candidate)
         candidate = next_working_day(candidate, holidays)
-    return options
+    return result
 
 
-def report_target_date(reference_date=None, holidays=None) -> date:
-    """День по умолчанию для дневного отчёта по запросу.
-
-    Под новым поставщиком заказ на сегодня не принимается, поэтому отчёт
-    «за сегодня» обычно пустой. По умолчанию берём ближайший рабочий день
-    с обедами: сегодня, если сегодня рабочий день, иначе следующий рабочий.
-    """
-    now = datetime.now(TIME_CONFIG.TIMEZONE)
-    base = _as_date(reference_date) if reference_date is not None else now.date()
-    holidays = _resolve_holidays(holidays)
-
-    if is_working_day(base, holidays):
-        return base
-    return next_working_day(base, holidays)
-
-
-def report_date_options(days=5, holidays=None, today=None) -> list:
-    """Варианты дня для дневного отчёта: [(дата, подпись), ...].
-
-    Подпись: «Сегодня 25.10» для сегодняшнего дня, иначе «Понедельник 26.10».
-    """
-    from services.menu_service import DAYS_RU
-
-    now = datetime.now(TIME_CONFIG.TIMEZONE)
-    base = _as_date(today) if today is not None else now.date()
-    holidays = _resolve_holidays(holidays)
-
-    options = []
-    candidate = report_target_date(base, holidays)
-    for _ in range(days):
-        if candidate > base:
-            label = f"{DAYS_RU[candidate.weekday()]} {candidate.strftime('%d.%m')}"
-        else:
-            label = f"Сегодня {candidate.strftime('%d.%m')}"
-        options.append((candidate, label))
-        candidate = next_working_day(candidate, holidays)
-    return options
+def admin_today_note(now=None) -> str:
+    """Пояснение, почему на сегодня админский заказ недоступен (пустая строка — доступен)."""
+    if now is None:
+        now = datetime.now(TIME_CONFIG.TIMEZONE)
+    if now.time() < TIME_CONFIG.BITRIX_PUSH_TIME:
+        return ""
+    return (
+        f"⏳ На сегодня ({now.strftime('%d.%m')}) заказать уже нельзя: выгрузка "
+        f"в Bitrix24 поставщику проходит в "
+        f"{TIME_CONFIG.BITRIX_PUSH_TIME.strftime('%H:%M')} в день обеда. "
+        f"Оформите заказ на следующий рабочий день — он попадёт в выгрузку в день обеда."
+    )
 
 
 def next_orderable_date(today=None, holidays=None, now=None) -> date:
