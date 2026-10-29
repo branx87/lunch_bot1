@@ -1,4 +1,5 @@
 # # ##scheduled_reports.py
+import asyncio
 import logging
 from datetime import datetime
 from telegram.error import Forbidden
@@ -81,13 +82,21 @@ async def send_scheduled_reports(application: Application, report_types: list, t
             
         logger.info("Отправка отчета '%s' для %d получателей", report, len(config['ids']))
         
-        for user_id in config['ids']:
+        async def _send_one(user_id):
             try:
                 fake_update = FakeUpdate(user_id, application.bot)
-                await config['func'](fake_update, application, *config['args'])
-                logger.info("Отчет '%s' отправлен пользователю %d", report, user_id)
+                ok = await config['func'](fake_update, application, *config['args'])
+                if ok is False:
+                    logger.warning("Отчёт '%s' НЕ отправлен пользователю %d (ошибка отправки)",
+                                   report, user_id)
+                else:
+                    logger.info("Отчёт '%s' отправлен пользователю %d", report, user_id)
             except Forbidden:
-                logger.warning("Пользователь %d заблокировал бота, отчет '%s' пропущен", user_id, report)
+                logger.warning("Пользователь %d заблокировал бота, отчёт '%s' пропущен", user_id, report)
             except Exception as e:
-                logger.error("Ошибка отправки отчета '%s' пользователю %d: %s",
-                           report, user_id, str(e))
+                logger.error("Ошибка отправки отчёта '%s' пользователю %d: %s",
+                             report, user_id, str(e))
+
+        # Получателям отправляем параллельно: при недоступном Telegram API
+        # первый получатель не должен задерживать остальных на все попытки повтора.
+        await asyncio.gather(*[_send_one(user_id) for user_id in config['ids']])

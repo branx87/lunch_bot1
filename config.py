@@ -50,6 +50,10 @@ class BotConfig:
         self._db = database
         self._orders_enabled = self._load_orders_status()
         self._orders_status_at = monotonic()
+        logger.info(
+            f"Статус заказов при старте: "
+            f"{'разрешены' if self._orders_enabled else 'запрещены'}"
+        )
         # Заказы через форму Bitrix24 отключены (пользуются 3-4 человека).
         self._accept_bitrix_form_orders = self._load_flag('accept_bitrix_form_orders', False)
         self._form_orders_at = monotonic()
@@ -175,12 +179,15 @@ class BotConfig:
                     BotSetting.setting_name == 'orders_enabled'
                 ).first()
                 if not setting:
-                    logger.warning("Настройка orders_enabled не найдена в БД — считаем заказы разрешёнными")
+                    logger.debug("Настройка orders_enabled не найдена в БД — считаем заказы разрешёнными")
                     return True
 
                 raw = (setting.setting_value or '').strip()
                 enabled = raw.lower() == 'true'
-                logger.info(f"Статус заказов в БД: setting_value={raw!r} -> {'разрешены' if enabled else 'запрещены'}")
+                # Статус перечитывается каждые ORDERS_STATUS_TTL секунд,
+                # поэтому в лог уходит только отладка: INFO-запись на
+                # каждое действие пользователя забивала лог одинаковыми строками.
+                logger.debug(f"Статус заказов в БД: setting_value={raw!r} -> {'разрешены' if enabled else 'запрещены'}")
                 return enabled
         except Exception as e:
             logger.error(f"Ошибка загрузки статуса заказов: {e}")
@@ -198,7 +205,9 @@ class BotConfig:
                     BotSetting.setting_name == name
                 ).first()
                 if not setting:
-                    logger.warning(
+                    # Отсутствующая строка — обычное значение по умолчанию,
+                    # а не предупреждение: флаг читается каждые 5 секунд.
+                    logger.debug(
                         f"Настройка {name} не найдена в БД — "
                         f"берём значение по умолчанию: {default}"
                     )
@@ -206,7 +215,7 @@ class BotConfig:
 
                 raw = (setting.setting_value or '').strip()
                 value = raw.lower() == 'true'
-                logger.info(f"Флаг {name} в БД: setting_value={raw!r} -> {value}")
+                logger.debug(f"Флаг {name} в БД: setting_value={raw!r} -> {value}")
                 return value
         except Exception as e:
             logger.error(f"Ошибка загрузки флага {name}: {e}")
@@ -220,7 +229,13 @@ class BotConfig:
         """
         if monotonic() - self._form_orders_at < ORDERS_STATUS_TTL:
             return
-        self._accept_bitrix_form_orders = self._load_flag('accept_bitrix_form_orders', False)
+        enabled = self._load_flag('accept_bitrix_form_orders', False)
+        if enabled != self._accept_bitrix_form_orders:
+            logger.info(
+                f"Приём заказов через форму Bitrix24: "
+                f"{'разрешён' if enabled else 'запрещён'}"
+            )
+        self._accept_bitrix_form_orders = enabled
         self._form_orders_at = monotonic()
 
     def set_accept_bitrix_form_orders(self, enabled: bool):
@@ -260,7 +275,13 @@ class BotConfig:
         """
         if monotonic() - self._orders_status_at < ORDERS_STATUS_TTL:
             return
-        self._orders_enabled = self._load_orders_status()
+        enabled = self._load_orders_status()
+        if enabled != self._orders_enabled:
+            logger.info(
+                f"Статус заказов изменился: "
+                f"{'разрешены' if enabled else 'запрещены'}"
+            )
+        self._orders_enabled = enabled
         self._orders_status_at = monotonic()
             
     def toggle_orders(self, enabled: bool):

@@ -46,6 +46,21 @@ def main():
 
         from vkbottle.polling.bot_polling import BotPolling
 
+        # Диагностика сети: VK-бот НЕ ходит через прокси.
+        # vkbottle по умолчанию использует aiohttp ClientSession с trust_env=False,
+        # поэтому переменные HTTPS_PROXY/ALL_PROXY из окружения он игнорирует.
+        # Прокси в проекте используется только для Telegram API (он заблокирован),
+        # а Bitrix24 и так идёт напрямую (см. NO_PROXY в bot_core.py).
+        proxy_vars = {k: v for k, v in os.environ.items() if 'proxy' in k.lower()}
+        if proxy_vars:
+            logger.info(
+                "🔗 В окружении есть переменные прокси (%s), но они НЕ используются: "
+                "vkbottle ходит в VK напрямую (aiohttp, trust_env=False).",
+                ", ".join(sorted(proxy_vars)),
+            )
+        else:
+            logger.info("🔗 Переменных прокси в окружении нет — VK ходит напрямую.")
+
         class NoopPolling(BotPolling):
             def save_server_ts(self, server):
                 pass
