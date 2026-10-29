@@ -1,5 +1,9 @@
 import logging
 import asyncio
+import os
+import socket
+from urllib.parse import urlparse
+
 import httpx
 from telegram.ext import ApplicationBuilder
 from telegram.request import HTTPXRequest
@@ -25,11 +29,17 @@ class SocksHTTPXRequest(HTTPXRequest):
 
 
 class LunchBot:
+    # Как часто сторож проверяет прокси (секунды).
+    PROXY_WATCHDOG_INTERVAL = 60
+    # Сколько неудачных проверок подряд считать «прокси мёртв».
+    PROXY_WATCHDOG_FAILS = 3
+
     def __init__(self, bitrix_sync=None):
         self.bitrix_sync = bitrix_sync
         self.application = None
         self._running = False
         self.cron_manager = None
+        self._active_proxy = None
 
         # Простой логгер без сложной логики
         self.logger = logging.getLogger(__name__)
@@ -80,6 +90,106 @@ class LunchBot:
         self._rollback_db_session(error)
 
 
+    @staticmethod
+    def _proxy_host_port(proxy_url: str):
+        parsed = urlparse(proxy_url)
+        return parsed.hostname, parsed.port or 1080
+
+    @staticmethod
+    def _tcp_probe(host: str, port: int, timeout: int = 10) -> bool:
+        """TCP-коннект к прокси (порт могу принимать, а туннель не работать)."""
+        try:
+            sock = socket.create_connection((host, port), timeout=timeout)
+            sock.close()
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _telegram_probe(proxy_url: str, timeout: int = 20) -> bool:
+        """Настоящий запрос к Telegram через прокси: SOCKS-рукопожатие + CONNECT."""
+        import requests
+
+        proxies = {
+            'http': proxy_url,
+            'https': proxy_url.replace('socks5://', 'socks5h://'),
+        }
+        try:
+            resp = requests.get('https://api.telegram.org', proxies=proxies, timeout=timeout)
+            return resp.status_code < 500
+        except Exception:
+            return False
+
+    async def _pick_proxy(self) -> str | None:
+        """Выбирает рабочий прокси из кандидатов (PROXY_URLS).
+
+        Проверка настоящая, а не «порт открыт»: SOCKS-сервер может принимать
+        соединение и при этом не доводить туннель до Telegram (29.10 так и было:
+        TCP к 84.22.148.84:1080 проходил, а getMe висел до таймаута).
+        """
+        from config import CONFIG
+
+        candidates = CONFIG.proxy_urls
+        if not candidates:
+            return None
+
+        for url in candidates:
+            host, port = self._proxy_host_port(url)
+            if not host:
+                continue
+            try:
+                if not await asyncio.to_thread(self._tcp_probe, host, port, 10):
+                    self.logger.warning(
+                        f"⚠️ Прокси {host}:{port} недоступен (TCP) — пробуем следующий")
+                    continue
+
+                if await asyncio.to_thread(self._telegram_probe, url, 20):
+                    self.logger.info(
+                        f"✅ Прокси {host}:{port} работает — Telegram API отвечает")
+                    return url
+
+                self.logger.warning(
+                    f"⚠️ Прокси {host}:{port} принимает соединение, но не пускает "
+                    f"к Telegram — пробуем следующий")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Прокси {host}:{port}: {e} — пробуем следующий")
+
+        return None
+
+    async def _proxy_watchdog(self):
+        """Следит за прокси и перезапускает бота, если тот перестал работать.
+
+        Прокси умирает периодически (29.10 — дважды), а зависший запрос к
+        Telegram держит слот пула соединений: процесс жив, но бот молчит, и
+        docker его не перезапускает. Три неудачные проверки подряд — сигнал
+        перезапустить контейнер, при старте бот выберет рабочий прокси.
+        """
+        fails = 0
+        while self._running:
+            await asyncio.sleep(self.PROXY_WATCHDOG_INTERVAL)
+            try:
+                ok = await asyncio.to_thread(self._telegram_probe, self._active_proxy, 20)
+            except Exception:
+                ok = False
+
+            if ok:
+                if fails:
+                    self.logger.info("✅ Telegram API снова отвечает через прокси")
+                fails = 0
+                continue
+
+            fails += 1
+            self.logger.warning(
+                f"⚠️ Прокси не отвечает ({fails}/{self.PROXY_WATCHDOG_FAILS}) — "
+                f"Telegram API недоступен")
+            if fails >= self.PROXY_WATCHDOG_FAILS:
+                self.logger.error(
+                    "❌ Прокси не отвечает 3 раза подряд — перезапускаю бота, "
+                    "он выберет рабочий прокси заново"
+                )
+                os._exit(1)
+                return
+
     async def run(self):
         try:
             self.logger.info("=== НАЧАЛО РАБОТЫ BOT_CORE ===")
@@ -105,11 +215,22 @@ class LunchBot:
                 write_timeout=30.0,     # Увеличено для отправки файлов
                 pool_timeout=30.0,      # Увеличено для SOCKS5
             )
-            if CONFIG.proxy_url:
+            # Прокси для Telegram API: выбираем рабочий из кандидатов (PROXY_URLS).
+            # Один прокси — единая точка отказа: 29.10 он дважды отваливался
+            # (09:31–10:20 и с 16:53), и бот при этом висел на initialize()
+            # по 15–20 минут без единой записи в логе.
+            proxy_url = await self._pick_proxy()
+            if CONFIG.proxy_urls and not proxy_url:
+                raise RuntimeError("Ни один прокси-кандидат не работает")
+
+            if proxy_url:
                 # 🔥 Прокси ТОЛЬКО для Telegram API через HTTPS_PROXY,
                 # но с NO_PROXY для Bitrix24 и внутренних сетей
                 import os
-                os.environ['HTTPS_PROXY'] = CONFIG.proxy_url
+                from config import mask_proxy
+
+                self._active_proxy = proxy_url
+                os.environ['HTTPS_PROXY'] = proxy_url
                 # Запрещаем прокси для Bitrix24 и внутренних адресов
                 no_proxy = os.environ.get('NO_PROXY', '')
                 exclude = 'b24.epc.su,b24dev.ru,localhost,127.0.0.1,192.168.0.0/16,172.17.0.0/16'
@@ -118,13 +239,13 @@ class LunchBot:
                 else:
                     os.environ['NO_PROXY'] = exclude
                 os.environ['no_proxy'] = os.environ['NO_PROXY']
-                self.logger.info(f"🔗 Прокси для Telegram API: {CONFIG.proxy_url}")
+                self.logger.info(f"🔗 Прокси для Telegram API: {mask_proxy(proxy_url)}")
                 self.logger.info(f"🚫 NO_PROXY: {os.environ['NO_PROXY']}")
                 # Используем SocksHTTPXRequest — он корректно обрабатывает SOCKS5
                 request = SocksHTTPXRequest(**request_kwargs)
             else:
                 request = HTTPXRequest(**request_kwargs)
-            
+
             # ✅ УБРАЛИ connect_timeout, read_timeout и т.д. из ApplicationBuilder
             self.application = (
                 ApplicationBuilder()
@@ -174,10 +295,24 @@ class LunchBot:
             self.application.add_error_handler(self.error_handler)
 
             self.logger.info("8. Инициализируем application")
-            await self.application.initialize()
-            await self.application.start()
 
-            bot_info = await self.application.bot.get_me()
+            async def _init_app():
+                await self.application.initialize()
+                await self.application.start()
+                return await self.application.bot.get_me()
+
+            # Жёсткий лимит на инициализацию: get_me() идёт через прокси, и при
+            # недоступном прокси запрос мог висеть 15-20 минут. С лимитом бот
+            # падает и перезапускается (docker restart: unless-stopped), вместо
+            # того чтобы молчать в логе.
+            try:
+                bot_info = await asyncio.wait_for(_init_app(), timeout=120)
+            except asyncio.TimeoutError:
+                self.logger.error(
+                    "❌ Инициализация не завершилась за 120с — Telegram API не отвечает "
+                    "через прокси. Перезапуск бота."
+                )
+                raise
             self.logger.info(f"9. Бот @{bot_info.username} запущен")
 
             self.logger.info("10. Запускаем polling с увеличенными таймаутами")
@@ -188,6 +323,13 @@ class LunchBot:
                 bootstrap_retries=5  # 5 попыток при старте
             )
             self._running = True
+
+            # Сторож прокси: если прокси умер, зависшие запросы держат слоты
+            # пула соединений, бот перестаёт отвечать, но процесс жив — и docker
+            # его не перезапускает. Сторож ловит это и перезапускает контейнер:
+            # при старте бот заново выбирает рабочий прокси из кандидатов.
+            if self._active_proxy:
+                asyncio.create_task(self._proxy_watchdog())
 
             self.logger.info("11. Бот успешно запущен, переходим в основной цикл")
             while self._running:

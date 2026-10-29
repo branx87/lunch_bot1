@@ -2,6 +2,7 @@
 import os
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 import pytz
 import sqlite3
@@ -29,6 +30,18 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
+
+
+def mask_proxy(url: str) -> str:
+    """Прокси без пароля — пароль не должен попадать в логи."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return '***'
+    if not parsed.hostname:
+        return '***'
+    auth = f"{parsed.username}:***@" if parsed.username else ""
+    return f"{parsed.scheme}://{auth}{parsed.hostname}:{parsed.port or 1080}"
 
 # Загрузка переменных окружения
 load_dotenv(CONFIGS_DIR / '.env')
@@ -76,8 +89,20 @@ class BotConfig:
                 raise ValueError("Токен бота не указан в .env файле!")
 
             self._proxy_url = os.getenv('PROXY_URL', '').strip() or None
-            if self._proxy_url:
-                logger.info(f"🔗 Прокси настроен: {self._proxy_url}")
+            # PROXY_URLS — список прокси-кандидатов через запятую.
+            # Нужен, когда основной прокси периодически отваливается:
+            # бот на старте выбирает первый рабочий, а не висит на мёртвом.
+            self._proxy_urls = [
+                u.strip() for u in os.getenv('PROXY_URLS', '').split(',') if u.strip()
+            ]
+            if self._proxy_url and self._proxy_url not in self._proxy_urls:
+                self._proxy_urls.insert(0, self._proxy_url)
+            if self._proxy_urls:
+                logger.info(
+                    f"🔗 Прокси настроен: {mask_proxy(self._proxy_urls[0])}"
+                    + (f" (кандидатов: {len(self._proxy_urls)})"
+                       if len(self._proxy_urls) > 1 else "")
+                )
                 
             admin_ids_str = os.getenv("ADMIN_IDS", "")
             logger.info(f"📋 ADMIN_IDS из os.getenv: '{admin_ids_str}'")
@@ -373,6 +398,11 @@ class BotConfig:
     @property
     def proxy_url(self) -> str | None:
         return self._proxy_url
+
+    @property
+    def proxy_urls(self) -> list[str]:
+        """Прокси-кандидаты (первый — основной). Пусто, если прокси не задан."""
+        return list(self._proxy_urls)
 
     @property
     def admin_ids(self) -> list[int]:
