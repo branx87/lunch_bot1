@@ -5,6 +5,7 @@
 import os
 import subprocess
 import logging
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timedelta, date
 import tempfile
@@ -16,6 +17,28 @@ from models import Order, User, Holiday, Menu, AdminMessage, FeedbackMessage, Bo
 from sqlalchemy import and_
 
 logger = logging.getLogger(__name__)
+
+# Переменные, которыми задаётся прокси для всего процесса.
+PROXY_ENV_VARS = ('HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy',
+                   'ALL_PROXY', 'all_proxy')
+
+
+@contextmanager
+def without_proxy():
+    """Временно убирает прокси из окружения.
+
+    Яндекс.Диск — российский сервис, прокси ему не нужен. Но requests внутри
+    yadisk читает переменные окружения, поэтому при мёртвом прокси бэкап
+    просто не загружался (29.10 — «Ошибка подключения к Яндекс.Диску»).
+    """
+    saved = {key: os.environ.pop(key, None) for key in PROXY_ENV_VARS}
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is not None:
+                os.environ[key] = value
+
 
 class BackupManager:
     """Управление резервным копированием базы данных"""
@@ -35,16 +58,17 @@ class BackupManager:
         # Парсим DATABASE_URL для pg_dump
         self._parse_db_credentials()
 
-        # Инициализация Яндекс.Диск клиента
+        # Инициализация Яндекс.Диск клиента (без прокси — сервис российский)
         self.yadisk_client = None
         if self.yandex_token:
             try:
-                self.yadisk_client = yadisk.YaDisk(token=self.yandex_token)
-                if self.yadisk_client.check_token():
-                    logger.info("✅ Подключение к Яндекс.Диску успешно")
-                else:
-                    logger.warning("⚠️ Невалидный токен Яндекс.Диска")
-                    self.yadisk_client = None
+                with without_proxy():
+                    self.yadisk_client = yadisk.YaDisk(token=self.yandex_token)
+                    if self.yadisk_client.check_token():
+                        logger.info("✅ Подключение к Яндекс.Диску успешно")
+                    else:
+                        logger.warning("⚠️ Невалидный токен Яндекс.Диска")
+                        self.yadisk_client = None
             except Exception as e:
                 logger.error(f"❌ Ошибка подключения к Яндекс.Диску: {e}")
                 self.yadisk_client = None
@@ -292,21 +316,23 @@ class BackupManager:
             return False
 
         try:
-            # Создаем папку если её нет
-            if not self.yadisk_client.exists(self.yandex_folder):
-                self.yadisk_client.mkdir(self.yandex_folder)
-                logger.info(f"📁 Создана папка на Яндекс.Диске: {self.yandex_folder}")
+            # Загрузка идёт напрямую: Яндекс.Диск российский, прокси не нужен
+            with without_proxy():
+                # Создаем папку если её нет
+                if not self.yadisk_client.exists(self.yandex_folder):
+                    self.yadisk_client.mkdir(self.yandex_folder)
+                    logger.info(f"📁 Создана папка на Яндекс.Диске: {self.yandex_folder}")
 
-            remote_path = f"{self.yandex_folder}/{remote_name}"
+                remote_path = f"{self.yandex_folder}/{remote_name}"
 
-            # Удаляем старый файл если существует
-            if self.yadisk_client.exists(remote_path):
-                self.yadisk_client.remove(remote_path)
-                logger.info(f"🗑️ Удален старый бекап: {remote_name}")
+                # Удаляем старый файл если существует
+                if self.yadisk_client.exists(remote_path):
+                    self.yadisk_client.remove(remote_path)
+                    logger.info(f"🗑️ Удален старый бекап: {remote_name}")
 
-            # Загружаем новый файл
-            logger.info(f"☁️ Загрузка на Яндекс.Диск: {remote_name}...")
-            self.yadisk_client.upload(str(file_path), remote_path)
+                # Загружаем новый файл
+                logger.info(f"☁️ Загрузка на Яндекс.Диск: {remote_name}...")
+                self.yadisk_client.upload(str(file_path), remote_path)
 
             logger.info(f"✅ Файл загружен на Яндекс.Диск: {remote_path}")
             return True
@@ -444,11 +470,12 @@ class BackupManager:
             local_path = self.local_backup_dir / remote_name
 
             logger.info(f"☁️ Скачивание с Яндекс.Диска: {remote_name}...")
-            await asyncio.to_thread(
-                self.yadisk_client.download,
-                remote_path,
-                str(local_path)
-            )
+            with without_proxy():
+                await asyncio.to_thread(
+                    self.yadisk_client.download,
+                    remote_path,
+                    str(local_path)
+                )
 
             logger.info(f"✅ Файл скачан: {local_path}")
             return local_path

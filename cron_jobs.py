@@ -60,7 +60,10 @@ class CronManager:
 
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            # trust_env=False — идём напрямую: isdayoff.ru российский сервис,
+            # прокси ему не нужен. Через прокси проверка падала при его
+            # недоступности, и праздник принимался за рабочий день.
+            async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
                 response = await client.get(f"https://isdayoff.ru/{date_key}")
                 if response.status_code == 200:
                     result = response.text.strip()
