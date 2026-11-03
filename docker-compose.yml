@@ -1,7 +1,17 @@
+# Ограничение размера логов контейнеров. Без него docker копит stdout
+# бесконечно: когда бот падал в цикл перезапусков, логи разрастались
+# на десятки мегабайт в час и съедали диск.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: postgres:15-alpine
     container_name: lunch_bot_postgres
+    logging: *default-logging
     environment:
       POSTGRES_DB: lunch_bot
       POSTGRES_USER: bot_user
@@ -27,6 +37,7 @@ services:
         GROUP_ID: 599
     container_name: lunch_bot
     working_dir: /app
+    logging: *default-logging
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,6 +70,7 @@ services:
   #       GROUP_ID: 599
   #   container_name: max_bot
   #   working_dir: /app
+  #   logging: *default-logging
   #   command: python -m max_bot.main
   #   depends_on:
   #     postgres:
@@ -89,6 +101,7 @@ services:
         GROUP_ID: 599
     container_name: bitrix24_bot
     working_dir: /app
+    logging: *default-logging
     command: python -m bitrix24_bot.main
     ports:
       - "7777:7777"
@@ -119,6 +132,7 @@ services:
         GROUP_ID: 599
     container_name: vk_bot
     working_dir: /app
+    logging: *default-logging
     command: python -m vk_bot.main
     depends_on:
       postgres:

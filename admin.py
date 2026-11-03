@@ -14,7 +14,7 @@ from database import db
 from config import CONFIG
 from constants import ADMIN_MESSAGE, MAIN_MENU, SELECT_MONTH_RANGE
 from models import User, AdminMessage
-from bot_keyboards import create_admin_keyboard
+from bot_keyboards import create_admin_keyboard, create_admin_keyboard_for
 from sqlalchemy import text
 
 try:
@@ -43,7 +43,7 @@ async def message_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not hasattr(CONFIG, 'admin_ids') or user.id not in CONFIG.admin_ids:
         await update.message.reply_text(
             "❌ У вас нет прав для просмотра истории сообщений.",
-            reply_markup=create_admin_keyboard()
+            reply_markup=create_admin_keyboard_for(update.effective_user.id)
         )
         return ADMIN_MESSAGE
 
@@ -133,7 +133,7 @@ async def message_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка при выводе истории: {e}", exc_info=True)
         await update.message.reply_text(
             f"❌ Ошибка при загрузке истории: {str(e)}",
-            reply_markup=create_admin_keyboard()
+            reply_markup=create_admin_keyboard_for(update.effective_user.id)
         )
     
     return ADMIN_MESSAGE

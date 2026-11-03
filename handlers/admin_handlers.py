@@ -2,7 +2,7 @@
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
-from bot_keyboards import create_admin_keyboard
+from bot_keyboards import create_admin_keyboard, create_admin_keyboard_for
 from database import db
 from config import CONFIG
 
@@ -39,7 +39,7 @@ async def handle_admin_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         await update.message.reply_text(
             f"Прием заказов теперь {status}\n\n{hint}",
-            reply_markup=create_admin_keyboard()
+            reply_markup=create_admin_keyboard_for(update.effective_user.id)
         )
 
 async def manual_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):

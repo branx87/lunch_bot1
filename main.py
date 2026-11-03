@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from datetime import datetime, time
 import signal
 import atexit
@@ -8,7 +9,10 @@ import sys
 from logging_config import setup_logging
 
 # 1. СНАЧАЛА настраиваем логирование
-setup_logging(telegram_debug=True)
+# Подробный лог PTB (каждое обновление и каждый ответ API) включается только
+# при разборе проблем с polling: TELEGRAM_DEBUG=1. По умолчанию выключен —
+# он давал тысячи строк в час и раздувал логи контейнера.
+setup_logging(telegram_debug=os.getenv("TELEGRAM_DEBUG", "") == "1")
 logger = logging.getLogger(__name__)
 
 # 2. ПОТОМ импортируем остальные модули

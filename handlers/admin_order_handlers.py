@@ -37,7 +37,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from bot_keyboards import create_admin_keyboard
+from bot_keyboards import create_admin_keyboard, create_admin_keyboard_for
 from config import CONFIG
 from constants import (
     ADMIN_ORDER_CONFIRM,
@@ -394,7 +394,7 @@ async def admin_order_create(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "Дубликат не создаём."
         )
         await query.message.reply_text(
-            "Главное меню:", reply_markup=create_admin_keyboard())
+            "Главное меню:", reply_markup=create_admin_keyboard_for(update.effective_user.id))
         return ConversationHandler.END
 
     order, err = create_order(
@@ -408,7 +408,7 @@ async def admin_order_create(update: Update, context: ContextTypes.DEFAULT_TYPE)
         _reset(context)
         await query.edit_message_text(f"❌ {err}")
         await query.message.reply_text(
-            "Главное меню:", reply_markup=create_admin_keyboard())
+            "Главное меню:", reply_markup=create_admin_keyboard_for(update.effective_user.id))
         return ConversationHandler.END
 
     db.session.commit()
@@ -434,7 +434,7 @@ async def admin_order_create(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
     await query.edit_message_text(result)
-    await query.message.reply_text("Главное меню:", reply_markup=create_admin_keyboard())
+    await query.message.reply_text("Главное меню:", reply_markup=create_admin_keyboard_for(update.effective_user.id))
     return ConversationHandler.END
 
 
@@ -449,7 +449,7 @@ async def admin_order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except Exception:
             logger.debug("Не удалось отредактировать сообщение при отмене заказа")
         await update.callback_query.message.reply_text(
-            "Главное меню:", reply_markup=create_admin_keyboard())
+            "Главное меню:", reply_markup=create_admin_keyboard_for(update.effective_user.id))
         return ConversationHandler.END
 
     await update.message.reply_text("❌ Оформление заказа отменено.")

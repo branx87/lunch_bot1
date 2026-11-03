@@ -31,7 +31,7 @@ from constants import (
     ADD_PROVIDER, ADD_STAFF, CONFIG_MENU, DELETE_ACCOUNTANT, DELETE_ADMIN,
     DELETE_HOLIDAY, DELETE_PROVIDER, DELETE_STAFF, PAGE_SIZE
 )
-from bot_keyboards import create_admin_config_keyboard, create_admin_keyboard, create_main_menu_keyboard, get_cancel_button
+from bot_keyboards import create_admin_config_keyboard, create_admin_keyboard, create_admin_keyboard_for, create_main_menu_keyboard, get_cancel_button
 from decorators import admin_filter
 
 ENV_PATH = Path("data/configs/.env")
@@ -872,18 +872,18 @@ async def force_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_text(
             "✅ Возврат в главное меню",
-            reply_markup=create_admin_keyboard()
+            reply_markup=create_admin_keyboard_for(update.effective_user.id)
         )
     elif update.callback_query:
         try:
             await update.callback_query.edit_message_text(
                 "✅ Возврат в главное меню",
-                reply_markup=create_admin_keyboard()
+                reply_markup=create_admin_keyboard_for(update.effective_user.id)
             )
         except BadRequest:
             await update.effective_message.reply_text(
                 "✅ Возврат в главное меню",
-                reply_markup=create_admin_keyboard()
+                reply_markup=create_admin_keyboard_for(update.effective_user.id)
             )
 
     return ConversationHandler.END

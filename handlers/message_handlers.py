@@ -10,7 +10,7 @@ from database import db
 from models import User, AdminMessage
 from config import CONFIG
 from constants import AWAIT_MESSAGE_TEXT, AWAIT_USER_SELECTION
-from bot_keyboards import create_admin_keyboard, create_main_menu_keyboard
+from bot_keyboards import create_admin_keyboard, create_admin_keyboard_for, create_main_menu_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ async def handle_user_selection(update: Update, context: ContextTypes.DEFAULT_TY
     user_input = update.message.text.strip()
     
     if user_input.lower() in ["отмена", "❌ отмена"]:
-        await update.message.reply_text("❌ Отправка отменена", reply_markup=create_admin_keyboard())
+        await update.message.reply_text("❌ Отправка отменена", reply_markup=create_admin_keyboard_for(update.effective_user.id))
         return ConversationHandler.END
 
     # Если ввели чистый ID (только цифры)
@@ -187,13 +187,13 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
         text = update.message.text.strip()
         
         if text.lower() in ["отмена", "❌ отмена"]:
-            await update.message.reply_text("❌ Отправка отменена", reply_markup=create_admin_keyboard())
+            await update.message.reply_text("❌ Отправка отменена", reply_markup=create_admin_keyboard_for(update.effective_user.id))
             return ConversationHandler.END
 
         recipient_id = context.user_data.get('recipient_id')
         
         if not recipient_id:
-            await update.message.reply_text("❌ Получатель не выбран", reply_markup=create_admin_keyboard())
+            await update.message.reply_text("❌ Получатель не выбран", reply_markup=create_admin_keyboard_for(update.effective_user.id))
             return ConversationHandler.END
 
         try:
@@ -223,19 +223,19 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
             await update.message.reply_text(
                 f"✅ Сообщение отправлено (ID: {recipient_id})",
-                reply_markup=create_admin_keyboard()
+                reply_markup=create_admin_keyboard_for(update.effective_user.id)
             )
             
         except Exception as e:
             logger.error(f"Ошибка отправки: {e}")
             await update.message.reply_text(
                 f"❌ Не удалось отправить. Пользователь мог заблокировать бота.",
-                reply_markup=create_admin_keyboard()
+                reply_markup=create_admin_keyboard_for(update.effective_user.id)
             )
 
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        await update.message.reply_text("❌ Произошла ошибка", reply_markup=create_admin_keyboard())
+        await update.message.reply_text("❌ Произошла ошибка", reply_markup=create_admin_keyboard_for(update.effective_user.id))
     
     return ConversationHandler.END
 
@@ -269,7 +269,7 @@ async def process_broadcast_message(update: Update, context: ContextTypes.DEFAUL
         logger.info("Рассылка отменена")
         await update.message.reply_text(
             "❌ Рассылка отменена",
-            reply_markup=create_admin_keyboard()
+            reply_markup=create_admin_keyboard_for(update.effective_user.id)
         )
         return ConversationHandler.END
     
@@ -326,7 +326,7 @@ async def process_broadcast_message(update: Update, context: ContextTypes.DEFAUL
         logger.info(f"Результат рассылки: {report}")
         await update.message.reply_text(
             report,
-            reply_markup=create_admin_keyboard()
+            reply_markup=create_admin_keyboard_for(update.effective_user.id)
         )
         
     except Exception as e:

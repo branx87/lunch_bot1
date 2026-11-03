@@ -37,8 +37,19 @@ class DynamicProviderOrAdminFilter(filters.MessageFilter):
     def filter(self, message):
         return message.from_user.id in CONFIG.provider_ids or message.from_user.id in CONFIG.admin_ids
 
+class DynamicMasterAdminFilter(filters.MessageFilter):
+    """Только главный админ (MASTER_ADMIN_ID).
+
+    Нужен для редких операций вроде отмены чужого заказа: обычному
+    админу это не нужно, а лишние кнопки в его меню только мешают.
+    """
+    def filter(self, message):
+        master_id = CONFIG.master_admin_id
+        return bool(master_id) and message.from_user.id == master_id
+
 # Создаем экземпляры фильтров для использования в обработчиках
 admin_filter = DynamicAdminFilter()
 provider_filter = DynamicProviderFilter()
 accounting_filter = DynamicAccountingFilter()
 provider_or_admin_filter = DynamicProviderOrAdminFilter()
+master_admin_filter = DynamicMasterAdminFilter()

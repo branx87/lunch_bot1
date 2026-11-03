@@ -36,10 +36,18 @@ def create_main_menu_keyboard(user_id=None):
     elif role == 'accountant':
         base_buttons.insert(1, ["📊 Отчет за день", "📅 Отчет за месяц"])
     elif role == 'admin':
-        # Для админа используем специальную клавиатуру
-        return create_admin_keyboard()
+        # Для админа используем специальную клавиатуру.
+        # Главному админу (MASTER_ADMIN_ID) добавляется кнопка отмены
+        # чужого заказа — обычному админу она не нужна.
+        return create_admin_keyboard(is_master=(user_id == CONFIG.master_admin_id))
     
     return ReplyKeyboardMarkup(base_buttons, resize_keyboard=True)
+
+def create_admin_keyboard_for(user_id) -> ReplyKeyboardMarkup:
+    """Клавиатура админа с учётом роли: главному админу (MASTER_ADMIN_ID)
+    добавляется кнопка «Отменить заказ сотрудника»."""
+    return create_admin_keyboard(is_master=(user_id == CONFIG.master_admin_id))
+
 
 def create_month_selection_keyboard():
     """Обновленная клавиатура выбора месяца (кнопки рядом)"""
@@ -91,17 +99,24 @@ def create_order_keyboard(has_order):
         ]
     return [[InlineKeyboardButton("✅ Заказать", callback_data="order")]]
 
-def create_admin_keyboard():
-    """Основная клавиатура админа"""
-    return ReplyKeyboardMarkup([
+def create_admin_keyboard(is_master: bool = False):
+    """Основная клавиатура админа
+
+    is_master — главный админ (MASTER_ADMIN_ID): добавляется кнопка
+    «Отменить заказ сотрудника». Обычному админу она не нужна.
+    """
+    buttons = [
         ["Меню на сегодня", "Меню на неделю", "✅ Быстрый заказ"],
         ["👨‍💼 Заказать за сотрудника"],
         ["Просмотреть заказы", "✏️ Изменить меню"],  # Добавлена кнопка изменения меню
         ["Статистика за месяц", "📊 Отчеты"],
         ["⚙️ Управление конфигурацией", "✉️ Написать пользователю", "📢 Сделать рассылку"],
         ["📜 История сообщений", "🔒 Вкл/Выкл заказы"],
-        ["🏠 Главное меню"]
-    ], resize_keyboard=True)
+    ]
+    if is_master:
+        buttons.insert(2, ["🗑 Отменить заказ сотрудника"])
+    buttons.append(["🏠 Главное меню"])
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 def create_admin_config_keyboard():
     return ReplyKeyboardMarkup([
