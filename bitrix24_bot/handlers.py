@@ -21,7 +21,8 @@ from services.order_service import (
     get_user_monthly_stats, QUANTITY_MAP,
     find_employees,
 )
-from services.menu_service import get_menu_for_day, format_menu_text, get_week_menus, DAYS_RU
+from services.menu_service import (get_menu_for_day, format_menu_text, get_week_menus,
+                                   get_day_info, format_day_text, DAYS_RU)
 from services.time_service import (can_modify_order, order_deadline_message,
                                    is_new_supplier_date, next_orderable_date,
                                    report_target_date, report_date_options,
@@ -813,8 +814,9 @@ async def _check_location_or_prompt(
 
 
 def _fetch_order_view(user_db_id: int, day_offset: int, session) -> tuple:
-    menu, day_name, target_date = get_menu_for_day(day_offset, CONFIG)
-    menu_text = format_menu_text(menu, day_name, target_date)
+    day_info = get_day_info(day_offset, CONFIG)
+    menu_text = format_day_text(day_info)
+    target_date = day_info['target_date']
 
     order = get_order_for_date(user_db_id, target_date, session)
     if order:
@@ -824,6 +826,14 @@ def _fetch_order_view(user_db_id: int, day_offset: int, session) -> tuple:
     # чтобы кнопка отмены оставалась доступной при отключённом приёме.
     can_modify = can_modify_order(target_date, True)
     return menu_text, order, target_date, can_modify
+
+
+def _is_holiday(target_date) -> bool:
+    """Праздник ли дата. CONFIG сам перечитывает праздники из БД."""
+    try:
+        return target_date.isoformat() in CONFIG.holidays
+    except AttributeError:
+        return False
 
 
 def _order_status_text(order) -> str:
@@ -925,13 +935,13 @@ def _do_cancel_order_db(user_db_id: int, target_date, session) -> str:
     return f"✅ Заказ на {target_date.strftime('%d.%m')} отменён."
 
 
-def _fetch_week_order_status(user_db_id: int, work_days: list, session) -> list:
+def _fetch_week_order_status(user_db_id: int, days: list, session) -> list:
     now_local = datetime.now(TIME_CONFIG.TIMEZONE)
     results = []
-    for day in work_days:
+    for day in days:
         offset      = day["day_offset"]
         target_date = day["target_date"]
-        menu_text   = format_menu_text(day["menu"], day["day_name"], target_date)
+        menu_text   = format_day_text(day)
         order       = get_order_for_date(user_db_id, target_date, session)
         has_order   = order is not None
         can_modify  = can_modify_order(target_date, True)
@@ -945,6 +955,7 @@ def _fetch_week_order_status(user_db_id: int, work_days: list, session) -> list:
             "has_order":   has_order,
             "can_modify":  can_modify,
             "qty":         qty,
+            "is_holiday":  day["is_holiday"],
         })
     return results
 
@@ -1299,8 +1310,8 @@ async def _handle_employee_inner(
         status = _order_status_text(order)
         if not CONFIG.are_orders_accepted_now():
             status += f"\n{CONFIG.get_orders_status_message()}"
-        elif not can_modify:
-            # Окно заказов на этот день закрыто — говорим, куда и до когда заказать
+        elif not can_modify and not _is_holiday(target_date):
+            # Для праздника объяснение уже есть в самом тексте дня.
             status += f"\n{order_deadline_message(target_date)}"
         return [_msg(f"{menu_text}{status}",
                      keyboard=_order_view_kb(order is not None, can_modify, user_db_id), replace=True)]
@@ -1308,17 +1319,21 @@ async def _handle_employee_inner(
     # ---- Меню на неделю / Меню (обратная совместимость) ----
     if raw in ("меню на неделю", "меню"):
         week = get_week_menus(CONFIG)
-        work_days = [d for d in week if not d["is_weekend"] and not d["is_holiday"] and d["menu"]]
-        if not work_days:
+        # Праздники показываем явно (как в Telegram, ВК и Max): раньше день
+        # просто выпадал из меню, и в Б24 было непонятно, почему на него
+        # нельзя заказать — ни меню, ни упоминания о празднике.
+        days = [d for d in week if not d["is_weekend"]]
+        if not days:
             return [_msg("Меню на текущую неделю отсутствует.", keyboard=main_kb, replace=True)]
-        day_statuses = await _run_sync(_fetch_week_order_status, user_db_id, work_days)
+        day_statuses = await _run_sync(_fetch_week_order_status, user_db_id, days)
         _state.pop(dialog_id, None)
         messages = []
         for i, st in enumerate(day_statuses):
             text = st["menu_text"]
             if st["has_order"]:
                 text += f"\n\n[B]🛒 Заказано: {st['qty']} порц.[/B]"
-            elif not st["can_modify"]:
+            elif not st["can_modify"] and not st["is_holiday"]:
+                # Для праздника объяснение уже есть в самом тексте дня.
                 text += f"\n\n{order_deadline_message(st['target_date'])}"
             kb_rows = _week_day_order_kb(st["offset"], st["has_order"], st["can_modify"], st["qty"])
             if i == len(day_statuses) - 1:
@@ -1400,8 +1415,8 @@ async def _handle_employee_inner(
         status = _order_status_text(order)
         if not CONFIG.are_orders_accepted_now():
             status += f"\n{CONFIG.get_orders_status_message()}"
-        elif not can_modify:
-            # Окно заказов на этот день закрыто — говорим, куда и до когда заказать
+        elif not can_modify and not _is_holiday(target_date):
+            # Для праздника объяснение уже есть в самом тексте дня.
             status += f"\n{order_deadline_message(target_date)}"
         return [_msg(f"{menu_text}{status}",
                      keyboard=_order_view_kb(order is not None, can_modify, user_db_id), replace=True)]

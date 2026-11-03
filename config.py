@@ -25,6 +25,13 @@ REPORTS_DIR = DATA_DIR / 'reports'
 # но при каждом нажатии кнопки в БД не лезем.
 ORDERS_STATUS_TTL = 5.0
 
+# Как часто перечитывать меню, праздники и сотрудников из БД (секунды).
+# Каждый мессенджер (Telegram, ВК, Б24, Max) — отдельный процесс со своей
+# копией CONFIG. Без перечитывания новый праздник или новое меню доезжают
+# только до того бота, в котором админ их добавил, а остальные молча
+# работают со старыми данными до перезапуска контейнера.
+CONFIG_DATA_TTL = 30.0
+
 # Создаем папки если их нет
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -63,6 +70,8 @@ class BotConfig:
         self._db = database
         self._orders_enabled = self._load_orders_status()
         self._orders_status_at = monotonic()
+        # Время последнего чтения меню/праздников/сотрудников из БД.
+        self._db_data_at = 0.0
         logger.info(
             f"Статус заказов при старте: "
             f"{'разрешены' if self._orders_enabled else 'запрещены'}"
@@ -160,40 +169,60 @@ class BotConfig:
         """Преобразует строку с ID в список чисел"""
         return [int(x) for x in ids_str.split(",") if x.strip()]
 
-    def _load_db_data(self):
-        """Загружает данные из базы данных"""
+    def _load_db_data(self, strict: bool = True):
+        """Загружает данные из базы данных
+
+        strict=True  — при ошибке подставляются пустые значения (первичная загрузка).
+        strict=False — при ошибке сохраняются прежние данные: временная
+        недоступность БД не должна обнулять меню у уже работающего бота.
+        """
         try:
             with self._db.get_session() as session:
                 # Загрузка сотрудников
                 from models import User
                 users = session.query(User).filter(
-                    User.is_employee == True, 
+                    User.is_employee == True,
                     User.is_deleted == False
                 ).all()
                 self._staff_names = {user.full_name.lower() for user in users}
-                
+
                 # Загрузка праздников
                 from models import Holiday
                 holidays = session.query(Holiday).all()
                 self._holidays = {holiday.date: holiday.name for holiday in holidays}
-                
+
                 # Загрузка меню
                 from models import Menu
                 menu_items = session.query(Menu).all()
                 self._menu = {
                     item.day: {
                         "first": item.first_course,
-                        "main": item.main_course, 
+                        "main": item.main_course,
                         "salad": item.salad
                     } for item in menu_items
                 }
-                
+
         except Exception as e:
             logger.error(f"Ошибка загрузки данных из БД: {e}")
-            # Значения по умолчанию
-            self._staff_names = set()
-            self._holidays = {}
-            self._menu = {}
+            if strict:
+                # Значения по умолчанию
+                self._staff_names = set()
+                self._holidays = {}
+                self._menu = {}
+        finally:
+            # Даже при ошибке отмечаем время: иначе при недоступной БД
+            # каждый запрос к меню будет снова лезть в базу.
+            self._db_data_at = monotonic()
+
+    def _refresh_db_data(self):
+        """Перечитывает меню/праздники/сотрудников, если данные устарели.
+
+        Нужно всем мессенджерам сразу: конфиг у каждого процесса свой,
+        а добавляет праздник или меняет меню админ в одном из них.
+        """
+        if monotonic() - self._db_data_at < CONFIG_DATA_TTL:
+            return
+        self._load_db_data(strict=False)
 
     def _load_orders_status(self):
         """Загружает статус заказов из БД"""
@@ -423,14 +452,17 @@ class BotConfig:
 
     @property
     def staff_names(self) -> set:
+        self._refresh_db_data()
         return self._staff_names
 
     @property
     def holidays(self) -> dict:
+        self._refresh_db_data()
         return self._holidays
 
     @property
     def menu(self) -> dict:
+        self._refresh_db_data()
         return self._menu
 
     @property

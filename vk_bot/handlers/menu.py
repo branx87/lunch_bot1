@@ -7,7 +7,8 @@ from vkbottle.bot import BotLabeler, Message
 from database import db
 from config import CONFIG
 from time_config import TIME_CONFIG
-from services.menu_service import get_menu_for_day, format_menu_text, get_week_menus
+from services.menu_service import (get_menu_for_day, format_menu_text, get_week_menus,
+                                   get_day_info, format_day_text)
 from services.order_service import get_order_for_date
 from services.time_service import can_modify_order, order_deadline_message
 from services.user_service import get_user_db_id, MESSENGER_VK
@@ -31,7 +32,8 @@ async def show_today_menu(message: Message):
         menu, day_name, target_date = get_menu_for_day(0, CONFIG)
 
         if not menu:
-            await message.answer(f"На {day_name} меню не предусмотрено (выходной/праздник).")
+            # Праздник или выходной — называем причину, а не просто «меню нет».
+            await message.answer(format_day_text(get_day_info(0, CONFIG)))
             return
 
         text = format_menu_text(menu, day_name, target_date)
@@ -68,10 +70,7 @@ async def show_week_menu(message: Message):
             if day_info['is_weekend']:
                 continue
             if day_info['is_holiday']:
-                await message.answer(
-                    f"🎉 {day_info['day_name']} ({day_info['target_date'].strftime('%d.%m')}) — "
-                    f"{day_info['holiday_name']}"
-                )
+                await message.answer(format_day_text(day_info))
                 continue
 
             menu = day_info['menu']
