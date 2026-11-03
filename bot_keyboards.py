@@ -114,7 +114,7 @@ def create_admin_keyboard(is_master: bool = False):
         ["📜 История сообщений", "🔒 Вкл/Выкл заказы"],
     ]
     if is_master:
-        buttons.insert(2, ["🗑 Отменить заказ сотрудника"])
+        buttons.insert(2, ["🗑 Отменить заказ сотрудника", "📋 Все заказы на дату"])
     buttons.append(["🏠 Главное меню"])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 

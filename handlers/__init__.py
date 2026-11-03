@@ -27,7 +27,7 @@ from constants import (
 )
 from handlers.admin_config_handlers import handle_deletion, setup_admin_config_handlers
 from handlers.admin_order_handlers import setup_admin_order_handlers
-from handlers.admin_cancel_handlers import setup_admin_cancel_handlers
+from handlers.admin_cancel_handlers import setup_admin_cancel_handlers, setup_admin_orders_handlers
 from handlers.admin_handlers import handle_admin_choice
 from handlers.base_handlers import (
     admin_reports_menu, error_handler, handle_admin_reports_menu, 
@@ -339,6 +339,9 @@ def setup_handlers(application):
 
     # 5c. Отмена заказа сотрудника — только для главного админа (MASTER_ADMIN_ID)
     setup_admin_cancel_handlers(application)
+
+    # 5d. Список заказов на дату — только для главного админа (MASTER_ADMIN_ID)
+    setup_admin_orders_handlers(application)
 
     # 6. Обработчик изменения локации (ДОБАВЛЯЕМ ЭТОТ НОВЫЙ HANDLER)
     change_location_conv = ConversationHandler(
