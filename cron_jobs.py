@@ -98,21 +98,6 @@ class CronManager:
         logger.info(f"  Синхронизация: {TIME_CONFIG.SYNC_EMPLOYEES_TIME.strftime('%H:%M')} (Пн-Пт)")
         logger.info(f"  Бекап: 03:00 (каждый день)")
 
-        # 🔥 ТЕСТ: запуск через 3 минуты для проверки работы планировщика
-        test_time = datetime.now(TIME_CONFIG.TIMEZONE) + timedelta(minutes=3)
-        self.scheduler.add_job(
-            self._test_cron_working,
-            'cron',
-            minute=test_time.minute,
-            hour=test_time.hour,
-            second=0
-        )
-        logger.info(f"🧪 ТЕСТ: задача настроена на {test_time.strftime('%H:%M')}")
-
-    async def _test_cron_working(self):
-        """Тестовая функция для проверки работы планировщика"""
-        logger.info(f"✅ ТЕСТ УСПЕШЕН: Планировщик работает! Время: {datetime.now(TIME_CONFIG.TIMEZONE)}")
-
     def _add_production_jobs(self):
         """Боевые задачи по расписанию"""
         logger.info(f"🕒 Настройка задач планировщика в {datetime.now(TIME_CONFIG.TIMEZONE)}")

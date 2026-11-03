@@ -324,15 +324,20 @@ class LunchBot:
             self.cron_manager = CronManager(self.application)
             await self.cron_manager.setup()
             
-            # DEBUG: логируем ВСЕ входящие обновления
-            from telegram.ext import TypeHandler
-            from telegram import Update as TgUpdate
-            async def _debug_log_update(update, context):
-                msg = getattr(update, 'message', None)
-                text = getattr(msg, 'text', '') if msg else ''
-                uid = getattr(getattr(update, 'effective_user', None), 'id', '?')
-                self.logger.info(f"📨 UPDATE: id={update.update_id} user={uid} text='{text}'")
-            self.application.add_handler(TypeHandler(TgUpdate, _debug_log_update), group=-2)
+            # Логирование всех входящих обновлений — только по запросу:
+            # DEBUG_LOG_UPDATES=1 в .env. По умолчанию выключено: каждое
+            # сообщение пользователя писалось в лог целиком (и шумело, и
+            # тексты сотрудников — телефоны, имена — попадали в логи).
+            if os.getenv("DEBUG_LOG_UPDATES", "") == "1":
+                from telegram.ext import TypeHandler
+                from telegram import Update as TgUpdate
+
+                async def _debug_log_update(update, context):
+                    msg = getattr(update, 'message', None)
+                    text = getattr(msg, 'text', '') if msg else ''
+                    uid = getattr(getattr(update, 'effective_user', None), 'id', '?')
+                    self.logger.info(f"📨 UPDATE: id={update.update_id} user={uid} text='{text}'")
+                self.application.add_handler(TypeHandler(TgUpdate, _debug_log_update), group=-2)
 
             self.logger.info("5. Импортируем middleware")
             from middleware import AccessControlHandler
