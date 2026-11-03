@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import inspect
 import os
 import socket
 from urllib.parse import urlparse
@@ -11,21 +12,50 @@ from telegram.error import NetworkError, TimedOut
 
 
 class SocksHTTPXRequest(HTTPXRequest):
-    """HTTPXRequest that creates a simpler httpx.AsyncClient for SOCKS5 compatibility."""
+    """HTTPXRequest, который сам создаёт httpx-клиент (нужно для SOCKS5).
 
-    def initialize(self) -> "asyncio.coroutine":
-        # Override: create AsyncClient with simple config that works with SOCKS5
-        # HTTPXRequest хранит proxy_url в self._proxy_url (передаётся в __init__)
-        proxy_url = getattr(self, '_proxy_url', None)
-        timeout = self._client_kwargs.get("timeout", httpx.Timeout(30))
-        limits = self._client_kwargs.get("limits")
-        kwargs = {"timeout": timeout}
-        if proxy_url:
-            kwargs["proxies"] = {"all://": proxy_url}
-        if limits:
-            kwargs["limits"] = limits
+    Свой клиент нужен по трём причинам:
+      * httpx 0.26 переименовал `proxies` → `proxy`, а в 0.28 `proxies` удалён
+        совсем: передача старого параметра даёт TypeError и бот не стартует;
+      * PTB 20.x хранит прокси в `self._proxy_url`, PTB 21+ — в
+        `self._client_kwargs['proxy']`; берём оба варианта;
+      * таймауты и лимиты пула берём из PTB — иначе они молча сбрасываются
+        на дефолты httpx (таймаут 5с вместо заданного, пул на 100 вместо 8).
+    """
+
+    def _resolve_proxy(self) -> str | None:
+        """Прокси из PTB: старый (_proxy_url) или новый (_client_kwargs)."""
+        proxy = getattr(self, '_proxy_url', None)
+        if not proxy:
+            proxy = self._client_kwargs.get('proxy')
+        return str(proxy) if proxy else None
+
+    async def initialize(self) -> None:
+        kwargs = {}
+        timeout = self._client_kwargs.get('timeout')
+        if timeout is not None:
+            kwargs['timeout'] = timeout
+        limits = self._client_kwargs.get('limits')
+        if limits is not None:
+            kwargs['limits'] = limits
+
+        proxy = self._resolve_proxy()
+        if proxy:
+            if 'proxy' in inspect.signature(httpx.AsyncClient.__init__).parameters:
+                kwargs['proxy'] = proxy
+            else:
+                kwargs['proxies'] = proxy
+        else:
+            # transport (socket_options/http2) переносим только без прокси:
+            # httpx не применяет transport и proxy одновременно.
+            transport = self._client_kwargs.get('transport')
+            if transport is not None:
+                kwargs['transport'] = transport
+
         self._client = httpx.AsyncClient(**kwargs)
-        return super(HTTPXRequest, self).initialize()  # call BaseRequest.initialize()
+        # BaseRequest.initialize() — минуя HTTPXRequest.initialize(),
+        # который пересоздал бы клиент без наших настроек.
+        await super(HTTPXRequest, self).initialize()
 
 
 class LunchBot:
@@ -156,6 +186,30 @@ class LunchBot:
 
         return None
 
+    async def _pick_proxy_with_retry(self, interval: int = 60) -> str | None:
+        """Ждёт рабочий прокси вместо того, чтобы падать.
+
+        Раньше здесь бросался RuntimeError («Ни один прокси-кандидат не
+        работает»): бот падал, docker его перезапускал, и цикл повторялся —
+        контейнер то жив, то падает, а бот так и не отвечает на команды.
+        Теперь бот ждёт и сам подхватывает первый рабочий прокси, как только
+        тот оживёт (проверка раз в минуту).
+        """
+        from config import CONFIG, mask_proxy
+
+        while True:
+            proxy_url = await self._pick_proxy()
+            if proxy_url:
+                return proxy_url
+            if not CONFIG or not CONFIG.proxy_urls:
+                # Прокси не настроен — работаем напрямую.
+                return None
+            self.logger.error(
+                "❌ Ни один прокси-кандидат не работает (%s) — жду %dс и пробую снова",
+                ", ".join(mask_proxy(u) for u in CONFIG.proxy_urls), interval,
+            )
+            await asyncio.sleep(interval)
+
     async def _proxy_watchdog(self):
         """Следит за прокси и перезапускает бота, если тот перестал работать.
 
@@ -219,9 +273,9 @@ class LunchBot:
             # Один прокси — единая точка отказа: 29.10 он дважды отваливался
             # (09:31–10:20 и с 16:53), и бот при этом висел на initialize()
             # по 15–20 минут без единой записи в логе.
-            proxy_url = await self._pick_proxy()
-            if CONFIG.proxy_urls and not proxy_url:
-                raise RuntimeError("Ни один прокси-кандидат не работает")
+            # Если ни один кандидат не работает — ждём и пробуем снова,
+            # вместо того чтобы падать и уходить в цикл перезапусков docker.
+            proxy_url = await self._pick_proxy_with_retry()
 
             if proxy_url:
                 # 🔥 Прокси ТОЛЬКО для Telegram API через HTTPS_PROXY,
