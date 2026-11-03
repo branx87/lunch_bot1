@@ -12,7 +12,7 @@ from services.order_service import (
     create_order, cancel_order, modify_quantity, get_order_for_date
 )
 from services.time_service import (can_modify_order, order_deadline_message,
-                                   is_new_supplier_date, next_working_day)
+                                   is_new_supplier_date, next_orderable_date)
 from services.menu_service import get_menu_for_day, format_menu_text, DAYS_RU
 from services.user_service import get_user_db_id, MESSENGER_MAX
 from max_bot.keyboards import order_buttons, quantity_buttons, main_menu_keyboard
@@ -64,8 +64,9 @@ async def quick_order(event):
     today = now.date()
 
     if is_new_supplier_date(today):
-        # Новый поставщик: заказ на сегодня не принимается
-        target_date = next_working_day(today, CONFIG.holidays)
+        # Новый поставщик: заказ на сегодня не принимается.
+        # Берём ближайший рабочий день, чьё окно заказа ещё открыто.
+        target_date = next_orderable_date(today, CONFIG.holidays)
     else:
         target_date = today
 

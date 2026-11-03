@@ -13,7 +13,8 @@ from constants import SELECT_MONTH_RANGE_STATS
 from handlers.common import show_main_menu
 from handlers.common_handlers import view_orders
 from utils import (can_modify_order, check_registration, format_menu, handle_unregistered,
-                   order_deadline_message, is_new_supplier_date, next_working_day)
+                   order_deadline_message, is_new_supplier_date,
+                   next_orderable_date)
 from services.menu_service import DAYS_RU
 from view_utils import refresh_orders_view
 from bitrix.ops import cancel_in_bitrix, cleanup_cancelled
@@ -662,9 +663,11 @@ async def quick_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"USER {user_id}: начат быстрый заказ (username: {user.username or 'N/A'}, first_name: {user.first_name or 'N/A'})")
         
         if is_new_supplier_date(today):
-            # Новый поставщик: заказ на сегодня не принимается,
-            # быстрый заказ оформляется на ближайший рабочий день.
-            target_date = next_working_day(today, CONFIG.holidays)
+            # Новый поставщик: заказ на сегодня не принимается.
+            # Берём ближайший рабочий день, чьё окно заказа ещё открыто:
+            # после 15:00 на завтра (и на послезавтра, если завтра выходной)
+            # окно уже закрыто — тогда заказываем на следующий рабочий день.
+            target_date = next_orderable_date(today, CONFIG.holidays)
         else:
             # Старый поставщик: заказ на сегодня, только в рабочий день и не в праздник
             target_date = today

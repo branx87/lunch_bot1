@@ -9,7 +9,8 @@ from database import db
 from config import CONFIG
 from time_config import TIME_CONFIG
 from services.order_service import create_order, cancel_order, modify_quantity, get_order_for_date
-from services.time_service import can_modify_order, order_deadline_message, is_new_supplier_date, next_working_day
+from services.time_service import (can_modify_order, order_deadline_message,
+                                   is_new_supplier_date, next_orderable_date)
 from services.menu_service import get_menu_for_day, format_menu_text, DAYS_RU
 from services.user_service import get_user_db_id, MESSENGER_VK
 from vk_bot.keyboards import order_buttons, quantity_buttons
@@ -72,8 +73,9 @@ async def quick_order(message: Message):
     today = now.date()
 
     if is_new_supplier_date(today):
-        # Новый поставщик: заказ на сегодня не принимается
-        target_date = next_working_day(today, CONFIG.holidays)
+        # Новый поставщик: заказ на сегодня не принимается.
+        # Берём ближайший рабочий день, чьё окно заказа ещё открыто.
+        target_date = next_orderable_date(today, CONFIG.holidays)
     else:
         target_date = today
 

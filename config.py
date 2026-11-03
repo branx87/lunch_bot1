@@ -395,13 +395,11 @@ class BotConfig:
             return "❌ Приём заказов временно приостановлен"
 
         try:
-            from services.time_service import next_working_day, is_new_supplier_date
+            from services.time_service import (next_orderable_date, order_deadline_for,
+                                               is_new_supplier_date)
             from services.menu_service import DAYS_RU
 
             now = datetime.now(self.timezone)
-            if now.weekday() in TIME_CONFIG.WEEKEND_DAYS:
-                return "❌ Прием заказов не осуществляется в выходные дни"
-
             today = now.date()
 
             if not is_new_supplier_date(today):
@@ -410,10 +408,17 @@ class BotConfig:
                     return f"❌ Прием заказов на сегодня завершен (до {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')})"
                 return f"✅ Прием заказов открыт (до {TIME_CONFIG.ORDER_DEADLINE.strftime('%H:%M')})"
 
-            # Новый поставщик: заказ на следующий рабочий день до 15:00
-            nxt = next_working_day(today, self.holidays)
+            # Новый поставщик: заказ на ближайший рабочий день, чьё окно ещё
+            # открыто. После 15:00 окно на завтра уже закрыто — тогда заказывают
+            # на следующий рабочий день (и праздники тоже учитываются).
+            nxt = next_orderable_date(today, self.holidays)
+            deadline = order_deadline_for(nxt, self.holidays)
+            if deadline and deadline.date() != today:
+                deadline_text = deadline.strftime('%d.%m в %H:%M')
+            else:
+                deadline_text = TIME_CONFIG.ADVANCE_ORDER_DEADLINE.strftime('%H:%M')
             return (
-                f"✅ Приём заказов открыт до {TIME_CONFIG.ADVANCE_ORDER_DEADLINE.strftime('%H:%M')} — "
+                f"✅ Приём заказов открыт до {deadline_text} — "
                 f"на {nxt.strftime('%d.%m')} ({DAYS_RU[nxt.weekday()].lower()})"
             )
         except Exception as e:
