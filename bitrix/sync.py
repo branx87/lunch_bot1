@@ -21,6 +21,7 @@ import aiohttp
 import warnings
 from time_config import TIME_CONFIG
 from services.time_service import meal_date_for_placement
+from services.order_service import SOURCE_BITRIX_FORM
 
 # Отключаем SSL предупреждения для requests
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -1141,7 +1142,8 @@ class BitrixSync:
                     is_from_bitrix=order.get('is_from_bitrix', True),
                     bitrix_order_id=bitrix_id,
                     is_active=True,
-                    last_synced_at=datetime.now()
+                    last_synced_at=datetime.now(),
+                    source=SOURCE_BITRIX_FORM
                 )
                 
                 session.add(new_order)

@@ -21,7 +21,7 @@ from time_config import TIME_CONFIG
 logger = logging.getLogger(__name__)
 
 # Re-export from services
-from services.order_service import QUANTITY_MAP, BITRIX_QUANTITY_MAP
+from services.order_service import QUANTITY_MAP, BITRIX_QUANTITY_MAP, SOURCE_TELEGRAM
     
 async def handle_inspector_order_callback(query, now, user, context):
     """
@@ -106,6 +106,7 @@ async def handle_inspector_order_callback(query, now, user, context):
         is_active=True,
         is_preliminary=(day_offset > 0 and not is_new_supplier_date(target_date)),
         is_for_inspector=True,
+        source=SOURCE_TELEGRAM,
         created_at=datetime.now()
     )
     db.session.add(new_order)
@@ -212,6 +213,7 @@ async def handle_order_callback(query, now, user, context):
             bitrix_quantity_id=bitrix_quantity_id,
             is_active=True,
             is_preliminary=(day_offset > 0 and not is_new_supplier_date(target_date)),
+            source=SOURCE_TELEGRAM,
             created_at=datetime.now()
         )
         db.session.add(new_order)

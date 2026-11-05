@@ -9,7 +9,7 @@ from database import db
 from config import CONFIG
 from time_config import TIME_CONFIG
 from services.order_service import (
-    create_order, cancel_order, modify_quantity, get_order_for_date
+    create_order, cancel_order, modify_quantity, get_order_for_date, SOURCE_MAX
 )
 from services.time_service import (can_modify_order, order_deadline_message,
                                    is_new_supplier_date, next_orderable_date)
@@ -84,7 +84,7 @@ async def quick_order(event):
             await event.message.answer("❌ Вы не зарегистрированы. Отправьте /start")
             return
 
-        order, error = create_order(user_db_id, target_date, session)
+        order, error = create_order(user_db_id, target_date, session, source=SOURCE_MAX)
         if error:
             await event.message.answer(f"ℹ️ {error}")
             return
@@ -120,7 +120,8 @@ async def on_order(event: MessageCallback):
             await event.answer(notification="❌ Вы не зарегистрированы")
             return
 
-        order, error = create_order(user_db_id, target_date, session, is_preliminary=(day_offset > 0))
+        order, error = create_order(user_db_id, target_date, session,
+                                    is_preliminary=(day_offset > 0), source=SOURCE_MAX)
         if error:
             await event.answer(notification=f"ℹ️ {error}")
             return

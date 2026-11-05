@@ -14,6 +14,20 @@ logger = logging.getLogger(__name__)
 QUANTITY_MAP = {1: '821', 2: '822', 3: '823', 4: '824', 5: '825'}
 BITRIX_QUANTITY_MAP = {'821': 1, '822': 2, '823': 3, '824': 4, '825': 5}
 
+# Источник заказа — канал, где заказ оформлен. Пишется в orders.source
+# и показывается в отчёте колонкой «Источник заказа».
+SOURCE_TELEGRAM = "Телеграм"
+SOURCE_VK = "ВК"
+SOURCE_MAX = "Max"
+SOURCE_BITRIX24 = "Б24"
+SOURCE_BITRIX_FORM = "Битрикс (форма)"
+SOURCE_ADMIN_SUFFIX = " (админ)"
+
+
+def order_source(base: str, is_admin: bool = False) -> str:
+    """Источник заказа: канал + пометка, что оформил админ."""
+    return f"{base}{SOURCE_ADMIN_SUFFIX}" if is_admin else base
+
 
 def get_order_for_date(user_db_id, target_date, session):
     """Get active (non-cancelled) order for a user on a specific date."""
@@ -80,13 +94,15 @@ def find_employees(query, session, limit=10):
 
 
 def create_order(user_db_id, target_date, session, is_preliminary=False,
-                 quantity=1, is_for_inspector=False):
+                 quantity=1, is_for_inspector=False, source=None):
     """
     Create a new order. Does NOT commit.
 
     quantity — количество порций (1..MAX_PORTIONS).
     is_for_inspector — заказ для инспектора (расходы компании):
     в Bitrix24 такой заказ уходит на CRM ID инспектора.
+    source — канал, где оформлен заказ (Телеграм / ВК / Max / Б24):
+    попадает в отчёт колонкой «Источник заказа».
 
     Returns (order, error_message). If error, order is None.
     """
@@ -122,6 +138,7 @@ def create_order(user_db_id, target_date, session, is_preliminary=False,
         is_active=True,
         is_preliminary=is_preliminary,
         is_for_inspector=is_for_inspector,
+        source=source,
         created_at=now.replace(tzinfo=None),
     )
     session.add(order)

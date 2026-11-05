@@ -61,6 +61,9 @@ class Order(Base):
     is_sent_to_bitrix = Column(Boolean, default=False)
     is_preliminary = Column(Boolean, default=False)
     is_for_inspector = Column(Boolean, default=False)  # Заказ для инспектора (расходы компании)
+    # Канал, где оформлен заказ: Телеграм / ВК / Max / Б24 / Битрикс (форма).
+    # Заполняется при создании заказа, в отчёте идёт колонкой «Источник заказа».
+    source = Column(String(20), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     last_synced_at = Column(DateTime, nullable=True)  # 🔥 УБРАТЬ server_default=func.now()

@@ -47,6 +47,13 @@ async def on_startup():
 
     Base.metadata.create_all(bind=db.engine)
 
+    # Auto-migration: add source column to orders (канал, где оформлен заказ)
+    try:
+        from migrate_add_order_source import migrate as migrate_source
+        migrate_source()
+    except Exception as e:
+        logger.warning(f"Migration check: {e}")
+
     # Куда ходим и на каком порту слушаем — видно сразу в логах.
     logger.info(
         "=== Bitrix24 bot started: порт=%s, отправка через %s ===",

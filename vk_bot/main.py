@@ -39,6 +39,13 @@ def main():
         except Exception as e:
             logger.warning(f"Migration check: {e}")
 
+        # Auto-migration: add source column to orders (канал, где оформлен заказ)
+        try:
+            from migrate_add_order_source import migrate as migrate_source
+            migrate_source()
+        except Exception as e:
+            logger.warning(f"Migration check: {e}")
+
         token = os.getenv('VK_BOT_TOKEN')
         if not token:
             logger.error("VK_BOT_TOKEN not set in environment")

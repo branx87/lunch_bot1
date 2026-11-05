@@ -19,6 +19,7 @@ from services.order_service import (
     get_order_for_date, get_active_orders,
     create_order, cancel_order, modify_quantity,
     get_user_monthly_stats, QUANTITY_MAP,
+    SOURCE_BITRIX24, order_source,
     find_employees,
 )
 from services.menu_service import (get_menu_for_day, format_menu_text, get_week_menus,
@@ -879,7 +880,8 @@ def _do_create_order_db(user_db_id: int, day_offset: int, session) -> str:
     if not can_modify_order(target_date, CONFIG.are_orders_accepted_now()):
         return order_deadline_message(target_date)
 
-    order, err = create_order(user_db_id, target_date, session, is_preliminary=(day_offset > 0))
+    order, err = create_order(user_db_id, target_date, session, is_preliminary=(day_offset > 0),
+                              source=SOURCE_BITRIX24)
     if err:
         return f"ℹ️ {err}"
     return f"✅ Заказ на {target_date.strftime('%d.%m')} оформлен — 1 порция."
@@ -917,6 +919,7 @@ def _do_create_inspector_order_db(user_db_id: int, day_offset: int, session) -> 
         is_active=True,
         is_preliminary=(day_offset > 0 and not is_new_supplier_date(target_date)),
         is_for_inspector=True,
+        source=SOURCE_BITRIX24,
         created_at=now.replace(tzinfo=None),
     )
     session.add(order)
@@ -1028,7 +1031,8 @@ def _admin_create_order(emp_id: int, target_date, quantity: int, is_for_inspecto
                 "Дубликат не создаём."), False
 
     order, err = create_order(emp_id, target_date, session,
-                              quantity=quantity, is_for_inspector=is_for_inspector)
+                              quantity=quantity, is_for_inspector=is_for_inspector,
+                              source=order_source(SOURCE_BITRIX24, is_admin=True))
     if err:
         return f"❌ {err}", False
 

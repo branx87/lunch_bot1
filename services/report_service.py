@@ -278,7 +278,7 @@ def generate_admin_report_file(start_date, end_date, session, is_daily=False, ca
         query = text("""
             SELECT o.target_date, u.full_name, COALESCE(u.location, 'Не указано') as location,
                    o.quantity, o.is_from_bitrix, o.created_at, o.bitrix_order_id,
-                   o.is_for_inspector
+                   o.is_for_inspector, o.source
             FROM orders o JOIN users u ON o.user_id = u.id
             WHERE o.target_date = :target_date AND o.is_cancelled = FALSE
             ORDER BY o.target_date,
@@ -290,7 +290,7 @@ def generate_admin_report_file(start_date, end_date, session, is_daily=False, ca
         query = text("""
             SELECT o.target_date, u.full_name, COALESCE(u.location, 'Не указано') as location,
                    o.quantity, o.is_from_bitrix, o.created_at, o.bitrix_order_id,
-                   o.is_for_inspector
+                   o.is_for_inspector, o.source
             FROM orders o JOIN users u ON o.user_id = u.id
             WHERE o.target_date BETWEEN :start_date AND :end_date AND o.is_cancelled = FALSE
             ORDER BY o.target_date,
@@ -321,7 +321,7 @@ def generate_admin_report_file(start_date, end_date, session, is_daily=False, ca
     for date_key in sorted(orders_by_date.keys()):
         for row in orders_by_date[date_key]:
             target_dt = row[0].strftime("%d.%m.%Y") if isinstance(row[0], date) else row[0]
-            source = "Битрикс" if row[4] else "Бот"
+            source = row[8] or ("Битрикс" if row[4] else "Бот")
             order_number = row[6] if row[6] is not None else ""
             order_type = "🕵️ Инспектор" if row[7] else "Обычный"
             ws_all.append([target_dt, order_number, row[1], row[2], "", row[3], source, order_type])

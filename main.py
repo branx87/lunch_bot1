@@ -44,6 +44,12 @@ try:
         migrate()
     except Exception as e:
         logger.warning(f"⚠️ Migration check: {e}")
+    # Auto-migration: add source column to orders (канал, где оформлен заказ)
+    try:
+        from migrate_add_order_source import migrate as migrate_source
+        migrate_source()
+    except Exception as e:
+        logger.warning(f"⚠️ Migration check: {e}")
 except Exception as e:
     logger.error(f"❌ Ошибка инициализации БД: {e}")
     sys.exit(1)

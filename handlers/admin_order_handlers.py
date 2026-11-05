@@ -50,7 +50,8 @@ from constants import (
 from database import db
 from models import User
 from services.menu_service import DAYS_RU
-from services.order_service import create_order, find_employees, get_order_for_date
+from services.order_service import (create_order, find_employees, get_order_for_date,
+                                   SOURCE_TELEGRAM, order_source)
 from services.time_service import (
     admin_can_order_date,
     admin_order_dates,
@@ -403,6 +404,7 @@ async def admin_order_create(update: Update, context: ContextTypes.DEFAULT_TYPE)
         db.session,
         quantity=qty,
         is_for_inspector=(kind == KIND_INSPECTOR),
+        source=order_source(SOURCE_TELEGRAM, is_admin=True),
     )
     if err:
         _reset(context)

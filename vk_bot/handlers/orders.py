@@ -8,7 +8,7 @@ from vkbottle import GroupEventType
 from database import db
 from config import CONFIG
 from time_config import TIME_CONFIG
-from services.order_service import create_order, cancel_order, modify_quantity, get_order_for_date
+from services.order_service import create_order, SOURCE_VK, cancel_order, modify_quantity, get_order_for_date
 from services.time_service import (can_modify_order, order_deadline_message,
                                    is_new_supplier_date, next_orderable_date)
 from services.menu_service import get_menu_for_day, format_menu_text, DAYS_RU
@@ -93,7 +93,7 @@ async def quick_order(message: Message):
             await message.answer("❌ Вы не зарегистрированы. Напишите /start")
             return
 
-        order, error = create_order(user_db_id, target_date, session)
+        order, error = create_order(user_db_id, target_date, session, source=SOURCE_VK)
         if error:
             await message.answer(f"ℹ️ {error}")
             return
@@ -146,7 +146,8 @@ async def on_order_callback(event: MessageEvent):
                 await event.show_snackbar("Вы не зарегистрированы")
                 return
 
-            order, error = create_order(user_db_id, target_date, session, is_preliminary=(day_offset > 0))
+            order, error = create_order(user_db_id, target_date, session,
+                                        is_preliminary=(day_offset > 0), source=SOURCE_VK)
             if error:
                 await event.show_snackbar(error[:90])
                 return

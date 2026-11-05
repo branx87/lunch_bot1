@@ -16,6 +16,7 @@ from utils import (can_modify_order, check_registration, format_menu, handle_unr
                    order_deadline_message, is_new_supplier_date,
                    next_orderable_date)
 from services.menu_service import DAYS_RU
+from services.order_service import SOURCE_TELEGRAM
 from view_utils import refresh_orders_view
 from bitrix.ops import cancel_in_bitrix, cleanup_cancelled
 
@@ -575,7 +576,8 @@ async def handle_order_confirmation(update: Update, context: ContextTypes.DEFAUL
                     target_date=target_date.date(),
                     order_time=now.strftime("%H:%M:%S"),
                     quantity=1,
-                    is_preliminary=True
+                    is_preliminary=True,
+                    source=SOURCE_TELEGRAM
                 )
                 db.session.add(new_order)
                 db.session.commit()
@@ -732,7 +734,8 @@ async def quick_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bitrix_quantity_id='821',  # ID для 1 порции в Битрикс
             is_active=True,
             is_preliminary=(target_date > today and not is_new_supplier_date(target_date)),
-            created_at=datetime.now()
+            created_at=datetime.now(),
+            source=SOURCE_TELEGRAM
         )
         db.session.add(new_order)
         db.session.commit()
